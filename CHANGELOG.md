@@ -3,14 +3,12 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Audio spectral analysis service (STFT, Mel spectrogram, MFCC, power spectrogram)
-- Audio I/O utilities (load, save, base64 encode, validate with size/duration limits)
-- Visualization module generating base64 PNG plots (spectrogram, Mel, MFCC, waveform)
-- POST /api/audio/analyze endpoint with selectable operations
-- Pydantic schemas for audio analysis request/response
-- Comprehensive test suite for spectral analysis, I/O, visualization, and API
-- Documentation for audio spectral analysis feature
-- matplotlib dependency for headless plot rendering
+- Audio augmentation pipeline service (`AudioAugmenter`) with noise injection (white/pink/brown), time stretch, pitch shift, time shift, and SpecAugment masking
+- Five augmentation presets: speech_robust, music_robust, environmental, light, heavy
+- POST `/api/audio/augment` endpoint accepting file upload with preset or custom JSON pipeline config
+- Pydantic schemas for augmentation steps, config, and response
+- Unit and integration tests for all augmentation methods and API endpoint
+- Documentation at `docs/audio-augmentation.md`
 
 ## [0.1.0] - 2026-03-20
 
