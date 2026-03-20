@@ -1,0 +1,12 @@
+{
+  "name": "Motion Alert",
+  "conditions": {
+    "type": "threshold",
+    "metric": "motion_percentage",
+    "operator": ">",
+    "value": 50
+  },
+  "actions": [
+    {"type": "webhook", "url": "https://example.com/hook"}
+  ]
+}
