@@ -62,9 +62,10 @@ class CopilotService:
             except Exception as exc:
                 logger.warning("Failed to store user message: %s", exc)
 
-        # Build system prompt with enrichment
+        # Build system prompt with enrichment (including graph context)
         system_prompt = await self._build_system_prompt(
-            workspace_id, agent_id, skill_pack=skill_pack, memories=memories, db=db
+            workspace_id, agent_id, skill_pack=skill_pack, memories=memories, db=db,
+            user_message=message,
         )
 
         # Build messages list with conversation history
@@ -172,6 +173,7 @@ class CopilotService:
         skill_pack: str = "general",
         memories: list[str] | None = None,
         db: AsyncSession | None = None,
+        user_message: str | None = None,
     ) -> str:
         """Build a system prompt with role, tools, context enrichment."""
         persona = SKILL_PACKS.get(skill_pack, SKILL_PACKS["general"])
@@ -227,6 +229,18 @@ class CopilotService:
                     sections.append(memory_summary)
             except Exception:
                 pass
+
+            # Knowledge graph context enrichment
+            if user_message:
+                try:
+                    graph_context = await self._get_graph_context(
+                        db, user_message, workspace_id
+                    )
+                    if graph_context:
+                        sections.append("")
+                        sections.append(graph_context)
+                except Exception:
+                    pass
 
         return "\n".join(sections)
 
@@ -295,6 +309,23 @@ class CopilotService:
                 for m in summary["top_memories"][:3]:
                     lines.append(f"  - {m[:100]}")
             return "\n".join(lines)
+        except Exception:
+            return None
+
+    async def _get_graph_context(
+        self, db: AsyncSession, user_message: str, workspace_id: str
+    ) -> str | None:
+        """Retrieve knowledge graph context relevant to the user's message."""
+        try:
+            from app.services.knowledge_graph.graph_rag import GraphRAGService
+
+            graph_rag = GraphRAGService()
+            augmentation = await graph_rag.augment_copilot_prompt(
+                db, user_message, workspace_id
+            )
+            if augmentation:
+                return f"## {augmentation}"
+            return None
         except Exception:
             return None
 

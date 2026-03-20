@@ -107,6 +107,28 @@ COPILOT_TOOLS: list[dict] = [
             "properties": {},
         },
     },
+    {
+        "name": "query_knowledge_graph",
+        "description": (
+            "Query the knowledge graph for entity relationships, event connections, "
+            "and spatial-temporal patterns. Use this to find how entities are related, "
+            "trace paths between people/objects/locations, and discover patterns."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Natural language query about entities, relationships, or events. "
+                        "Examples: 'who was near the warehouse', 'how is John connected to "
+                        "the vehicle', 'find all people near Main Street'"
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
 ]
 
 
@@ -504,6 +526,27 @@ async def _get_system_status_real() -> dict:
     }
 
 
+async def _query_knowledge_graph_real(query: str) -> dict:
+    """Query the knowledge graph using GraphRAGService."""
+    try:
+        from app.database import async_session_factory
+        from app.services.knowledge_graph.graph_rag import GraphRAGService
+
+        service = GraphRAGService()
+        workspace_id = "00000000-0000-0000-0000-000000000001"
+
+        async with async_session_factory() as session:
+            result = await service.query_graph_nl(session, query, workspace_id)
+            return result
+    except Exception as exc:
+        logger.warning("Knowledge graph query failed: %s", exc)
+        return {
+            "answer": f"Knowledge graph query failed: {exc}",
+            "evidence_nodes": [],
+            "confidence": 0.0,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -546,6 +589,11 @@ async def execute_tool(tool_name: str, tool_input: dict) -> str:
 
     elif tool_name == "get_system_status":
         result = await _get_system_status_real()
+        return json.dumps(result, default=str)
+
+    elif tool_name == "query_knowledge_graph":
+        query = tool_input.get("query", "")
+        result = await _query_knowledge_graph_real(query)
         return json.dumps(result, default=str)
 
     else:
