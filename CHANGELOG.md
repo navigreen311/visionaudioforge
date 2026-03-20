@@ -1,16 +1,15 @@
 # Changelog
 
-## [0.2.0] - 2026-03-20
+## [1.0.0] - 2026-03-20
 
 ### Added
-- JWT authentication with access tokens (30 min) and refresh tokens (7 days) via python-jose HS256
-- Password hashing with passlib bcrypt (hash_password, verify_password)
-- AuthService with register, login, refresh, and user lookup methods
-- Auth routes: POST /api/auth/register, /login, /refresh; GET /me; PUT /me
-- Pydantic schemas for auth requests/responses (LoginRequest, RegisterRequest, TokenResponse, UserResponse)
-- FastAPI dependencies: get_current_user (Bearer token), require_role (RBAC factory), get_current_workspace
-- AuditMiddleware logging user_id, HTTP method, path, and IP to audit_logs table (non-blocking background task)
-- Comprehensive test suite (test_auth.py): password hashing, token lifecycle, route integration, RBAC enforcement
+- Health endpoint (`GET /api/health`) with real DB, Redis, and MinIO probes; returns structured status with per-service latency, uptime, and ISO-8601 timestamp
+- Structured JSON logging via `python-json-logger` with contextual fields (request_id, user_id, workspace_id, method, path, status_code, duration_ms)
+- Request ID middleware — generates UUID per request, propagates via `X-Request-ID` header and contextvars
+- Timing middleware — measures request duration, adds `X-Process-Time` header, logs method/path/status/duration
+- Prometheus metrics module with `http_requests_total`, `http_request_duration_seconds`, `ws_active_connections`, and `inference_queue_depth`
+- Metrics endpoint (`GET /api/metrics`) serving Prometheus text exposition format
+- Tests for health response shape, middleware headers, and metrics endpoint
 
 ## [0.1.0] - 2026-03-20
 
