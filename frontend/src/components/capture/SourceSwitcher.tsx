@@ -1,6 +1,6 @@
 "use client";
 
-export type SourceType = "camera" | "screen" | "microphone";
+export type SourceType = "camera" | "screen" | "microphone" | "rtsp" | "multicam";
 
 interface SourceSwitcherProps {
   activeSource: SourceType;
@@ -11,6 +11,8 @@ const tabs: { key: SourceType; label: string; icon: string }[] = [
   { key: "camera", label: "Camera", icon: "🎥" },
   { key: "screen", label: "Screen", icon: "🖥️" },
   { key: "microphone", label: "Microphone", icon: "🎙️" },
+  { key: "rtsp", label: "RTSP", icon: "📡" },
+  { key: "multicam", label: "Multi-Cam", icon: "📺" },
 ];
 
 export default function SourceSwitcher({ activeSource, onChange }: SourceSwitcherProps) {
