@@ -1,5 +1,8 @@
-.PHONY: dev build stop clean logs db-shell redis-shell test test-unit test-integration test-coverage lint db-migrate db-revision
+.PHONY: dev build stop clean logs db-shell redis-shell test test-unit test-integration test-coverage lint format migrate seed
 
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
 dev:
 	docker compose up
 
@@ -13,16 +16,29 @@ clean:
 	docker compose down -v --remove-orphans
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	rm -rf backend/htmlcov backend/.coverage frontend/.next
 
 logs:
 	docker compose logs -f
 
+# ---------------------------------------------------------------------------
+# Database & Redis
+# ---------------------------------------------------------------------------
 db-shell:
 	docker compose exec db psql -U postgres
 
 redis-shell:
 	docker compose exec redis redis-cli
 
+migrate:
+	docker compose exec api alembic upgrade head
+
+seed:
+	docker compose exec api python -m app.scripts.seed
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
 test:
 	cd backend && python -m pytest tests/ -v
 
@@ -35,11 +51,11 @@ test-integration:
 test-coverage:
 	cd backend && python -m pytest tests/ --cov=app --cov-report=html --cov-report=term-missing
 
+# ---------------------------------------------------------------------------
+# Code Quality
+# ---------------------------------------------------------------------------
 lint:
 	cd backend && python -m flake8 app/ || true
 
-db-migrate:
-	docker compose exec api alembic upgrade head
-
-db-revision:
-	docker compose exec api alembic revision --autogenerate -m "$(msg)"
+format:
+	cd backend && python -m black app/ tests/ && python -m isort app/ tests/

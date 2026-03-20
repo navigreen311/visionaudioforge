@@ -1,128 +1,91 @@
 # Changelog
 
-## [0.2.0] - 2026-03-20
+All notable changes to VisionAudioForge are documented in this file.
+
+## [0.2.0] - 2026-03-20 (Phase 2 — Full Feature Build)
 
 ### Added
 
-#### WS01 — Docker Infrastructure
-- Docker Compose configuration with 7 services (API, Frontend, DB, Redis, MinIO, NGINX, Celery)
-- NGINX reverse proxy configuration
-- Multi-stage Dockerfiles for backend and frontend
+#### Infrastructure & Observability (WS01, WS04)
+- Docker Compose with 7 services (API, Frontend, DB, Redis, MinIO, NGINX, Celery)
+- NGINX reverse proxy, multi-stage Dockerfiles
+- Health check with dependency status (DB, Redis, MinIO)
+- Prometheus metrics, request ID / timing / audit middleware
+- Structured JSON logging with correlation IDs
 
-#### WS02 — Database & Migrations
-- SQLAlchemy models for all domain entities (User, Workspace, Model, Experiment, Dataset, Asset, Pipeline, Alert, Embedding, Event, AuditLog, Agent, AgentMemory)
-- Alembic migration infrastructure with auto-generation support
-- UUID primary keys with timestamp mixins
-
-#### WS03 — Auth System
-- JWT-based authentication with login, register, refresh endpoints
+#### Database & Auth (WS02, WS03)
+- SQLAlchemy models: User, Workspace, Model, Experiment, Dataset, Asset, Pipeline, Alert, Embedding, Event, AuditLog, Agent, AgentMemory
+- Alembic migration infrastructure with UUID primary keys
+- JWT authentication (login, register, refresh, /me)
 - Role-based access control middleware
-- `GET /api/auth/me` endpoint
 
-#### WS04 — Health & Observability
-- Health check endpoint with dependency status (DB, Redis, MinIO)
-- Prometheus metrics endpoint
-- Request ID middleware for distributed tracing
-- Timing middleware for request duration logging
-- Audit middleware for request logging to database
-- Structured logging with correlation IDs
+#### Vision (WS05, WS06, WS07)
+- Image analysis and screen-analyze endpoints
+- Optical flow (Lucas-Kanade / Farneback) and frame differencing
+- Object detection (YOLO), OCR text extraction
+- Error analysis with confusion matrix and quality reports
+- Annotated visualization with base64-encoded output
 
-#### WS05 — Vision Preprocessing
-- Vision analyze and screen-analyze stub endpoints
-- Image preprocessing utilities
+#### Audio (WS08, WS09, WS17)
+- Spectral analysis service
+- Audio augmentation pipeline (noise injection, pitch shift, time stretch, filtering)
+- Audio transforms: denoise, silence removal, pitch shift, time stretch, loudness normalization, EQ presets
+- Speech enhance chain and composable transform runner
 
-#### WS06 — Vision Optical Flow
-- Optical flow endpoint for motion analysis
-- Frame diff endpoint for change detection
-
-#### WS07 — Vision Detection & OCR
-- Object detection endpoint with YOLO-based detector
-- OCR endpoint with text extraction
-- Error analysis endpoint with confusion matrix and quality reports
-- Annotated visualization output with base64-encoded images
-
-#### WS08 — Audio Spectral Analysis
-- Audio analyze endpoint (stub)
-- Spectral analysis service foundations
-
-#### WS09 — Audio Augmentation
-- Audio augment endpoint with configurable pipeline
-- Augmentation presets (speech_robust, etc.)
-- Support for noise injection, pitch shift, time stretch, and filtering
-- Base64-encoded WAV output
-
-#### WS10 — Capture Engine
-- WebSocket live capture endpoint (`/ws/live/stream/{session_id}`)
-- Per-frame analysis with motion detection
-- Connection manager with channel-based routing
-
-#### WS11 — Model Registry
-- Model registry CRUD endpoints with versioning
-- Model lifecycle management (draft, active, archived, deprecated)
-- Model comparison endpoint
-
-#### WS12 — Experiment Tracker
-- Experiment CRUD with epoch tracking
-- Training curves and metrics recording
-- Transfer learning service
-- ExperimentEpoch model with train_loss, val_loss, accuracy, val_accuracy
-
-#### WS13 — Dataset Manager
-- Dataset CRUD with workspace scoping
-- File upload with MinIO storage
-- Train/val/test split with stratification
-- Dataset statistics computation
-- Export endpoint (JSON format)
-- Dataset versioning
-
-#### WS14 — FAISS Search
-- Cross-modal search with CLIP embeddings
-- FAISS index management
-- Search stats endpoint (`GET /api/search/stats`)
-
-#### WS15 — Pipeline Builder
-- Visual pipeline builder with 20 node types
-- Pipeline CRUD and run management
-- React Flow editor integration
-
-#### WS16 — Copilot Agent
-- Agentic media copilot with Claude API integration
-- WebSocket streaming endpoint (`/ws/agents/stream`)
-- Agent memory system with importance scoring and expiration
-- Skill packs for media operations
-- Agent CRUD endpoints
-
-#### WS17 — Audio Transform
-- Audio transform service: denoise, silence removal, pitch shift, time stretch, loudness normalization, EQ presets
-- Speech enhance convenience chain
-- Generic chain runner for composable transforms
-- REST endpoints for all audio transforms
-
-#### WS18 — Video Transform
-- Video transform studio: background removal, super resolution, style transfer, auto crop, thumbnail generation
+#### Video Transforms (WS18)
+- Background removal, super resolution, style transfer, auto crop, thumbnail generation
 - Before/after slider component
-- REST endpoints for all video transforms
 
-#### WS19 — Frontend Dashboard
-- Next.js 14 frontend with 16 dashboard pages
-- Sidebar navigation linking to all modules
-- Zustand auth store and React Query provider
-- Train page with Models, Experiments, and Datasets tabs
-- Transform page with Audio and Video tabs
-- Dataset management UI with upload, stats, split controls
+#### Capture & Streaming (WS10)
+- WebSocket live capture (`/ws/live/stream/{session_id}`)
+- Per-frame motion detection, connection manager with channel routing
 
-#### WS20 — Testing & E2E
-- Comprehensive test suite with integration tests, API contract tests, and fixtures
-- Test utilities module with synthetic image/audio generators
-- Enhanced conftest.py with fixtures for test_app, test_image, test_audio, auth_headers
-- Sample JSON fixtures for pipeline, experiment config, and alert rules
+#### Model Registry & Experiments (WS11, WS12)
+- Model registry CRUD with versioning and lifecycle (draft, active, archived, deprecated)
+- Model comparison and rollback endpoints
+- Experiment CRUD with epoch tracking (train_loss, val_loss, accuracy)
+- Training curves, metrics recording, transfer learning service
+
+#### Dataset Management (WS13)
+- Dataset CRUD with workspace scoping and versioning
+- File upload with MinIO storage, train/val/test split with stratification
+- Statistics computation and export (JSON)
+
+#### Search (WS14)
+- Cross-modal FAISS search with CLIP embeddings
+- Index management and search stats
+
+#### Pipeline Builder (WS15)
+- Visual pipeline builder with 20 node types
+- Pipeline CRUD, run management, React Flow editor integration
+
+#### Copilot Agent (WS16)
+- Agentic media copilot with Claude API
+- WebSocket streaming (`/ws/agents/stream`)
+- Agent memory with importance scoring, skill packs
+
+#### Frontend (WS19)
+- Next.js 14 with 16 dashboard pages
+- Sidebar navigation, Zustand auth store, React Query provider
+- Train page (Models, Experiments, Datasets tabs)
+- Transform page (Audio and Video tabs)
+- Dataset management UI (upload, stats, split)
+
+#### Testing & CI (WS20)
 - Integration tests: vision pipeline, audio pipeline, model lifecycle, search, auth flow
-- pytest configuration with markers (unit, integration, e2e, slow)
-- Coverage configuration with 50% minimum threshold
-- GitHub Actions CI workflow with PostgreSQL and Redis services
-- Makefile targets: dev, build, stop, clean, logs, test, test-unit, test-integration, test-coverage, lint
+- Test utilities with synthetic image/audio generators
+- pytest with markers (unit, integration, e2e, slow), 50% coverage threshold
+- GitHub Actions CI with PostgreSQL and Redis services
 
-## [0.1.0] - 2026-03-20
+#### Integration Fixes (WS20 — Final)
+- Dependency cleanup: added missing packages (ultralytics, pydub, sentence-transformers, pytest-cov)
+- Frontend: added recharts for charting
+- Complete API reference documentation
+- Makefile consolidation with all development targets
+- README with full module listing and setup instructions
+
+## [0.1.0] - 2026-03-20 (Phase 1 — Scaffold)
 
 ### Added
 - Initial project scaffold with full directory structure
+- Project configuration and CLAUDE.md

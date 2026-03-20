@@ -40,8 +40,15 @@ htmlcov/
 .coverage
 coverage/
 
+# Testing
+.pytest_cache/
+
 # Logs
 *.log
+
+# Database
+*.sqlite
+*.db
 
 # Build
 dist/
