@@ -10,6 +10,7 @@ from app.api.routes import (
     datasets,
     experiments,
     health,
+    integrations,
     metrics,
     pipeline,
     registry,
@@ -43,3 +44,4 @@ api_router.include_router(safety.router)
 api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
+api_router.include_router(integrations.router)
