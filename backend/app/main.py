@@ -12,7 +12,7 @@ from app.ws.manager import manager  # noqa: F401 — re-export for convenience
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.2.0",
+    version="0.3.0",
     description="VisionAudioForge — AI-powered vision & audio analysis platform",
 )
 

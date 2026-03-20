@@ -2,42 +2,51 @@
 
 AI-powered vision and audio analysis platform for capture, processing, training, and deployment of computer vision and audio ML models. Built with FastAPI, Next.js 14, PyTorch, and modern AI/ML tooling.
 
+**Version:** 0.3.0 | **Modules:** 24 | **API Endpoints:** 70+
+
 ## Tech Stack
 
 | Layer | Technologies |
 |-------|-------------|
 | **Backend** | Python 3.11, FastAPI, Pydantic v2, Uvicorn, Celery |
-| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, React 18, Zustand, React Query |
+| **Frontend** | Next.js 14, TypeScript, Tailwind CSS, React 18, Zustand, React Query, Recharts, React Flow |
 | **Database** | PostgreSQL 16 + pgvector, Redis 7 |
-| **AI/ML** | PyTorch, OpenCV, Librosa, FAISS, HuggingFace Transformers, CLIP, Ultralytics |
-| **Storage** | MinIO (S3-compatible object storage) |
-| **Infra** | Docker Compose, NGINX reverse proxy |
+| **AI/ML** | PyTorch, OpenCV, Librosa, FAISS, HuggingFace Transformers, CLIP, Ultralytics YOLO, scikit-learn |
+| **NLP/AI** | Anthropic Claude API, sentence-transformers |
+| **Storage** | MinIO (S3-compatible), boto3 (S3 connector) |
+| **Infra** | Docker Compose, NGINX reverse proxy, Celery workers |
 | **Auth** | JWT / OAuth2, role-based access control |
-| **Observability** | Prometheus metrics, structured JSON logging, audit trail |
+| **Observability** | Prometheus metrics, structured JSON logging, audit trail, request tracing |
+| **Scheduling** | croniter (cron-based pipeline scheduling) |
+| **Testing** | pytest, pytest-asyncio, httpx, pytest-cov |
 
 ## Modules
 
-| Module | Route | Description | Status |
-|--------|-------|-------------|--------|
-| Health | `/api/health` | Service health with dependency checks (DB, Redis, MinIO) | Active |
-| Metrics | `/api/metrics` | Prometheus metrics endpoint | Active |
-| Auth | `/api/auth/*` | JWT login, register, token refresh, user profile | Active |
-| Vision | `/api/vision/*` | Image analysis, optical flow, detection, OCR, error analysis | Enhanced |
-| Audio | `/api/audio/*` | Spectral analysis, audio augmentation pipeline | Enhanced |
-| Transform | `/api/transform/*` | Audio transforms (denoise, EQ, pitch) and video transforms (super-res, style) | Active |
-| Transfer | `/api/transfer/*` | Transfer learning with pre-trained models | Active |
-| Experiments | `/api/experiments` | Experiment tracking with epoch metrics and comparison | Enhanced |
-| Registry | `/api/registry/*` | Model registry with versioning, lifecycle, rollback | Enhanced |
-| Search | `/api/search/*` | Cross-modal FAISS search with CLIP embeddings | Active |
-| Pipeline | `/api/pipeline/*` | Visual pipeline builder with 20 node types | Active |
-| Alerts | `/api/alerts/*` | Alert rules and notification management | Active |
-| Agents | `/api/agents/*` | AI copilot with Claude, agent memory, skill packs | Active |
-| Assets | `/api/assets/*` | Media asset management with MinIO storage | Active |
-| Datasets | `/api/datasets` | Dataset CRUD, upload, split, stats, export, versioning | Enhanced |
-| Safety | `/api/safety/*` | Content safety scanning | Active |
-| Workspaces | `/api/workspaces` | Multi-tenant workspace management | Active |
-| WebSocket | `/ws/live/stream/{id}` | Live video capture with per-frame analysis | Active |
-| WebSocket | `/ws/agents/stream` | Streaming copilot chat | Active |
+| Module | Route | Description | Phase |
+|--------|-------|-------------|-------|
+| Health | `/api/health` | Service health with dependency checks (DB, Redis, MinIO) | V1 |
+| Metrics | `/api/metrics` | Prometheus metrics endpoint | V1 |
+| Auth | `/api/auth/*` | JWT login, register, token refresh, user profile | V1 |
+| Vision | `/api/vision/*` | Image analysis, optical flow, detection, OCR, error analysis | V2 |
+| Audio | `/api/audio/*` | Spectral analysis, augmentation pipeline, classification | V2 |
+| Transform | `/api/transform/*` | Audio transforms (denoise, EQ, pitch) and video transforms (super-res, style) | V2 |
+| Transfer | `/api/transfer/*` | Transfer learning with pre-trained models | V2 |
+| Experiments | `/api/experiments` | Experiment tracking with epoch metrics and comparison | V2 |
+| Registry | `/api/registry/*` | Model registry with versioning, lifecycle, rollback | V2 |
+| Search | `/api/search/*` | Cross-modal FAISS search with CLIP embeddings | V2 |
+| Pipeline | `/api/pipeline/*` | Visual pipeline builder with 20 node types, scheduling | V2 |
+| Alerts | `/api/alerts/*` | Alert rules and notification management | V2 |
+| Agents | `/api/agents/*` | AI copilot with Claude, agent memory, skill packs | V2 |
+| Assets | `/api/assets/*` | Media asset management with MinIO storage | V2 |
+| Datasets | `/api/datasets` | Dataset CRUD, upload, split, stats, export, versioning | V2 |
+| Safety | `/api/safety/*` | Content safety scanning | V2 |
+| Workspaces | `/api/workspaces` | Multi-tenant workspace management | V2 |
+| Capture | `/api/capture/*` | Live capture session management | V2 |
+| Evaluation | `/api/evaluation/*` | Benchmarks, tournaments, threshold analysis, scorecards | V3 |
+| Validation | `/api/validate/*` | Data drift detection, schema validation, explainability | V3 |
+| Investigation | `/api/investigate/*` | Case management, evidence linking, timeline queries | V3 |
+| WebSocket | `/ws/live/stream/{id}` | Live video capture with per-frame analysis | V2 |
+| WebSocket | `/ws/agents/stream` | Streaming copilot chat | V2 |
 
 ## Architecture
 
@@ -53,6 +62,8 @@ api -> PostgreSQL (pgvector)
 ```
 
 ## Quick Start
+
+### Docker (recommended)
 
 ```bash
 # Clone and configure
@@ -70,14 +81,16 @@ docker compose up --build
 # MinIO:     http://localhost:9001
 ```
 
-Or use the Makefile:
+### Makefile
 
 ```bash
-make dev       # Start all services
+make dev       # Start all services (docker compose up)
 make build     # Build containers
 make stop      # Stop services
-make clean     # Stop and remove volumes
+make clean     # Stop, remove volumes, clean caches
 make logs      # Tail service logs
+make migrate   # Run database migrations
+make seed      # Seed database with sample data
 ```
 
 ## Development Setup
@@ -120,6 +133,15 @@ make test-coverage     # Tests with HTML coverage report
 make lint              # Lint backend code
 make format            # Format backend code
 ```
+
+### Test Categories
+
+| Category | Command | Description |
+|----------|---------|-------------|
+| All | `make test` | Run full test suite |
+| Unit | `make test-unit` | Fast isolated tests |
+| Integration | `make test-integration` | API endpoint tests |
+| Coverage | `make test-coverage` | HTML coverage report |
 
 ## Contributing
 
