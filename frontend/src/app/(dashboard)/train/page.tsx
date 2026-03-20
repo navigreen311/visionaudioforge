@@ -1,579 +1,587 @@
 "use client";
 
-import { useState, Fragment } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  listModels,
-  registerModel,
-  updateModelStatus,
-  compareModels,
-  ModelRecord,
-  ModelCreatePayload,
-  CompareResult,
-} from "@/lib/api";
+import { useState, useEffect, useMemo } from "react";
+import api from "@/lib/api";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// ---------- Types ----------
 
-const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001"; // default dev workspace
-
-const STATUS_COLORS: Record<string, string> = {
-  registered: "bg-blue-100 text-blue-800",
-  staging: "bg-yellow-100 text-yellow-800",
-  production: "bg-green-100 text-green-800",
-  archived: "bg-gray-100 text-gray-600",
-};
-
-const BACKBONE_OPTIONS = [
-  "ResNet50",
-  "ResNet101",
-  "VGG16",
-  "EfficientNet-B0",
-  "ViT-B/32",
-  "CLIP-ViT-L/14",
-  "CSPDarknet",
-  "MobileNetV3",
-  "Swin-T",
-  "ConvNeXt-B",
-];
-
-type TabKey = "models" | "experiments" | "datasets";
-
-// ---------------------------------------------------------------------------
-// Main Page
-// ---------------------------------------------------------------------------
-
-export default function TrainPage() {
-  const [activeTab, setActiveTab] = useState<TabKey>("models");
-
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-gray-900">Train &amp; Registry</h1>
-
-      {/* Tabs */}
-      <div className="border-b border-gray-200">
-        <nav className="-mb-px flex space-x-8">
-          {(["models", "experiments", "datasets"] as TabKey[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm capitalize ${
-                activeTab === tab
-                  ? "border-brand-600 text-brand-600"
-                  : "border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300"
-              }`}
-            >
-              {tab}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {activeTab === "models" && <ModelsTab />}
-      {activeTab === "experiments" && <StubTab label="Experiments" />}
-      {activeTab === "datasets" && <StubTab label="Datasets" />}
-    </div>
-  );
+interface EpochData {
+  epoch_number: number;
+  train_loss: number | null;
+  val_loss: number | null;
+  accuracy: number | null;
+  val_accuracy: number | null;
 }
 
-// ---------------------------------------------------------------------------
-// Stub tab
-// ---------------------------------------------------------------------------
-
-function StubTab({ label }: { label: string }) {
-  return (
-    <div className="flex items-center justify-center min-h-[40vh]">
-      <div className="text-center">
-        <p className="text-gray-400 text-lg">{label} module coming soon.</p>
-        <span className="mt-2 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
-          Not Implemented
-        </span>
-      </div>
-    </div>
-  );
+interface Experiment {
+  id: string;
+  name: string;
+  status: string;
+  config: Record<string, unknown>;
+  workspace_id: string;
+  model_id: string | null;
+  best_epoch: number | null;
+  error_message: string | null;
+  epochs: EpochData[];
 }
 
-// ---------------------------------------------------------------------------
-// Models Tab
-// ---------------------------------------------------------------------------
-
-function ModelsTab() {
-  const queryClient = useQueryClient();
-
-  const [showRegisterModal, setShowRegisterModal] = useState(false);
-  const [selectedModel, setSelectedModel] = useState<ModelRecord | null>(null);
-  const [compareSelection, setCompareSelection] = useState<string[]>([]);
-  const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string>("");
-
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["models", statusFilter],
-    queryFn: () => listModels(WORKSPACE_ID, statusFilter || undefined),
-  });
-
-  const statusMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) =>
-      updateModelStatus(id, status),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["models"] });
-      setSelectedModel(null);
-    },
-  });
-
-  const compareMutation = useMutation({
-    mutationFn: ({ a, b }: { a: string; b: string }) => compareModels(a, b),
-    onSuccess: (result) => setCompareResult(result),
-  });
-
-  function handleCompare() {
-    if (compareSelection.length === 2) {
-      compareMutation.mutate({ a: compareSelection[0], b: compareSelection[1] });
-    }
-  }
-
-  function toggleCompareSelect(id: string) {
-    setCompareSelection((prev) => {
-      if (prev.includes(id)) return prev.filter((x) => x !== id);
-      if (prev.length >= 2) return [prev[1], id];
-      return [...prev, id];
-    });
-  }
-
-  const models = data?.items ?? [];
-
-  return (
-    <div className="space-y-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          onClick={() => setShowRegisterModal(true)}
-          className="px-4 py-2 bg-brand-600 text-white rounded-lg hover:bg-brand-700 text-sm font-medium"
-        >
-          Register Model
-        </button>
-
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-        >
-          <option value="">All statuses</option>
-          <option value="registered">Registered</option>
-          <option value="staging">Staging</option>
-          <option value="production">Production</option>
-          <option value="archived">Archived</option>
-        </select>
-
-        {compareSelection.length === 2 && (
-          <button
-            onClick={handleCompare}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
-          >
-            Compare Selected
-          </button>
-        )}
-      </div>
-
-      {/* Table */}
-      {isLoading && <p className="text-gray-400">Loading models...</p>}
-      {error && <p className="text-red-500">Failed to load models.</p>}
-
-      {!isLoading && (
-        <div className="overflow-x-auto bg-white rounded-xl shadow border border-gray-100">
-          <table className="min-w-full divide-y divide-gray-200 text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Cmp</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Name</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Version</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Backbone</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Registered</th>
-                <th className="px-4 py-3 text-left font-medium text-gray-500">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {models.length === 0 && (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
-                    No models found.
-                  </td>
-                </tr>
-              )}
-              {models.map((m) => (
-                <tr
-                  key={m.id}
-                  className="hover:bg-gray-50 cursor-pointer"
-                  onClick={() => setSelectedModel(m)}
-                >
-                  <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                    <input
-                      type="checkbox"
-                      checked={compareSelection.includes(m.id)}
-                      onChange={() => toggleCompareSelect(m.id)}
-                    />
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{m.name}</td>
-                  <td className="px-4 py-3 text-gray-600">{m.version}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={m.status} />
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{m.backbone ?? "—"}</td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {new Date(m.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-3 space-x-2" onClick={(e) => e.stopPropagation()}>
-                    {m.status === "registered" && (
-                      <ActionBtn
-                        label="Promote"
-                        onClick={() => statusMutation.mutate({ id: m.id, status: "staging" })}
-                      />
-                    )}
-                    {m.status === "staging" && (
-                      <ActionBtn
-                        label="Promote"
-                        onClick={() => statusMutation.mutate({ id: m.id, status: "production" })}
-                      />
-                    )}
-                    {m.status !== "archived" && (
-                      <ActionBtn
-                        label="Archive"
-                        variant="danger"
-                        onClick={() => statusMutation.mutate({ id: m.id, status: "archived" })}
-                      />
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Detail panel */}
-      {selectedModel && (
-        <ModelDetailPanel
-          model={selectedModel}
-          onClose={() => setSelectedModel(null)}
-          onStatusChange={(s) => statusMutation.mutate({ id: selectedModel.id, status: s })}
-        />
-      )}
-
-      {/* Compare result */}
-      {compareResult && (
-        <ComparePanel result={compareResult} onClose={() => setCompareResult(null)} />
-      )}
-
-      {/* Register modal */}
-      {showRegisterModal && (
-        <RegisterModal
-          onClose={() => setShowRegisterModal(false)}
-          onRegistered={() => {
-            queryClient.invalidateQueries({ queryKey: ["models"] });
-            setShowRegisterModal(false);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
+// ---------- Status Badge ----------
 
 function StatusBadge({ status }: { status: string }) {
-  const color = STATUS_COLORS[status] ?? "bg-gray-100 text-gray-600";
+  const colors: Record<string, string> = {
+    created: "bg-gray-100 text-gray-700",
+    running: "bg-blue-100 text-blue-700",
+    completed: "bg-green-100 text-green-700",
+    failed: "bg-red-100 text-red-700",
+  };
   return (
-    <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${color}`}>
+    <span
+      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || "bg-gray-100 text-gray-600"}`}
+    >
       {status}
     </span>
   );
 }
 
-function ActionBtn({
-  label,
-  onClick,
-  variant = "default",
-}: {
+// ---------- Simple SVG Line Chart ----------
+
+interface ChartLine {
   label: string;
-  onClick: () => void;
-  variant?: "default" | "danger";
+  color: string;
+  data: { x: number; y: number }[];
+}
+
+function LineChart({
+  lines,
+  width = 560,
+  height = 280,
+}: {
+  lines: ChartLine[];
+  width?: number;
+  height?: number;
 }) {
-  const cls =
-    variant === "danger"
-      ? "text-red-600 hover:text-red-800"
-      : "text-brand-600 hover:text-brand-800";
+  const padding = { top: 20, right: 80, bottom: 40, left: 60 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+
+  const allPoints = lines.flatMap((l) => l.data);
+  if (allPoints.length === 0) return <div className="text-gray-400 text-sm">No data</div>;
+
+  const xMin = Math.min(...allPoints.map((p) => p.x));
+  const xMax = Math.max(...allPoints.map((p) => p.x));
+  const yMin = Math.min(...allPoints.map((p) => p.y));
+  const yMax = Math.max(...allPoints.map((p) => p.y));
+  const yRange = yMax - yMin || 1;
+  const xRange = xMax - xMin || 1;
+
+  const toX = (v: number) => padding.left + ((v - xMin) / xRange) * chartW;
+  const toY = (v: number) => padding.top + chartH - ((v - yMin) / yRange) * chartH;
+
   return (
-    <button onClick={onClick} className={`text-xs font-medium ${cls}`}>
-      {label}
-    </button>
+    <svg width={width} height={height} className="bg-white rounded border border-gray-200">
+      {/* Y axis labels */}
+      {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
+        const val = yMin + frac * yRange;
+        const y = toY(val);
+        return (
+          <g key={frac}>
+            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="#e5e7eb" />
+            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="text-[10px] fill-gray-500">
+              {val.toFixed(3)}
+            </text>
+          </g>
+        );
+      })}
+      {/* X axis label */}
+      <text x={padding.left + chartW / 2} y={height - 6} textAnchor="middle" className="text-[11px] fill-gray-500">
+        Epoch
+      </text>
+      {/* Lines */}
+      {lines.map((line) => {
+        if (line.data.length < 2) return null;
+        const d = line.data.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.x)},${toY(p.y)}`).join(" ");
+        return <path key={line.label} d={d} fill="none" stroke={line.color} strokeWidth={2} />;
+      })}
+      {/* Legend */}
+      {lines.map((line, i) => (
+        <g key={line.label}>
+          <line
+            x1={width - padding.right + 8}
+            y1={padding.top + i * 18 + 4}
+            x2={width - padding.right + 22}
+            y2={padding.top + i * 18 + 4}
+            stroke={line.color}
+            strokeWidth={2}
+          />
+          <text
+            x={width - padding.right + 26}
+            y={padding.top + i * 18 + 8}
+            className="text-[10px] fill-gray-700"
+          >
+            {line.label}
+          </text>
+        </g>
+      ))}
+    </svg>
   );
 }
 
-function ModelDetailPanel({
-  model,
-  onClose,
-  onStatusChange,
-}: {
-  model: ModelRecord;
-  onClose: () => void;
-  onStatusChange: (status: string) => void;
-}) {
-  return (
-    <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 space-y-4">
-      <div className="flex justify-between items-start">
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900">{model.name}</h3>
-          <p className="text-sm text-gray-500">Version {model.version}</p>
-        </div>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
-          &times;
-        </button>
-      </div>
+// ---------- Training Curves ----------
 
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-gray-500">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={model.status} />
-          </div>
-        </div>
-        <div>
-          <span className="text-gray-500">Backbone</span>
-          <p className="mt-1 font-medium">{model.backbone ?? "—"}</p>
-        </div>
-        <div>
-          <span className="text-gray-500">Registered</span>
-          <p className="mt-1">{new Date(model.created_at).toLocaleString()}</p>
-        </div>
-        <div>
-          <span className="text-gray-500">Updated</span>
-          <p className="mt-1">{new Date(model.updated_at).toLocaleString()}</p>
-        </div>
-      </div>
+function TrainingCurves({ experiment }: { experiment: Experiment }) {
+  const lines: ChartLine[] = useMemo(() => {
+    const epochs = experiment.epochs || [];
+    return [
+      {
+        label: "loss",
+        color: "#ef4444",
+        data: epochs.filter((e) => e.train_loss != null).map((e) => ({ x: e.epoch_number, y: e.train_loss! })),
+      },
+      {
+        label: "val_loss",
+        color: "#3b82f6",
+        data: epochs.filter((e) => e.val_loss != null).map((e) => ({ x: e.epoch_number, y: e.val_loss! })),
+      },
+      {
+        label: "accuracy",
+        color: "#22c55e",
+        data: epochs.filter((e) => e.accuracy != null).map((e) => ({ x: e.epoch_number, y: e.accuracy! })),
+      },
+    ];
+  }, [experiment]);
 
-      {/* Metrics */}
-      {model.metrics && Object.keys(model.metrics).length > 0 && (
-        <div>
-          <h4 className="text-sm font-medium text-gray-700 mb-2">Metrics</h4>
-          <div className="bg-gray-50 rounded-lg p-3 grid grid-cols-3 gap-2 text-sm">
-            {Object.entries(model.metrics).map(([k, v]) => (
-              <div key={k}>
-                <span className="text-gray-500">{k}</span>
-                <p className="font-mono font-medium">{String(v)}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex gap-2 pt-2">
-        {model.status === "registered" && (
-          <button
-            onClick={() => onStatusChange("staging")}
-            className="px-3 py-1.5 bg-yellow-500 text-white rounded-lg text-sm hover:bg-yellow-600"
-          >
-            Promote to Staging
-          </button>
-        )}
-        {model.status === "staging" && (
-          <button
-            onClick={() => onStatusChange("production")}
-            className="px-3 py-1.5 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700"
-          >
-            Promote to Production
-          </button>
-        )}
-        {model.status !== "archived" && (
-          <button
-            onClick={() => onStatusChange("archived")}
-            className="px-3 py-1.5 bg-gray-500 text-white rounded-lg text-sm hover:bg-gray-600"
-          >
-            Archive
-          </button>
-        )}
-      </div>
-    </div>
-  );
+  return <LineChart lines={lines} />;
 }
 
-function ComparePanel({
-  result,
-  onClose,
-}: {
-  result: CompareResult;
-  onClose: () => void;
-}) {
-  const keys = Object.keys(result.metric_diffs);
+// ---------- Compare Chart ----------
 
-  return (
-    <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 space-y-4">
-      <div className="flex justify-between items-start">
-        <h3 className="text-lg font-semibold text-gray-900">Model Comparison</h3>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
-          &times;
-        </button>
-      </div>
-
-      <div className="flex gap-6 text-sm">
-        <div>
-          <span className="text-gray-500">Model A:</span>{" "}
-          <strong>{result.model_a.name} v{result.model_a.version}</strong>
-        </div>
-        <div>
-          <span className="text-gray-500">Model B:</span>{" "}
-          <strong>{result.model_b.name} v{result.model_b.version}</strong>
-        </div>
-      </div>
-
-      <table className="min-w-full divide-y divide-gray-200 text-sm">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">Metric</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">Model A</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">Model B</th>
-            <th className="px-4 py-2 text-left font-medium text-gray-500">Diff</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {keys.map((k) => {
-            const d = result.metric_diffs[k];
-            const diffColor =
-              d.diff === null ? "" : d.diff > 0 ? "text-green-600" : d.diff < 0 ? "text-red-600" : "";
-            return (
-              <tr key={k}>
-                <td className="px-4 py-2 font-medium">{k}</td>
-                <td className="px-4 py-2 font-mono">{d.model_a ?? "—"}</td>
-                <td className="px-4 py-2 font-mono">{d.model_b ?? "—"}</td>
-                <td className={`px-4 py-2 font-mono ${diffColor}`}>
-                  {d.diff !== null ? (d.diff > 0 ? `+${d.diff}` : d.diff) : "—"}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
+function CompareChart({ experiments }: { experiments: Experiment[] }) {
+  const colors = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6"];
+  const lines: ChartLine[] = experiments.flatMap((exp, i) => [
+    {
+      label: `${exp.name} loss`,
+      color: colors[i % colors.length],
+      data: (exp.epochs || []).filter((e) => e.val_loss != null).map((e) => ({ x: e.epoch_number, y: e.val_loss! })),
+    },
+  ]);
+  return <LineChart lines={lines} width={700} height={320} />;
 }
 
-function RegisterModal({
+// ---------- Start Training Modal ----------
+
+function StartTrainingModal({
   onClose,
-  onRegistered,
+  onSubmit,
 }: {
   onClose: () => void;
-  onRegistered: () => void;
+  onSubmit: (data: Record<string, unknown>) => void;
 }) {
-  const [name, setName] = useState("");
-  const [version, setVersion] = useState("");
-  const [backbone, setBackbone] = useState(BACKBONE_OPTIONS[0]);
-  const [metricsJson, setMetricsJson] = useState("{}");
-  const [error, setError] = useState("");
-
-  const mutation = useMutation({
-    mutationFn: (payload: ModelCreatePayload) => registerModel(payload),
-    onSuccess: () => onRegistered(),
-    onError: () => setError("Failed to register model."),
+  const [form, setForm] = useState({
+    experiment_name: "finetune-experiment",
+    backbone: "resnet18",
+    num_epochs: 10,
+    learning_rate: 0.001,
+    batch_size: 32,
+    freeze_layers: true,
+    gradient_clip_value: "",
+    early_stopping_patience: "",
   });
 
-  function handleSubmit(e: React.FormEvent) {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
-    let metrics: Record<string, number | string> = {};
-    try {
-      metrics = JSON.parse(metricsJson);
-    } catch {
-      setError("Invalid JSON for metrics.");
-      return;
-    }
-    mutation.mutate({
-      name,
-      version,
-      backbone,
-      metrics,
-      workspace_id: WORKSPACE_ID,
+    onSubmit({
+      experiment_name: form.experiment_name,
+      backbone: form.backbone,
+      num_epochs: form.num_epochs,
+      learning_rate: form.learning_rate,
+      batch_size: form.batch_size,
+      freeze_layers: form.freeze_layers,
+      gradient_clip_value: form.gradient_clip_value ? parseFloat(form.gradient_clip_value) : null,
+      early_stopping_patience: form.early_stopping_patience ? parseInt(form.early_stopping_patience) : null,
     });
-  }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-semibold text-gray-900">Register Model</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
-            &times;
-          </button>
-        </div>
-
+      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+        <h3 className="text-lg font-semibold mb-4">Start Training</h3>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Experiment Name</label>
             <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-              placeholder="e.g. resnet50-classifier"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Version</label>
-            <input
-              value={version}
-              onChange={(e) => setVersion(e.target.value)}
-              required
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-              placeholder="e.g. 1.0.0"
+              type="text"
+              value={form.experiment_name}
+              onChange={(e) => setForm({ ...form, experiment_name: e.target.value })}
+              className="w-full border rounded px-3 py-1.5 text-sm"
             />
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Backbone</label>
             <select
-              value={backbone}
-              onChange={(e) => setBackbone(e.target.value)}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              value={form.backbone}
+              onChange={(e) => setForm({ ...form, backbone: e.target.value })}
+              className="w-full border rounded px-3 py-1.5 text-sm"
             >
-              {BACKBONE_OPTIONS.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
+              <option value="resnet18">ResNet-18</option>
+              <option value="resnet50">ResNet-50</option>
+              <option value="clip">CLIP</option>
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Metrics (JSON)</label>
-            <textarea
-              value={metricsJson}
-              onChange={(e) => setMetricsJson(e.target.value)}
-              rows={4}
-              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-mono"
-              placeholder='{"accuracy": 0.95, "f1": 0.92}'
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Epochs</label>
+              <input
+                type="number"
+                value={form.num_epochs}
+                onChange={(e) => setForm({ ...form, num_epochs: parseInt(e.target.value) || 1 })}
+                className="w-full border rounded px-3 py-1.5 text-sm"
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Learning Rate</label>
+              <input
+                type="number"
+                step="0.0001"
+                value={form.learning_rate}
+                onChange={(e) => setForm({ ...form, learning_rate: parseFloat(e.target.value) || 0.001 })}
+                className="w-full border rounded px-3 py-1.5 text-sm"
+              />
+            </div>
           </div>
-
-          {error && <p className="text-red-500 text-sm">{error}</p>}
-
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Batch Size</label>
+              <input
+                type="number"
+                value={form.batch_size}
+                onChange={(e) => setForm({ ...form, batch_size: parseInt(e.target.value) || 1 })}
+                className="w-full border rounded px-3 py-1.5 text-sm"
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Gradient Clip</label>
+              <input
+                type="text"
+                placeholder="e.g. 1.0"
+                value={form.gradient_clip_value}
+                onChange={(e) => setForm({ ...form, gradient_clip_value: e.target.value })}
+                className="w-full border rounded px-3 py-1.5 text-sm"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Early Stop Patience</label>
+              <input
+                type="text"
+                placeholder="e.g. 5"
+                value={form.early_stopping_patience}
+                onChange={(e) => setForm({ ...form, early_stopping_patience: e.target.value })}
+                className="w-full border rounded px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.freeze_layers}
+                  onChange={(e) => setForm({ ...form, freeze_layers: e.target.checked })}
+                />
+                Freeze Layers
+              </label>
+            </div>
+          </div>
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+              className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={mutation.isPending}
-              className="px-4 py-2 bg-brand-600 text-white rounded-lg text-sm hover:bg-brand-700 disabled:opacity-50"
+              className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
             >
-              {mutation.isPending ? "Registering..." : "Register"}
+              Start
             </button>
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+// ---------- Main Page ----------
+
+export default function TrainPage() {
+  const [tab, setTab] = useState<"experiments" | "compare">("experiments");
+  const [experiments, setExperiments] = useState<Experiment[]>([]);
+  const [selected, setSelected] = useState<Experiment | null>(null);
+  const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
+  const [compareData, setCompareData] = useState<Experiment[] | null>(null);
+  const [showModal, setShowModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // For demo purposes, use a fixed workspace_id
+  const workspaceId = "00000000-0000-0000-0000-000000000001";
+
+  const fetchExperiments = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await api.get(`/api/experiments?workspace_id=${workspaceId}`);
+      setExperiments(res.data.items || []);
+    } catch (err: unknown) {
+      setError("Failed to load experiments. Backend may be unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchExperiments();
+  }, []);
+
+  const handleSelectExperiment = async (exp: Experiment) => {
+    try {
+      const res = await api.get(`/api/experiments/${exp.id}`);
+      setSelected(res.data);
+    } catch {
+      setSelected(exp);
+    }
+  };
+
+  const toggleCompare = (id: string) => {
+    setCompareIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleCompare = async () => {
+    if (compareIds.size < 2) return;
+    try {
+      const res = await api.post("/api/experiments/compare", {
+        experiment_ids: Array.from(compareIds),
+      });
+      setCompareData(res.data);
+      setTab("compare");
+    } catch {
+      setError("Failed to compare experiments.");
+    }
+  };
+
+  const handleStartTraining = async (data: Record<string, unknown>) => {
+    try {
+      await api.post("/api/transfer/start", {
+        ...data,
+        workspace_id: workspaceId,
+        dataset_path: "",
+      });
+      setShowModal(false);
+      fetchExperiments();
+    } catch {
+      setError("Failed to start training.");
+    }
+  };
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Training & Experiments</h1>
+        <button
+          onClick={() => setShowModal(true)}
+          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+        >
+          Start Training
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 border-b">
+        <button
+          onClick={() => { setTab("experiments"); setCompareData(null); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 ${tab === "experiments" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+        >
+          Experiments
+        </button>
+        <button
+          onClick={() => setTab("compare")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 ${tab === "compare" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
+        >
+          Compare
+        </button>
+      </div>
+
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
+          {error}
+        </div>
+      )}
+
+      {/* Experiments Tab */}
+      {tab === "experiments" && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Left: experiment list */}
+          <div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-gray-700">Experiment List</h2>
+              {compareIds.size >= 2 && (
+                <button
+                  onClick={handleCompare}
+                  className="px-3 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
+                >
+                  Compare ({compareIds.size})
+                </button>
+              )}
+            </div>
+
+            {loading ? (
+              <div className="text-gray-400 text-sm py-8 text-center">Loading...</div>
+            ) : experiments.length === 0 ? (
+              <div className="text-gray-400 text-sm py-8 text-center">
+                No experiments yet. Click &quot;Start Training&quot; to begin.
+              </div>
+            ) : (
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="text-left px-3 py-2 w-8"></th>
+                      <th className="text-left px-3 py-2">Name</th>
+                      <th className="text-left px-3 py-2">Status</th>
+                      <th className="text-left px-3 py-2">Best</th>
+                      <th className="text-left px-3 py-2">Epochs</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {experiments.map((exp) => (
+                      <tr
+                        key={exp.id}
+                        className={`border-t hover:bg-gray-50 cursor-pointer ${selected?.id === exp.id ? "bg-blue-50" : ""}`}
+                        onClick={() => handleSelectExperiment(exp)}
+                      >
+                        <td className="px-3 py-2">
+                          <input
+                            type="checkbox"
+                            checked={compareIds.has(exp.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => toggleCompare(exp.id)}
+                          />
+                        </td>
+                        <td className="px-3 py-2 font-medium text-gray-900">{exp.name}</td>
+                        <td className="px-3 py-2">
+                          <StatusBadge status={exp.status} />
+                        </td>
+                        <td className="px-3 py-2 text-gray-600">
+                          {exp.best_epoch != null ? `Epoch ${exp.best_epoch}` : "-"}
+                        </td>
+                        <td className="px-3 py-2 text-gray-600">
+                          {exp.epochs?.length || 0}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Right: detail view */}
+          <div>
+            {selected ? (
+              <div className="border rounded-lg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900">{selected.name}</h3>
+                  <StatusBadge status={selected.status} />
+                </div>
+                {selected.config && (
+                  <div className="text-xs text-gray-500 mb-3">
+                    Config: {JSON.stringify(selected.config)}
+                  </div>
+                )}
+                {selected.best_epoch != null && (
+                  <div className="text-sm text-green-700 mb-3">
+                    Best epoch: {selected.best_epoch}
+                  </div>
+                )}
+                {selected.error_message && (
+                  <div className="text-sm text-red-600 mb-3">
+                    Error: {selected.error_message}
+                  </div>
+                )}
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Training Curves</h4>
+                <TrainingCurves experiment={selected} />
+              </div>
+            ) : (
+              <div className="text-gray-400 text-sm py-8 text-center border rounded-lg">
+                Select an experiment to view details and training curves.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Compare Tab */}
+      {tab === "compare" && (
+        <div>
+          {compareData && compareData.length >= 2 ? (
+            <div>
+              <h2 className="text-sm font-semibold text-gray-700 mb-3">
+                Comparing {compareData.length} Experiments
+              </h2>
+              <div className="border rounded-lg p-4 mb-4">
+                <CompareChart experiments={compareData} />
+              </div>
+              <div className="border rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 text-gray-600">
+                    <tr>
+                      <th className="text-left px-3 py-2">Name</th>
+                      <th className="text-left px-3 py-2">Status</th>
+                      <th className="text-left px-3 py-2">Total Epochs</th>
+                      <th className="text-left px-3 py-2">Best Val Loss</th>
+                      <th className="text-left px-3 py-2">Best Accuracy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {compareData.map((exp: Record<string, unknown>) => (
+                      <tr key={exp.id as string} className="border-t">
+                        <td className="px-3 py-2 font-medium">{exp.name as string}</td>
+                        <td className="px-3 py-2">
+                          <StatusBadge status={exp.status as string} />
+                        </td>
+                        <td className="px-3 py-2">{exp.total_epochs as number}</td>
+                        <td className="px-3 py-2">
+                          {exp.best_val_loss != null ? (exp.best_val_loss as number).toFixed(4) : "-"}
+                        </td>
+                        <td className="px-3 py-2">
+                          {exp.best_accuracy != null ? (exp.best_accuracy as number).toFixed(4) : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="text-gray-400 text-sm py-8 text-center">
+              Select 2 or more experiments from the Experiments tab and click Compare.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modal */}
+      {showModal && (
+        <StartTrainingModal onClose={() => setShowModal(false)} onSubmit={handleStartTraining} />
+      )}
     </div>
   );
 }

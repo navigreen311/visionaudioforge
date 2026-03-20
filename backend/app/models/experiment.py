@@ -1,41 +1,38 @@
-import enum
-
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, String, func
+from sqlalchemy import Column, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
 
-from app.models.base import Base, TimestampMixin, UUIDMixin
+from app.models.base import Base, TimestampMixin
 
 
-class ExperimentStatus(str, enum.Enum):
-    created = "created"
-    running = "running"
-    completed = "completed"
-    failed = "failed"
-
-
-class Experiment(UUIDMixin, TimestampMixin, Base):
+class Experiment(TimestampMixin, Base):
     __tablename__ = "experiments"
 
-    name = Column(String(200), nullable=False)
-    config = Column(JSON, nullable=False, default=dict)
-    status = Column(Enum(ExperimentStatus), nullable=False, default=ExperimentStatus.created)
-    best_epoch = Column(JSON, nullable=True)
-    model_id = Column(UUID(as_uuid=True), ForeignKey("model_registry.id"), nullable=True)
+    name = Column(String(255), nullable=False)
+    status = Column(String(50), nullable=False, default="created")
+    config = Column(JSON, nullable=True, default=dict)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+    model_id = Column(UUID(as_uuid=True), ForeignKey("model_registry.id"), nullable=True)
+    best_epoch = Column(Integer, nullable=True)
+    error_message = Column(String(1000), nullable=True)
 
-    # Relationships
-    model = relationship("ModelRecord", back_populates="experiments")
-    epochs = relationship("ExperimentEpoch", back_populates="experiment")
+    epochs = relationship(
+        "ExperimentEpoch",
+        back_populates="experiment",
+        order_by="ExperimentEpoch.epoch_number",
+        lazy="selectin",
+    )
 
 
-class ExperimentEpoch(UUIDMixin, Base):
+class ExperimentEpoch(TimestampMixin, Base):
     __tablename__ = "experiment_epochs"
 
     experiment_id = Column(UUID(as_uuid=True), ForeignKey("experiments.id"), nullable=False)
-    epoch = Column(Integer, nullable=False)
-    metrics = Column(JSON, nullable=False, default=dict)
-    timestamp = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    epoch_number = Column(Integer, nullable=False)
+    train_loss = Column(Float, nullable=True)
+    val_loss = Column(Float, nullable=True)
+    accuracy = Column(Float, nullable=True)
+    val_accuracy = Column(Float, nullable=True)
+    metrics = Column(JSON, nullable=True, default=dict)
 
-    # Relationships
     experiment = relationship("Experiment", back_populates="epochs")

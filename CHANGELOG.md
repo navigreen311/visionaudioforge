@@ -3,17 +3,15 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Model Registry service (`ModelRegistryService`) with full lifecycle management
-- API routes: register, list, get, update status, compare, rollback models
-- Model lifecycle transitions: registered -> staging -> production -> archived
-- Side-by-side model metric comparison endpoint
-- Model rollback with automatic production demotion
-- Pydantic schemas for registry API (ModelCreate, ModelRead, StatusUpdate, CompareRequest, RollbackRequest)
-- Frontend Train page with Models / Experiments / Datasets tabs
-- Models tab: sortable table, status badges, register modal, detail panel, compare view
-- React Query integration for model data fetching and mutations
-- Frontend API functions: listModels, registerModel, updateModelStatus, compareModels, rollbackModel
-- 10 unit/integration tests for model registry service and API endpoints
+- Experiment Tracker service (`ExperimentService`) with full CRUD, epoch logging, best-checkpoint selection, and multi-experiment comparison
+- Transfer Learning service (`TransferLearningService`) with real PyTorch training loop supporting ResNet-18/50, layer freezing, gradient clipping, and early stopping
+- Celery task (`run_finetune_task`) for background fine-tuning execution
+- API routes for experiments: list, create, get, log epoch, best checkpoint, compare
+- API route for transfer learning: start fine-tune job
+- Frontend Train page with experiment list table, training curves chart, comparison overlay, and Start Training modal
+- Updated Experiment/ExperimentEpoch models with relationships, best_epoch, error_message, accuracy fields
+- Unit and integration tests for experiment tracker (`test_experiment_tracker.py`)
+- Documentation (`docs/experiment-tracker.md`)
 
 ## [0.1.0] - 2026-03-20
 
