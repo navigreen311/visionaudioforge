@@ -3,11 +3,13 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Audio Transform Studio (M4) with full transform chain pipeline
-- AudioTransformService: denoise (spectral gating), remove silence, pitch shift, time stretch, loudness normalization, EQ presets (flat/voice/music/podcast), speech enhance chain
-- POST /api/transform/audio endpoint accepting file upload + JSON operations list
-- Transform page with waveform visualization, preset buttons, custom chain builder, before/after comparison, audio playback, and download
-- Comprehensive test suite for all transform operations and API endpoint
+- Video Transform Studio (M5) with full service, API, frontend, and tests
+- `VideoTransformService` with background removal (threshold, grabcut, rembg), super-resolution (2x/4x), style transfer (sketch, edges, cartoon, oil painting), auto-crop, thumbnail generation, frame stabilisation, and scene detection
+- Five REST endpoints under `/api/transform/video/*` for background-remove, super-resolution, style, auto-crop, and thumbnail
+- Interactive Transform page with Video/Image tab, mode selector, upload zone, and per-mode options
+- `BeforeAfterSlider` component for drag-to-compare before/after image results
+- Comprehensive test suite (`test_video_transform.py`) covering all service methods and API endpoints
+- Documentation at `docs/video-transform.md`
 
 ## [0.1.0] - 2026-03-20
 

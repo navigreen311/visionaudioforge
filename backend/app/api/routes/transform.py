@@ -1,92 +1,146 @@
-"""Transform API — audio (and later video) transform endpoints."""
+"""Video / Vision Transform API routes.
+
+All endpoints accept uploaded images (PNG / JPEG) and return base64-encoded
+PNG results along with metadata.
+"""
 
 from __future__ import annotations
 
 import base64
 import io
-import json
 import time
 
+import cv2
 import numpy as np
-import soundfile as sf
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, UploadFile
 from starlette.responses import JSONResponse
 
-from app.services.transform import AudioTransformService
+from app.services.transform.video_transform import VideoTransformService
 
 router = APIRouter(prefix="/api/transform", tags=["transform"])
 
-_svc = AudioTransformService()
+_svc = VideoTransformService()
 
 
-@router.post("/audio")
-async def transform_audio(
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+async def _read_image(upload: UploadFile) -> np.ndarray:
+    """Decode an uploaded file into a BGR numpy array."""
+    data = await upload.read()
+    arr = np.frombuffer(data, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("Could not decode image")
+    return img
+
+
+def _encode_png(image: np.ndarray) -> str:
+    """Encode a numpy image to a base64 PNG string."""
+    _, buf = cv2.imencode(".png", image)
+    return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+
+# ------------------------------------------------------------------
+# POST /api/transform/video/background-remove
+# ------------------------------------------------------------------
+
+@router.post("/video/background-remove")
+async def background_remove(
     file: UploadFile = File(...),
-    operations: str = Form("[]"),
+    method: str = Form("threshold"),
 ):
-    """Apply a chain of audio transforms.
+    start = time.perf_counter()
+    image = await _read_image(file)
+    result = _svc.remove_background(image, method=method)
+    elapsed = (time.perf_counter() - start) * 1000
+    return {
+        "image": _encode_png(result),
+        "method": method,
+        "processing_time_ms": round(elapsed, 2),
+    }
 
-    *operations* is a JSON string — either:
-    - a list of steps: ``[{"op": "denoise"}, {"op": "pitch", "params": {"semitones": 2}}]``
-    - a preset object: ``{"preset": "podcast"}``
-    """
-    t0 = time.perf_counter()
 
-    # --- read & decode audio ---
-    try:
-        raw = await file.read()
-        buf = io.BytesIO(raw)
-        audio, sr = sf.read(buf, dtype="float32")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Cannot decode audio file: {exc}")
+# ------------------------------------------------------------------
+# POST /api/transform/video/super-resolution
+# ------------------------------------------------------------------
 
-    # Ensure mono
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=1)
+@router.post("/video/super-resolution")
+async def super_resolution(
+    file: UploadFile = File(...),
+    scale: int = Form(2),
+):
+    start = time.perf_counter()
+    image = await _read_image(file)
+    h, w = image.shape[:2]
+    result = _svc.super_resolution(image, scale=scale)
+    rh, rw = result.shape[:2]
+    elapsed = (time.perf_counter() - start) * 1000
+    return {
+        "image": _encode_png(result),
+        "original_size": [w, h],
+        "output_size": [rw, rh],
+        "scale": scale,
+        "processing_time_ms": round(elapsed, 2),
+    }
 
-    original_duration = len(audio) / sr
 
-    # --- parse operations ---
-    try:
-        ops = json.loads(operations)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid JSON in operations: {exc}")
+# ------------------------------------------------------------------
+# POST /api/transform/video/style
+# ------------------------------------------------------------------
 
-    # Preset shorthand
-    if isinstance(ops, dict) and "preset" in ops:
-        preset = ops["preset"]
-        if preset == "podcast":
-            ops = [{"op": "enhance"}]
-        else:
-            raise HTTPException(status_code=422, detail=f"Unknown preset: {preset}")
+@router.post("/video/style")
+async def style_transfer(
+    file: UploadFile = File(...),
+    style: str = Form("sketch"),
+):
+    start = time.perf_counter()
+    image = await _read_image(file)
+    result = _svc.style_transfer(image, style=style)
+    elapsed = (time.perf_counter() - start) * 1000
+    return {
+        "image": _encode_png(result),
+        "style": style,
+        "processing_time_ms": round(elapsed, 2),
+    }
 
-    if not isinstance(ops, list):
-        raise HTTPException(status_code=422, detail="operations must be a JSON list or preset object")
 
-    # --- apply chain ---
-    try:
-        result_audio, applied = _svc.apply_chain(audio, sr, ops)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Transform error: {exc}")
+# ------------------------------------------------------------------
+# POST /api/transform/video/auto-crop
+# ------------------------------------------------------------------
 
-    output_duration = len(result_audio) / sr
+@router.post("/video/auto-crop")
+async def auto_crop(
+    file: UploadFile = File(...),
+    aspect: str = Form("16:9"),
+):
+    image = await _read_image(file)
+    h, w = image.shape[:2]
+    result = _svc.auto_crop(image, target_aspect=aspect)
+    rh, rw = result.shape[:2]
+    return {
+        "image": _encode_png(result),
+        "original_size": [w, h],
+        "cropped_size": [rw, rh],
+    }
 
-    # --- encode result as WAV base64 ---
-    out_buf = io.BytesIO()
-    sf.write(out_buf, result_audio, sr, format="WAV", subtype="FLOAT")
-    wav_b64 = base64.b64encode(out_buf.getvalue()).decode()
 
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+# ------------------------------------------------------------------
+# POST /api/transform/video/thumbnail
+# ------------------------------------------------------------------
 
-    return JSONResponse(
-        content={
-            "audio": wav_b64,
-            "format": "wav",
-            "original_duration_s": round(original_duration, 4),
-            "output_duration_s": round(output_duration, 4),
-            "operations_applied": applied,
-            "processing_time_ms": round(elapsed_ms, 2),
-        }
-    )
+@router.post("/video/thumbnail")
+async def thumbnail(
+    files: list[UploadFile] = File(...),
+    method: str = Form("middle"),
+):
+    frames: list[np.ndarray] = []
+    for f in files:
+        frames.append(await _read_image(f))
+
+    thumb, idx = _svc.generate_thumbnail(frames, method=method)
+    return {
+        "thumbnail": _encode_png(thumb),
+        "frame_index": idx,
+    }
