@@ -323,3 +323,157 @@ export async function escalateAlert(
   });
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Command Center API
+// ---------------------------------------------------------------------------
+
+export type StreamSourceType = "camera" | "rtsp" | "screen";
+export type StreamStatus = "online" | "offline" | "degraded";
+export type IncidentSeverity = "critical" | "high" | "medium" | "low";
+export type IncidentStatus = "open" | "assigned" | "escalated" | "resolved";
+export type GridLayout = "2x2" | "3x3" | "4x4" | "1+3" | "1+5";
+
+export interface Stream {
+  id: string;
+  name: string;
+  source_type: StreamSourceType;
+  url?: string;
+  status: StreamStatus;
+  fps: number;
+  position: number;
+  is_primary: boolean;
+  created_at: string;
+}
+
+export interface Incident {
+  id: string;
+  title: string;
+  description: string;
+  severity: IncidentSeverity;
+  status: IncidentStatus;
+  assigned_to?: string;
+  assigned_operator_name?: string;
+  stream_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Shift {
+  id: string;
+  operator_id: string;
+  operator_name: string;
+  zone: string;
+  started_at: string;
+  ended_at?: string;
+  handoff_notes?: string;
+}
+
+export interface CockpitOverview {
+  system_status: "green" | "yellow" | "red";
+  active_streams: number;
+  open_incidents: number;
+  active_operators: number;
+  current_layout: GridLayout;
+}
+
+export interface KPIs {
+  avg_response_time_seconds: number;
+  response_time_trend: number;
+  resolution_rate_pct: number;
+  resolution_rate_trend: number;
+  false_alarm_rate_pct: number;
+  false_alarm_trend: number;
+  incidents_today: number;
+  incidents_today_trend: number;
+}
+
+export interface TimelineEvent {
+  id: string;
+  type: "alert" | "incident" | "stream" | "operator" | "system";
+  description: string;
+  timestamp: string;
+}
+
+export interface AddStreamPayload {
+  name: string;
+  source_type: StreamSourceType;
+  url?: string;
+  position?: number;
+}
+
+export async function listStreams(): Promise<Stream[]> {
+  const { data } = await api.get("/api/command-center/streams");
+  return data;
+}
+
+export async function addStream(payload: AddStreamPayload): Promise<Stream> {
+  const { data } = await api.post("/api/command-center/streams", payload);
+  return data;
+}
+
+export async function removeStream(streamId: string): Promise<void> {
+  await api.delete(`/api/command-center/streams/${streamId}`);
+}
+
+export async function getStreamHealth(streamId: string): Promise<{ status: StreamStatus; fps: number }> {
+  const { data } = await api.get(`/api/command-center/streams/${streamId}/health`);
+  return data;
+}
+
+export async function getLayout(): Promise<{ layout: GridLayout }> {
+  const { data } = await api.get("/api/command-center/layout");
+  return data;
+}
+
+export async function setLayout(layout: GridLayout): Promise<{ layout: GridLayout }> {
+  const { data } = await api.put("/api/command-center/layout", { layout });
+  return data;
+}
+
+export async function createShift(zone: string): Promise<Shift> {
+  const { data } = await api.post("/api/command-center/shifts", { zone });
+  return data;
+}
+
+export async function endShift(shiftId: string, handoffNotes?: string): Promise<Shift> {
+  const { data } = await api.put(`/api/command-center/shifts/${shiftId}/end`, {
+    handoff_notes: handoffNotes,
+  });
+  return data;
+}
+
+export async function getIncidentQueue(): Promise<Incident[]> {
+  const { data } = await api.get("/api/command-center/incidents");
+  return data;
+}
+
+export async function assignIncident(incidentId: string): Promise<Incident> {
+  const { data } = await api.post(`/api/command-center/incidents/${incidentId}/assign`);
+  return data;
+}
+
+export async function escalateIncident(incidentId: string): Promise<Incident> {
+  const { data } = await api.post(`/api/command-center/incidents/${incidentId}/escalate`);
+  return data;
+}
+
+export async function resolveIncident(incidentId: string): Promise<Incident> {
+  const { data } = await api.post(`/api/command-center/incidents/${incidentId}/resolve`);
+  return data;
+}
+
+export async function getCockpitOverview(): Promise<CockpitOverview> {
+  const { data } = await api.get("/api/command-center/overview");
+  return data;
+}
+
+export async function getKPIs(): Promise<KPIs> {
+  const { data } = await api.get("/api/command-center/kpis");
+  return data;
+}
+
+export async function getTimelineFeed(): Promise<TimelineEvent[]> {
+  const { data } = await api.get("/api/command-center/timeline");
+  return data;
+}
