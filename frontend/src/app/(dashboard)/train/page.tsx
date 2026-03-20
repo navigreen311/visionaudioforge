@@ -1,586 +1,479 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import api from "@/lib/api";
+import { useState, useCallback, useRef, useEffect } from "react";
+import axios from "axios";
 
-// ---------- Types ----------
-
-interface EpochData {
-  epoch_number: number;
-  train_loss: number | null;
-  val_loss: number | null;
-  accuracy: number | null;
-  val_accuracy: number | null;
-}
-
-interface Experiment {
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+interface DatasetItem {
   id: string;
   name: string;
-  status: string;
-  config: Record<string, unknown>;
-  workspace_id: string;
-  model_id: string | null;
-  best_epoch: number | null;
-  error_message: string | null;
-  epochs: EpochData[];
+  modality: string;
+  sample_count: number;
+  size_bytes: number;
+  version: number;
+  stats: DatasetStats | null;
+  created_at: string;
 }
 
-// ---------- Status Badge ----------
+interface DatasetStats {
+  total_samples: number;
+  modality_breakdown: Record<string, number>;
+  total_size_bytes: number;
+  label_distribution: Record<string, number>;
+}
 
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    created: "bg-gray-100 text-gray-700",
-    running: "bg-blue-100 text-blue-700",
-    completed: "bg-green-100 text-green-700",
-    failed: "bg-red-100 text-red-700",
-  };
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const MODALITY_COLORS: Record<string, string> = {
+  image: "bg-blue-100 text-blue-800",
+  video: "bg-purple-100 text-purple-800",
+  audio: "bg-green-100 text-green-800",
+  multimodal: "bg-orange-100 text-orange-800",
+};
+
+function humanSize(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** i).toFixed(1)} ${units[i]}`;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function ModalityBadge({ modality }: { modality: string }) {
+  const cls = MODALITY_COLORS[modality] || "bg-gray-100 text-gray-800";
   return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || "bg-gray-100 text-gray-600"}`}
-    >
-      {status}
+    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${cls}`}>
+      {modality}
     </span>
   );
 }
 
-// ---------- Simple SVG Line Chart ----------
-
-interface ChartLine {
-  label: string;
-  color: string;
-  data: { x: number; y: number }[];
-}
-
-function LineChart({
-  lines,
-  width = 560,
-  height = 280,
-}: {
-  lines: ChartLine[];
-  width?: number;
-  height?: number;
-}) {
-  const padding = { top: 20, right: 80, bottom: 40, left: 60 };
-  const chartW = width - padding.left - padding.right;
-  const chartH = height - padding.top - padding.bottom;
-
-  const allPoints = lines.flatMap((l) => l.data);
-  if (allPoints.length === 0) return <div className="text-gray-400 text-sm">No data</div>;
-
-  const xMin = Math.min(...allPoints.map((p) => p.x));
-  const xMax = Math.max(...allPoints.map((p) => p.x));
-  const yMin = Math.min(...allPoints.map((p) => p.y));
-  const yMax = Math.max(...allPoints.map((p) => p.y));
-  const yRange = yMax - yMin || 1;
-  const xRange = xMax - xMin || 1;
-
-  const toX = (v: number) => padding.left + ((v - xMin) / xRange) * chartW;
-  const toY = (v: number) => padding.top + chartH - ((v - yMin) / yRange) * chartH;
-
-  return (
-    <svg width={width} height={height} className="bg-white rounded border border-gray-200">
-      {/* Y axis labels */}
-      {[0, 0.25, 0.5, 0.75, 1].map((frac) => {
-        const val = yMin + frac * yRange;
-        const y = toY(val);
-        return (
-          <g key={frac}>
-            <line x1={padding.left} y1={y} x2={width - padding.right} y2={y} stroke="#e5e7eb" />
-            <text x={padding.left - 8} y={y + 4} textAnchor="end" className="text-[10px] fill-gray-500">
-              {val.toFixed(3)}
-            </text>
-          </g>
-        );
-      })}
-      {/* X axis label */}
-      <text x={padding.left + chartW / 2} y={height - 6} textAnchor="middle" className="text-[11px] fill-gray-500">
-        Epoch
-      </text>
-      {/* Lines */}
-      {lines.map((line) => {
-        if (line.data.length < 2) return null;
-        const d = line.data.map((p, i) => `${i === 0 ? "M" : "L"}${toX(p.x)},${toY(p.y)}`).join(" ");
-        return <path key={line.label} d={d} fill="none" stroke={line.color} strokeWidth={2} />;
-      })}
-      {/* Legend */}
-      {lines.map((line, i) => (
-        <g key={line.label}>
-          <line
-            x1={width - padding.right + 8}
-            y1={padding.top + i * 18 + 4}
-            x2={width - padding.right + 22}
-            y2={padding.top + i * 18 + 4}
-            stroke={line.color}
-            strokeWidth={2}
-          />
-          <text
-            x={width - padding.right + 26}
-            y={padding.top + i * 18 + 8}
-            className="text-[10px] fill-gray-700"
-          >
-            {line.label}
-          </text>
-        </g>
-      ))}
-    </svg>
-  );
-}
-
-// ---------- Training Curves ----------
-
-function TrainingCurves({ experiment }: { experiment: Experiment }) {
-  const lines: ChartLine[] = useMemo(() => {
-    const epochs = experiment.epochs || [];
-    return [
-      {
-        label: "loss",
-        color: "#ef4444",
-        data: epochs.filter((e) => e.train_loss != null).map((e) => ({ x: e.epoch_number, y: e.train_loss! })),
-      },
-      {
-        label: "val_loss",
-        color: "#3b82f6",
-        data: epochs.filter((e) => e.val_loss != null).map((e) => ({ x: e.epoch_number, y: e.val_loss! })),
-      },
-      {
-        label: "accuracy",
-        color: "#22c55e",
-        data: epochs.filter((e) => e.accuracy != null).map((e) => ({ x: e.epoch_number, y: e.accuracy! })),
-      },
-    ];
-  }, [experiment]);
-
-  return <LineChart lines={lines} />;
-}
-
-// ---------- Compare Chart ----------
-
-function CompareChart({ experiments }: { experiments: Experiment[] }) {
-  const colors = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6"];
-  const lines: ChartLine[] = experiments.flatMap((exp, i) => [
-    {
-      label: `${exp.name} loss`,
-      color: colors[i % colors.length],
-      data: (exp.epochs || []).filter((e) => e.val_loss != null).map((e) => ({ x: e.epoch_number, y: e.val_loss! })),
-    },
-  ]);
-  return <LineChart lines={lines} width={700} height={320} />;
-}
-
-// ---------- Start Training Modal ----------
-
-function StartTrainingModal({
+function CreateDatasetModal({
+  open,
   onClose,
-  onSubmit,
+  onCreated,
+  workspaceId,
 }: {
+  open: boolean;
   onClose: () => void;
-  onSubmit: (data: Record<string, unknown>) => void;
+  onCreated: () => void;
+  workspaceId: string;
 }) {
-  const [form, setForm] = useState({
-    experiment_name: "finetune-experiment",
-    backbone: "resnet18",
-    num_epochs: 10,
-    learning_rate: 0.001,
-    batch_size: 32,
-    freeze_layers: true,
-    gradient_clip_value: "",
-    early_stopping_patience: "",
-  });
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSubmit({
-      experiment_name: form.experiment_name,
-      backbone: form.backbone,
-      num_epochs: form.num_epochs,
-      learning_rate: form.learning_rate,
-      batch_size: form.batch_size,
-      freeze_layers: form.freeze_layers,
-      gradient_clip_value: form.gradient_clip_value ? parseFloat(form.gradient_clip_value) : null,
-      early_stopping_patience: form.early_stopping_patience ? parseInt(form.early_stopping_patience) : null,
-    });
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
-        <h3 className="text-lg font-semibold mb-4">Start Training</h3>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Experiment Name</label>
-            <input
-              type="text"
-              value={form.experiment_name}
-              onChange={(e) => setForm({ ...form, experiment_name: e.target.value })}
-              className="w-full border rounded px-3 py-1.5 text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Backbone</label>
-            <select
-              value={form.backbone}
-              onChange={(e) => setForm({ ...form, backbone: e.target.value })}
-              className="w-full border rounded px-3 py-1.5 text-sm"
-            >
-              <option value="resnet18">ResNet-18</option>
-              <option value="resnet50">ResNet-50</option>
-              <option value="clip">CLIP</option>
-            </select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Epochs</label>
-              <input
-                type="number"
-                value={form.num_epochs}
-                onChange={(e) => setForm({ ...form, num_epochs: parseInt(e.target.value) || 1 })}
-                className="w-full border rounded px-3 py-1.5 text-sm"
-                min={1}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Learning Rate</label>
-              <input
-                type="number"
-                step="0.0001"
-                value={form.learning_rate}
-                onChange={(e) => setForm({ ...form, learning_rate: parseFloat(e.target.value) || 0.001 })}
-                className="w-full border rounded px-3 py-1.5 text-sm"
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Batch Size</label>
-              <input
-                type="number"
-                value={form.batch_size}
-                onChange={(e) => setForm({ ...form, batch_size: parseInt(e.target.value) || 1 })}
-                className="w-full border rounded px-3 py-1.5 text-sm"
-                min={1}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Gradient Clip</label>
-              <input
-                type="text"
-                placeholder="e.g. 1.0"
-                value={form.gradient_clip_value}
-                onChange={(e) => setForm({ ...form, gradient_clip_value: e.target.value })}
-                className="w-full border rounded px-3 py-1.5 text-sm"
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Early Stop Patience</label>
-              <input
-                type="text"
-                placeholder="e.g. 5"
-                value={form.early_stopping_patience}
-                onChange={(e) => setForm({ ...form, early_stopping_patience: e.target.value })}
-                className="w-full border rounded px-3 py-1.5 text-sm"
-              />
-            </div>
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={form.freeze_layers}
-                  onChange={(e) => setForm({ ...form, freeze_layers: e.target.checked })}
-                />
-                Freeze Layers
-              </label>
-            </div>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-            >
-              Start
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-// ---------- Main Page ----------
-
-export default function TrainPage() {
-  const [tab, setTab] = useState<"experiments" | "compare">("experiments");
-  const [experiments, setExperiments] = useState<Experiment[]>([]);
-  const [selected, setSelected] = useState<Experiment | null>(null);
-  const [compareIds, setCompareIds] = useState<Set<string>>(new Set());
-  const [compareData, setCompareData] = useState<Experiment[] | null>(null);
-  const [showModal, setShowModal] = useState(false);
+  const [name, setName] = useState("");
+  const [modality, setModality] = useState("image");
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // For demo purposes, use a fixed workspace_id
-  const workspaceId = "00000000-0000-0000-0000-000000000001";
+  if (!open) return null;
 
-  const fetchExperiments = async () => {
+  const handleCreate = async () => {
     setLoading(true);
-    setError(null);
     try {
-      const res = await api.get(`/api/experiments?workspace_id=${workspaceId}`);
-      setExperiments(res.data.items || []);
-    } catch (err: unknown) {
-      setError("Failed to load experiments. Backend may be unavailable.");
+      await axios.post("/api/datasets", { name, modality, workspace_id: workspaceId });
+      onCreated();
+      onClose();
+      setName("");
+    } catch (e) {
+      console.error("Create failed", e);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchExperiments();
-  }, []);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+        <h3 className="text-lg font-semibold mb-4">Create Dataset</h3>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+        <input
+          className="w-full border rounded-lg px-3 py-2 mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="my-dataset"
+        />
+        <label className="block text-sm font-medium text-gray-700 mb-1">Modality</label>
+        <div className="flex gap-2 mb-6">
+          {["image", "video", "audio", "multimodal"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setModality(m)}
+              className={`px-3 py-1.5 rounded-lg text-sm font-medium border transition ${
+                modality === m ? "bg-blue-600 text-white border-blue-600" : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">
+            Cancel
+          </button>
+          <button
+            onClick={handleCreate}
+            disabled={!name || loading}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? "Creating..." : "Create"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  const handleSelectExperiment = async (exp: Experiment) => {
+// ---------------------------------------------------------------------------
+// Upload zone
+// ---------------------------------------------------------------------------
+function UploadZone({ datasetId, onDone }: { datasetId: string; onDone: () => void }) {
+  const [dragging, setDragging] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const upload = async (fileList: FileList) => {
+    const formData = new FormData();
+    Array.from(fileList).forEach((f) => formData.append("files", f));
+    setProgress(0);
     try {
-      const res = await api.get(`/api/experiments/${exp.id}`);
-      setSelected(res.data);
-    } catch {
-      setSelected(exp);
+      await axios.post(`/api/datasets/${datasetId}/upload`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        onUploadProgress: (e) => {
+          if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
+        },
+      });
+      onDone();
+    } catch (e) {
+      console.error("Upload failed", e);
+    } finally {
+      setProgress(null);
     }
   };
 
-  const toggleCompare = (id: string) => {
-    setCompareIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      if (e.dataTransfer.files.length) upload(e.dataTransfer.files);
+    },
+    [datasetId],
+  );
 
-  const handleCompare = async () => {
-    if (compareIds.size < 2) return;
-    try {
-      const res = await api.post("/api/experiments/compare", {
-        experiment_ids: Array.from(compareIds),
-      });
-      setCompareData(res.data);
-      setTab("compare");
-    } catch {
-      setError("Failed to compare experiments.");
-    }
-  };
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={handleDrop}
+      onClick={() => inputRef.current?.click()}
+      className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition ${
+        dragging ? "border-blue-500 bg-blue-50" : "border-gray-300 hover:border-gray-400"
+      }`}
+    >
+      <input ref={inputRef} type="file" multiple className="hidden" onChange={(e) => e.target.files && upload(e.target.files)} />
+      <p className="text-gray-500 text-sm">
+        {progress !== null ? (
+          <span className="font-medium text-blue-600">Uploading... {progress}%</span>
+        ) : (
+          "Drag & drop files here, or click to browse"
+        )}
+      </p>
+      {progress !== null && (
+        <div className="mt-3 w-full bg-gray-200 rounded-full h-2">
+          <div className="bg-blue-600 h-2 rounded-full transition-all" style={{ width: `${progress}%` }} />
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const handleStartTraining = async (data: Record<string, unknown>) => {
+// ---------------------------------------------------------------------------
+// Stats panel (simple pie via CSS conic-gradient)
+// ---------------------------------------------------------------------------
+function StatsPanel({ stats }: { stats: DatasetStats | null }) {
+  if (!stats) return <p className="text-sm text-gray-400">No stats computed yet.</p>;
+
+  const labels = Object.entries(stats.label_distribution);
+  const total = labels.reduce((s, [, v]) => s + v, 0);
+
+  // Build conic-gradient segments
+  const colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444", "#6366f1", "#ec4899"];
+  let cumPct = 0;
+  const segments = labels.map(([, count], i) => {
+    const pct = total ? (count / total) * 100 : 0;
+    const seg = `${colors[i % colors.length]} ${cumPct}% ${cumPct + pct}%`;
+    cumPct += pct;
+    return seg;
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-6">
+        {total > 0 && (
+          <div
+            className="w-24 h-24 rounded-full flex-shrink-0"
+            style={{ background: `conic-gradient(${segments.join(", ")})` }}
+          />
+        )}
+        <div className="text-sm space-y-1">
+          <p><span className="font-medium">{stats.total_samples}</span> samples</p>
+          <p><span className="font-medium">{humanSize(stats.total_size_bytes)}</span> total</p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {labels.map(([label, count], i) => (
+          <span key={label} className="flex items-center gap-1 text-xs">
+            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: colors[i % colors.length] }} />
+            {label}: {count}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Split controls
+// ---------------------------------------------------------------------------
+function SplitControls({ datasetId, onDone }: { datasetId: string; onDone: () => void }) {
+  const [train, setTrain] = useState(70);
+  const [val, setVal] = useState(15);
+  const test = 100 - train - val;
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ train: number; val: number; test: number } | null>(null);
+
+  const handleSplit = async () => {
+    setLoading(true);
     try {
-      await api.post("/api/transfer/start", {
-        ...data,
-        workspace_id: workspaceId,
-        dataset_path: "",
+      const resp = await axios.post(`/api/datasets/${datasetId}/split`, {
+        train: train / 100,
+        val: val / 100,
+        test: test / 100,
+        stratified: true,
       });
-      setShowModal(false);
-      fetchExperiments();
-    } catch {
-      setError("Failed to start training.");
+      setResult(resp.data);
+      onDone();
+    } catch (e) {
+      console.error("Split failed", e);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Training & Experiments</h1>
-        <button
-          onClick={() => setShowModal(true)}
-          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
-        >
-          Start Training
-        </button>
+    <div className="space-y-3">
+      <div className="space-y-2">
+        <label className="flex justify-between text-sm"><span>Train</span><span>{train}%</span></label>
+        <input type="range" min={0} max={100} value={train} onChange={(e) => { const v = +e.target.value; setTrain(v); if (v + val > 100) setVal(100 - v); }} className="w-full" />
+        <label className="flex justify-between text-sm"><span>Validation</span><span>{val}%</span></label>
+        <input type="range" min={0} max={100 - train} value={val} onChange={(e) => setVal(+e.target.value)} className="w-full" />
+        <label className="flex justify-between text-sm text-gray-500"><span>Test</span><span>{test}%</span></label>
       </div>
-
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b">
-        <button
-          onClick={() => { setTab("experiments"); setCompareData(null); }}
-          className={`px-4 py-2 text-sm font-medium border-b-2 ${tab === "experiments" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-        >
-          Experiments
-        </button>
-        <button
-          onClick={() => setTab("compare")}
-          className={`px-4 py-2 text-sm font-medium border-b-2 ${tab === "compare" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-        >
-          Compare
-        </button>
-      </div>
-
-      {error && (
-        <div className="mb-4 p-3 bg-red-50 text-red-700 text-sm rounded-lg border border-red-200">
-          {error}
-        </div>
+      <button onClick={handleSplit} disabled={loading || test < 0} className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50">
+        {loading ? "Splitting..." : "Split Dataset"}
+      </button>
+      {result && (
+        <p className="text-xs text-green-600">
+          Split complete: {result.train} train / {result.val} val / {result.test} test
+        </p>
       )}
+    </div>
+  );
+}
 
-      {/* Experiments Tab */}
-      {tab === "experiments" && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Left: experiment list */}
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-gray-700">Experiment List</h2>
-              {compareIds.size >= 2 && (
-                <button
-                  onClick={handleCompare}
-                  className="px-3 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700"
-                >
-                  Compare ({compareIds.size})
-                </button>
-              )}
-            </div>
+// ---------------------------------------------------------------------------
+// Dataset detail view
+// ---------------------------------------------------------------------------
+function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () => void }) {
+  const [stats, setStats] = useState<DatasetStats | null>(dataset.stats);
 
-            {loading ? (
-              <div className="text-gray-400 text-sm py-8 text-center">Loading...</div>
-            ) : experiments.length === 0 ? (
-              <div className="text-gray-400 text-sm py-8 text-center">
-                No experiments yet. Click &quot;Start Training&quot; to begin.
-              </div>
-            ) : (
-              <div className="border rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-600">
-                    <tr>
-                      <th className="text-left px-3 py-2 w-8"></th>
-                      <th className="text-left px-3 py-2">Name</th>
-                      <th className="text-left px-3 py-2">Status</th>
-                      <th className="text-left px-3 py-2">Best</th>
-                      <th className="text-left px-3 py-2">Epochs</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {experiments.map((exp) => (
-                      <tr
-                        key={exp.id}
-                        className={`border-t hover:bg-gray-50 cursor-pointer ${selected?.id === exp.id ? "bg-blue-50" : ""}`}
-                        onClick={() => handleSelectExperiment(exp)}
-                      >
-                        <td className="px-3 py-2">
-                          <input
-                            type="checkbox"
-                            checked={compareIds.has(exp.id)}
-                            onClick={(e) => e.stopPropagation()}
-                            onChange={() => toggleCompare(exp.id)}
-                          />
-                        </td>
-                        <td className="px-3 py-2 font-medium text-gray-900">{exp.name}</td>
-                        <td className="px-3 py-2">
-                          <StatusBadge status={exp.status} />
-                        </td>
-                        <td className="px-3 py-2 text-gray-600">
-                          {exp.best_epoch != null ? `Epoch ${exp.best_epoch}` : "-"}
-                        </td>
-                        <td className="px-3 py-2 text-gray-600">
-                          {exp.epochs?.length || 0}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+  const recomputeStats = async () => {
+    try {
+      const resp = await axios.post(`/api/datasets/${dataset.id}/stats`);
+      setStats(resp.data);
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
-          {/* Right: detail view */}
-          <div>
-            {selected ? (
-              <div className="border rounded-lg p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-gray-900">{selected.name}</h3>
-                  <StatusBadge status={selected.status} />
-                </div>
-                {selected.config && (
-                  <div className="text-xs text-gray-500 mb-3">
-                    Config: {JSON.stringify(selected.config)}
-                  </div>
-                )}
-                {selected.best_epoch != null && (
-                  <div className="text-sm text-green-700 mb-3">
-                    Best epoch: {selected.best_epoch}
-                  </div>
-                )}
-                {selected.error_message && (
-                  <div className="text-sm text-red-600 mb-3">
-                    Error: {selected.error_message}
-                  </div>
-                )}
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Training Curves</h4>
-                <TrainingCurves experiment={selected} />
-              </div>
-            ) : (
-              <div className="text-gray-400 text-sm py-8 text-center border rounded-lg">
-                Select an experiment to view details and training curves.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+  const handleExport = () => {
+    window.open(`/api/datasets/${dataset.id}/export?format=json`, "_blank");
+  };
 
-      {/* Compare Tab */}
-      {tab === "compare" && (
+  return (
+    <div className="space-y-6">
+      <button onClick={onBack} className="text-sm text-blue-600 hover:underline">&larr; Back to datasets</button>
+      <div className="flex items-center justify-between">
         <div>
-          {compareData && compareData.length >= 2 ? (
-            <div>
-              <h2 className="text-sm font-semibold text-gray-700 mb-3">
-                Comparing {compareData.length} Experiments
-              </h2>
-              <div className="border rounded-lg p-4 mb-4">
-                <CompareChart experiments={compareData} />
-              </div>
-              <div className="border rounded-lg overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 text-gray-600">
-                    <tr>
-                      <th className="text-left px-3 py-2">Name</th>
-                      <th className="text-left px-3 py-2">Status</th>
-                      <th className="text-left px-3 py-2">Total Epochs</th>
-                      <th className="text-left px-3 py-2">Best Val Loss</th>
-                      <th className="text-left px-3 py-2">Best Accuracy</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {compareData.map((exp: Record<string, unknown>) => (
-                      <tr key={exp.id as string} className="border-t">
-                        <td className="px-3 py-2 font-medium">{exp.name as string}</td>
-                        <td className="px-3 py-2">
-                          <StatusBadge status={exp.status as string} />
-                        </td>
-                        <td className="px-3 py-2">{exp.total_epochs as number}</td>
-                        <td className="px-3 py-2">
-                          {exp.best_val_loss != null ? (exp.best_val_loss as number).toFixed(4) : "-"}
-                        </td>
-                        <td className="px-3 py-2">
-                          {exp.best_accuracy != null ? (exp.best_accuracy as number).toFixed(4) : "-"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+          <h2 className="text-xl font-semibold">{dataset.name}</h2>
+          <div className="flex items-center gap-2 mt-1">
+            <ModalityBadge modality={dataset.modality} />
+            <span className="text-sm text-gray-500">{dataset.sample_count} samples</span>
+            <span className="text-sm text-gray-500">{humanSize(dataset.size_bytes)}</span>
+          </div>
+        </div>
+        <button onClick={handleExport} className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">Export JSON</button>
+      </div>
+
+      {/* Upload zone */}
+      <section>
+        <h3 className="text-sm font-medium text-gray-700 mb-2">Upload Samples</h3>
+        <UploadZone datasetId={dataset.id} onDone={recomputeStats} />
+      </section>
+
+      {/* Sample preview grid (placeholder thumbnails) */}
+      <section>
+        <h3 className="text-sm font-medium text-gray-700 mb-2">Sample Preview</h3>
+        <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
+          {Array.from({ length: Math.min(dataset.sample_count, 20) }).map((_, i) => (
+            <div key={i} className="aspect-square bg-gray-100 rounded-lg flex items-center justify-center text-xs text-gray-400">
+              {i + 1}
             </div>
+          ))}
+          {dataset.sample_count === 0 && <p className="col-span-full text-sm text-gray-400">No samples yet.</p>}
+        </div>
+      </section>
+
+      {/* Stats */}
+      <section>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-gray-700">Statistics</h3>
+          <button onClick={recomputeStats} className="text-xs text-blue-600 hover:underline">Recompute</button>
+        </div>
+        <StatsPanel stats={stats} />
+      </section>
+
+      {/* Split */}
+      <section>
+        <h3 className="text-sm font-medium text-gray-700 mb-2">Train / Val / Test Split</h3>
+        <SplitControls datasetId={dataset.id} onDone={recomputeStats} />
+      </section>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+export default function TrainPage() {
+  const [tab, setTab] = useState<"train" | "datasets">("datasets");
+  const [datasets, setDatasets] = useState<DatasetItem[]>([]);
+  const [selectedDataset, setSelectedDataset] = useState<DatasetItem | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  // ASSUMPTION: workspace_id comes from context/auth in real app. Placeholder for now.
+  const workspaceId = "00000000-0000-0000-0000-000000000001";
+
+  const fetchDatasets = useCallback(async () => {
+    setLoading(true);
+    try {
+      const resp = await axios.get(`/api/datasets?workspace_id=${workspaceId}`);
+      setDatasets(resp.data.items || []);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId]);
+
+  useEffect(() => {
+    if (tab === "datasets") fetchDatasets();
+  }, [tab]);
+
+  return (
+    <div className="p-6 max-w-6xl mx-auto">
+      {/* Tab bar */}
+      <div className="flex gap-4 border-b mb-6">
+        {(["train", "datasets"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => { setTab(t); setSelectedDataset(null); }}
+            className={`pb-2 px-1 text-sm font-medium border-b-2 transition ${
+              tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {t === "train" ? "Training" : "Datasets"}
+          </button>
+        ))}
+      </div>
+
+      {/* Training tab (original stub) */}
+      {tab === "train" && (
+        <div className="flex items-center justify-center min-h-[40vh]">
+          <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Training</h2>
+            <p className="text-gray-500">Model training and experiment management.</p>
+            <div className="mt-4 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
+              Not Implemented
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Datasets tab */}
+      {tab === "datasets" && !selectedDataset && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">Datasets</h2>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
+            >
+              Create Dataset
+            </button>
+          </div>
+          {loading ? (
+            <p className="text-sm text-gray-400">Loading...</p>
+          ) : datasets.length === 0 ? (
+            <p className="text-sm text-gray-400">No datasets yet. Create one to get started.</p>
           ) : (
-            <div className="text-gray-400 text-sm py-8 text-center">
-              Select 2 or more experiments from the Experiments tab and click Compare.
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+                  <tr>
+                    <th className="text-left px-4 py-3">Name</th>
+                    <th className="text-left px-4 py-3">Modality</th>
+                    <th className="text-right px-4 py-3">Samples</th>
+                    <th className="text-right px-4 py-3">Size</th>
+                    <th className="text-right px-4 py-3">Version</th>
+                    <th className="text-left px-4 py-3">Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {datasets.map((ds) => (
+                    <tr
+                      key={ds.id}
+                      onClick={() => setSelectedDataset(ds)}
+                      className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                    >
+                      <td className="px-4 py-3 font-medium">{ds.name}</td>
+                      <td className="px-4 py-3"><ModalityBadge modality={ds.modality} /></td>
+                      <td className="px-4 py-3 text-right">{ds.sample_count}</td>
+                      <td className="px-4 py-3 text-right">{humanSize(ds.size_bytes)}</td>
+                      <td className="px-4 py-3 text-right">v{ds.version}</td>
+                      <td className="px-4 py-3 text-gray-500">{new Date(ds.created_at).toLocaleDateString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+          <CreateDatasetModal
+            open={showCreate}
+            onClose={() => setShowCreate(false)}
+            onCreated={fetchDatasets}
+            workspaceId={workspaceId}
+          />
         </div>
       )}
 
-      {/* Modal */}
-      {showModal && (
-        <StartTrainingModal onClose={() => setShowModal(false)} onSubmit={handleStartTraining} />
+      {/* Dataset detail */}
+      {tab === "datasets" && selectedDataset && (
+        <DatasetDetail dataset={selectedDataset} onBack={() => { setSelectedDataset(null); fetchDatasets(); }} />
       )}
     </div>
   );

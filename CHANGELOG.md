@@ -3,15 +3,13 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Experiment Tracker service (`ExperimentService`) with full CRUD, epoch logging, best-checkpoint selection, and multi-experiment comparison
-- Transfer Learning service (`TransferLearningService`) with real PyTorch training loop supporting ResNet-18/50, layer freezing, gradient clipping, and early stopping
-- Celery task (`run_finetune_task`) for background fine-tuning execution
-- API routes for experiments: list, create, get, log epoch, best checkpoint, compare
-- API route for transfer learning: start fine-tune job
-- Frontend Train page with experiment list table, training curves chart, comparison overlay, and Start Training modal
-- Updated Experiment/ExperimentEpoch models with relationships, best_epoch, error_message, accuracy fields
-- Unit and integration tests for experiment tracker (`test_experiment_tracker.py`)
-- Documentation (`docs/experiment-tracker.md`)
+- Dataset Manager (M7) with full CRUD, upload, split, stats, and export
+- MinIO storage service (`MinIOStorageService`) for object upload/download/list/delete
+- Dataset service (`DatasetService`) with create, upload_samples, list, get, compute_stats, split, delete, export
+- API routes: POST/GET /api/datasets, POST upload/split/stats, GET export
+- Frontend Datasets tab on Train page with create modal, upload drag-and-drop, stats panel, split controls, export button
+- Pydantic schemas for dataset endpoints (`DatasetCreate`, `DatasetRead`, `SplitRequest`, etc.)
+- Unit and integration tests for dataset manager (9 tests covering service + API layer)
 
 ## [0.1.0] - 2026-03-20
 
