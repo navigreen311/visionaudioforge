@@ -1,0 +1,196 @@
+"""Tests for JWT authentication, RBAC, and auth routes."""
+
+import uuid
+from datetime import timedelta
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    hash_password,
+    verify_password,
+)
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — password hashing
+# ---------------------------------------------------------------------------
+
+
+def test_hash_and_verify_password():
+    """hash_password produces a bcrypt hash; verify_password validates it."""
+    plain = "securepassword123"
+    hashed = hash_password(plain)
+
+    assert hashed != plain
+    assert verify_password(plain, hashed) is True
+    assert verify_password("wrongpassword!", hashed) is False
+
+
+# ---------------------------------------------------------------------------
+# Unit tests — JWT tokens
+# ---------------------------------------------------------------------------
+
+
+def test_create_and_decode_token():
+    """create_access_token round-trips through decode_token."""
+    user_id = str(uuid.uuid4())
+    token = create_access_token({"sub": user_id})
+
+    payload = decode_token(token)
+    assert payload["sub"] == user_id
+    assert payload["type"] == "access"
+
+
+def test_refresh_token_has_correct_type():
+    """create_refresh_token sets type='refresh' in the payload."""
+    token = create_refresh_token({"sub": str(uuid.uuid4())})
+    payload = decode_token(token)
+    assert payload["type"] == "refresh"
+
+
+def test_decode_token_rejects_garbage():
+    """decode_token raises HTTPException 401 on invalid input."""
+    with pytest.raises(HTTPException) as exc_info:
+        decode_token("not-a-valid-jwt")
+    assert exc_info.value.status_code == 401
+
+
+def test_expired_token_is_rejected():
+    """A token with a negative expiry should be rejected."""
+    token = create_access_token(
+        {"sub": str(uuid.uuid4())},
+        expires_delta=timedelta(seconds=-1),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        decode_token(token)
+    assert exc_info.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Integration-style tests — auth routes (mocked DB)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mock_user():
+    """Return a mock User object."""
+    user = MagicMock()
+    user.id = uuid.uuid4()
+    user.email = "test@example.com"
+    user.hashed_password = hash_password("password1234")
+    user.role = "admin"
+    user.workspace_id = uuid.uuid4()
+    user.created_at = "2026-01-01T00:00:00Z"
+    return user
+
+
+@pytest.mark.anyio
+async def test_register_creates_user_and_workspace(client):
+    """POST /api/auth/register should create user+workspace and return tokens."""
+    with patch("app.api.routes.auth.AuthService") as MockSvc:
+        mock_svc = AsyncMock()
+        MockSvc.return_value = mock_svc
+        user_id = uuid.uuid4()
+        ws_id = uuid.uuid4()
+        mock_user_obj = MagicMock()
+        mock_user_obj.id = user_id
+        mock_user_obj.email = "new@example.com"
+        mock_user_obj.role = "admin"
+        mock_user_obj.workspace_id = ws_id
+        mock_user_obj.created_at = "2026-01-01T00:00:00Z"
+
+        mock_svc.register.return_value = {
+            "access_token": "acc_tok",
+            "refresh_token": "ref_tok",
+            "user": mock_user_obj,
+        }
+
+        resp = await client.post(
+            "/api/auth/register",
+            json={
+                "email": "new@example.com",
+                "password": "password1234",
+                "workspace_name": "My Workspace",
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert "access_token" in data
+        assert "refresh_token" in data
+        assert data["user"]["email"] == "new@example.com"
+
+
+@pytest.mark.anyio
+async def test_login_returns_tokens(client):
+    """POST /api/auth/login returns access and refresh tokens."""
+    with patch("app.api.routes.auth.AuthService") as MockSvc:
+        mock_svc = AsyncMock()
+        MockSvc.return_value = mock_svc
+        user_id = uuid.uuid4()
+        ws_id = uuid.uuid4()
+        mock_user_obj = MagicMock()
+        mock_user_obj.id = user_id
+        mock_user_obj.email = "login@example.com"
+        mock_user_obj.role = "viewer"
+        mock_user_obj.workspace_id = ws_id
+        mock_user_obj.created_at = "2026-01-01T00:00:00Z"
+
+        mock_svc.login.return_value = {
+            "access_token": "acc",
+            "refresh_token": "ref",
+            "user": mock_user_obj,
+        }
+
+        resp = await client.post(
+            "/api/auth/login",
+            json={"email": "login@example.com", "password": "password1234"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["access_token"] == "acc"
+        assert data["token_type"] == "bearer"
+
+
+@pytest.mark.anyio
+async def test_invalid_login_returns_401(client):
+    """POST /api/auth/login with bad creds should raise 401 via service."""
+    with patch("app.api.routes.auth.AuthService") as MockSvc:
+        mock_svc = AsyncMock()
+        MockSvc.return_value = mock_svc
+        mock_svc.login.side_effect = HTTPException(
+            status_code=401, detail="Invalid email or password"
+        )
+
+        resp = await client.post(
+            "/api/auth/login",
+            json={"email": "bad@example.com", "password": "wrongpass123"},
+        )
+        assert resp.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_me_requires_auth(client):
+    """GET /api/auth/me without a token returns 403 (HTTPBearer rejects)."""
+    resp = await client.get("/api/auth/me")
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_role_check_blocks_unauthorized():
+    """require_role should raise 403 when the user lacks the needed role."""
+    from app.core.deps import require_role
+
+    checker = require_role("admin")
+
+    mock_user = MagicMock()
+    mock_user.role = "viewer"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await checker(current_user=mock_user)
+    assert exc_info.value.status_code == 403
+    assert "not authorized" in exc_info.value.detail
