@@ -1,10 +1,10 @@
 from sqlalchemy import Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
-class ModelRecord(TimestampMixin, Base):
+class ModelRecord(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "model_registry"
 
     name = Column(String(255), nullable=False)

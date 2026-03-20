@@ -359,7 +359,7 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
 // Main page
 // ---------------------------------------------------------------------------
 export default function TrainPage() {
-  const [tab, setTab] = useState<"train" | "datasets">("datasets");
+  const [tab, setTab] = useState<"models" | "experiments" | "datasets">("models");
   const [datasets, setDatasets] = useState<DatasetItem[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<DatasetItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -384,11 +384,17 @@ export default function TrainPage() {
     if (tab === "datasets") fetchDatasets();
   }, [tab]);
 
+  const TAB_LABELS: Record<string, string> = {
+    models: "Models",
+    experiments: "Experiments",
+    datasets: "Datasets",
+  };
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Tab bar */}
       <div className="flex gap-4 border-b mb-6">
-        {(["train", "datasets"] as const).map((t) => (
+        {(["models", "experiments", "datasets"] as const).map((t) => (
           <button
             key={t}
             onClick={() => { setTab(t); setSelectedDataset(null); }}
@@ -396,17 +402,30 @@ export default function TrainPage() {
               tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            {t === "train" ? "Training" : "Datasets"}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
 
-      {/* Training tab (original stub) */}
-      {tab === "train" && (
+      {/* Models tab */}
+      {tab === "models" && (
         <div className="flex items-center justify-center min-h-[40vh]">
           <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Training</h2>
-            <p className="text-gray-500">Model training and experiment management.</p>
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Models</h2>
+            <p className="text-gray-500">Model registry, versioning, and lifecycle management.</p>
+            <div className="mt-4 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
+              Not Implemented
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Experiments tab */}
+      {tab === "experiments" && (
+        <div className="flex items-center justify-center min-h-[40vh]">
+          <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
+            <h2 className="text-xl font-semibold text-gray-900 mb-2">Experiments</h2>
+            <p className="text-gray-500">Experiment tracking, training curves, and hyperparameter comparison.</p>
             <div className="mt-4 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
               Not Implemented
             </div>

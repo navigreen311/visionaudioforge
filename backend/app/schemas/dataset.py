@@ -31,6 +31,13 @@ class DatasetRead(BaseModel):
         from_attributes = True
 
 
+class DatasetStats(BaseModel):
+    total_samples: int = 0
+    modality_breakdown: dict[str, int] = {}
+    total_size_bytes: int = 0
+    label_distribution: dict[str, int] = {}
+
+
 class SplitRequest(BaseModel):
     train: float = Field(0.7, ge=0, le=1)
     val: float = Field(0.15, ge=0, le=1)

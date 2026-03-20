@@ -1,10 +1,10 @@
 from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
-class Agent(TimestampMixin, Base):
+class Agent(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "agents"
 
     name = Column(String(255), nullable=False)
@@ -14,7 +14,7 @@ class Agent(TimestampMixin, Base):
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
 
 
-class AgentMemory(TimestampMixin, Base):
+class AgentMemory(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "agent_memories"
 
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)

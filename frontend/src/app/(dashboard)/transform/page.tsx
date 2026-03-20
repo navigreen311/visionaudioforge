@@ -6,15 +6,18 @@ import BeforeAfterSlider from "@/components/transform/BeforeAfterSlider";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 type VideoMode = "background-remove" | "super-resolution" | "style" | "auto-crop";
+type AudioMode = "denoise" | "silence-remove" | "pitch-shift" | "time-stretch" | "eq" | "chain";
 
 const BG_METHODS = ["threshold", "grabcut"] as const;
 const STYLES = ["sketch", "edges", "cartoon", "oil_painting"] as const;
 const ASPECTS = ["16:9", "4:3", "1:1", "9:16"] as const;
+const EQ_PRESETS = ["flat", "voice", "music", "podcast"] as const;
 
 export default function TransformPage() {
   // --- shared state ---
-  const [tab, setTab] = useState<"video">("video");
+  const [tab, setTab] = useState<"audio" | "video">("video");
   const [mode, setMode] = useState<VideoMode>("background-remove");
+  const [audioMode, setAudioMode] = useState<AudioMode>("denoise");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -110,6 +113,16 @@ export default function TransformPage() {
       {/* Tab bar */}
       <div className="flex gap-2 border-b border-gray-200">
         <button
+          onClick={() => setTab("audio")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
+            tab === "audio"
+              ? "border-brand-600 text-brand-600"
+              : "border-transparent text-gray-500 hover:text-gray-700"
+          }`}
+        >
+          Audio
+        </button>
+        <button
           onClick={() => setTab("video")}
           className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
             tab === "video"
@@ -121,6 +134,46 @@ export default function TransformPage() {
         </button>
       </div>
 
+      {/* Audio tab content */}
+      {tab === "audio" && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["denoise", "Denoise"],
+                ["silence-remove", "Remove Silence"],
+                ["pitch-shift", "Pitch Shift"],
+                ["time-stretch", "Time Stretch"],
+                ["eq", "Equalizer"],
+                ["chain", "Chain"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setAudioMode(key)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                  audioMode === key
+                    ? "bg-brand-600 text-white"
+                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="bg-gray-50 rounded-lg p-6 text-center">
+            <p className="text-gray-500 text-sm">
+              Audio transform mode: <span className="font-medium">{audioMode}</span>
+            </p>
+            <p className="text-gray-400 text-xs mt-2">
+              Upload an audio file and apply transforms via the API at <code>/api/transform/audio/{audioMode}</code>
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Video tab content */}
+      {tab === "video" && <>
       {/* Mode selector */}
       <div className="flex flex-wrap gap-2">
         {(
@@ -281,6 +334,7 @@ export default function TransformPage() {
           </button>
         </div>
       )}
+      </>}
     </div>
   );
 }

@@ -2,10 +2,10 @@ from sqlalchemy import Column, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
-class Experiment(TimestampMixin, Base):
+class Experiment(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "experiments"
 
     name = Column(String(255), nullable=False)
@@ -24,7 +24,7 @@ class Experiment(TimestampMixin, Base):
     )
 
 
-class ExperimentEpoch(TimestampMixin, Base):
+class ExperimentEpoch(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "experiment_epochs"
 
     experiment_id = Column(UUID(as_uuid=True), ForeignKey("experiments.id"), nullable=False)
