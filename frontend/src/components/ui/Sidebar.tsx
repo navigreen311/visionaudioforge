@@ -18,6 +18,7 @@ const navItems = [
   { href: "/alerts", label: "Alerts", icon: "\uD83D\uDD14" },
   { href: "/pipeline", label: "Pipeline", icon: "\u2699\uFE0F" },
   { href: "/investigate", label: "Investigate", icon: "\uD83D\uDD2C" },
+  { href: "/knowledge-graph", label: "Knowledge Graph", icon: "\uD83D\uDD78\uFE0F" },
   { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
