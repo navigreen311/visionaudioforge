@@ -196,184 +196,130 @@ export function downloadAssetUrl(assetId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Audio Analysis API
+// Alerts API
 // ---------------------------------------------------------------------------
 
-export interface WaveformStats {
-  duration: number;
-  sample_rate: number;
-  rms: number;
-  peak: number;
-  samples: number;
-  image?: string;
+export interface AlertRuleCondition {
+  metric: string;
+  operator: ">" | "<" | "==" | "!=" | ">=" | "<=";
+  threshold: number;
+  window_seconds: number;
 }
 
-export interface SpectralResult {
-  image?: string;
-  coefficients?: number[];
+export interface AlertRuleAction {
+  type: "webhook" | "email" | "slack" | "discord" | "sms" | "log";
+  target: string;
 }
 
-export interface AudioAnalysisResult {
-  waveform?: WaveformStats;
-  stft?: SpectralResult;
-  mel?: SpectralResult;
-  mfcc?: SpectralResult & { coefficients?: number[] };
+export interface AlertRule {
+  id: string;
+  name: string;
+  conditions: AlertRuleCondition[];
+  actions: AlertRuleAction[];
+  enabled: boolean;
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export interface AugmentationStep {
-  type: string;
-  [key: string]: unknown;
+export interface AlertRuleCreatePayload {
+  name: string;
+  conditions: AlertRuleCondition[] | Record<string, unknown>;
+  actions: AlertRuleAction[] | Record<string, unknown>[];
+  enabled: boolean;
+  escalation_config?: EscalationConfig;
 }
 
-export interface AugmentationConfig {
-  preset?: string;
-  steps?: AugmentationStep[];
+export interface EscalationLevel {
+  after_minutes: number;
+  action: string;
 }
 
-export interface AugmentationResult {
-  audio_base64: string;
-  mime_type: string;
-  applied: string[];
-  original_duration: number;
-  augmented_duration: number;
+export interface EscalationConfig {
+  levels: EscalationLevel[];
 }
 
-export async function analyzeAudio(
-  file: File,
-  operations: string[],
-): Promise<AudioAnalysisResult> {
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("operations", JSON.stringify(operations));
-  const { data } = await api.post("/api/audio/analyze", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return data;
+export interface DeliveryTestResult {
+  status: string;
+  note?: string;
+  status_code?: number;
+  response_time_ms?: number;
 }
 
-export async function augmentAudio(
-  file: File,
-  config: AugmentationConfig,
-): Promise<AugmentationResult> {
-  const formData = new FormData();
-  formData.append("file", file);
-  const configStr = config.preset || JSON.stringify(config.steps || []);
-  formData.append("config", configStr);
-  const { data } = await api.post("/api/audio/augment", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
-  });
-  return data;
+export interface RuleTestResult {
+  triggered: boolean;
+  matched_conditions: string[];
+  details: string;
 }
 
-// ---------------------------------------------------------------------------
-// Call Intelligence API
-// ---------------------------------------------------------------------------
+const WORKSPACE_ID_PARAM = "00000000-0000-0000-0000-000000000001";
 
-export interface DiarizationSegment {
-  speaker: string;
-  start_s: number;
-  end_s: number;
-  duration_s: number;
-}
-
-export interface SpeakerStats {
-  total_time: number;
-  percentage: number;
-  avg_energy: number;
-}
-
-export interface DiarizationResult {
-  segments: DiarizationSegment[];
-  num_speakers: number;
-  speaker_stats: Record<string, SpeakerStats>;
-}
-
-export interface CallAnalysisResult {
-  transcript: string;
-  speakers: DiarizationSegment[];
-  summary: string;
-  action_items: string[];
-  sentiment: Record<
-    string,
-    {
-      overall: string;
-      scores: { positive: number; negative: number; neutral: number };
-    }
-  >;
-  duration_s: number;
-  talk_ratio: Record<
-    string,
-    { time_s: number; percentage: number; interruptions: number }
-  >;
-}
-
-export interface TranscriptSegment {
-  speaker: string;
-  text: string;
-  start_s: number;
-  end_s: number;
-}
-
-export interface SummaryResult {
-  summary: string;
-  key_points: string[];
-  decisions: string[];
-  action_items: Array<{
-    action: string;
-    assignee: string | null;
-    deadline: string | null;
-    speaker: string;
-  }>;
-}
-
-export interface SentimentResult {
-  sentiment: Record<
-    string,
-    {
-      overall: string;
-      scores: { positive: number; negative: number; neutral: number };
-    }
-  >;
-}
-
-export async function diarizeAudio(
-  file: File,
-  numSpeakers?: number,
-): Promise<DiarizationResult> {
-  const formData = new FormData();
-  formData.append("file", file);
-  if (numSpeakers !== undefined) {
-    formData.append("num_speakers", String(numSpeakers));
+function getWorkspaceId(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("workspace_id") || WORKSPACE_ID_PARAM;
   }
-  const { data } = await api.post("/api/audio/diarize", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
+  return WORKSPACE_ID_PARAM;
+}
+
+export async function listRules(): Promise<AlertRule[]> {
+  const { data } = await api.get("/api/alerts/rules", {
+    params: { workspace_id: getWorkspaceId() },
   });
   return data;
 }
 
-export async function analyzeCall(file: File): Promise<CallAnalysisResult> {
-  const formData = new FormData();
-  formData.append("file", file);
-  const { data } = await api.post("/api/audio/call-analysis", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
+export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
+  const { data } = await api.post("/api/alerts/rules", payload, {
+    params: { workspace_id: getWorkspaceId() },
   });
   return data;
 }
 
-export async function summarizeMeeting(
-  segments: TranscriptSegment[],
-): Promise<SummaryResult> {
-  const { data } = await api.post("/api/audio/summarize", {
-    transcript_segments: segments,
+export async function updateRule(
+  ruleId: string,
+  payload: Partial<AlertRuleCreatePayload>,
+): Promise<AlertRule> {
+  const { data } = await api.put(`/api/alerts/rules/${ruleId}`, payload);
+  return data;
+}
+
+export async function deleteRule(ruleId: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/${ruleId}`);
+}
+
+export async function testRule(
+  ruleId: string,
+  conditions: Record<string, unknown>,
+  sampleMetrics: Record<string, number>,
+): Promise<RuleTestResult> {
+  const { data } = await api.post(`/api/alerts/rules/${ruleId}/test`, {
+    conditions,
+    sample_metrics: sampleMetrics,
   });
   return data;
 }
 
-export async function analyzeSentiment(
-  segments: TranscriptSegment[],
-): Promise<SentimentResult> {
-  const { data } = await api.post("/api/audio/sentiment", {
-    transcript_segments: segments,
+export async function testDeliveryChannel(
+  channel: string,
+  config: Record<string, unknown>,
+): Promise<DeliveryTestResult> {
+  const { data } = await api.post("/api/alerts/delivery/test", { channel, config });
+  return data;
+}
+
+export async function listEscalations(): Promise<unknown[]> {
+  const { data } = await api.get("/api/alerts/escalations", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function escalateAlert(
+  alertId: string,
+  escalationConfig: EscalationConfig,
+): Promise<unknown> {
+  const { data } = await api.post(`/api/alerts/${alertId}/escalate`, {
+    escalation_config: escalationConfig,
   });
   return data;
 }

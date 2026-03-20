@@ -13,20 +13,46 @@ from pydantic import BaseModel, Field
 
 
 class ConditionSchema(BaseModel):
-    """Condition configuration for an alert rule."""
+    """Condition configuration for an alert rule.
 
-    type: Literal["threshold", "compound", "temporal"] = "threshold"
-    metric: str
-    operator: Literal[">", "<", "==", "!="]
-    value: float
+    Supports threshold, compound, temporal, and cross_modal types.
+    """
+
+    type: Literal["threshold", "compound", "temporal", "cross_modal"] = "threshold"
+    # Threshold fields
+    metric: Optional[str] = None
+    operator: Optional[Literal[">", "<", "==", "!=", ">=", "<="]] = None
+    value: Optional[float] = None
     window_seconds: Optional[int] = None
+    # Compound fields
+    conditions: Optional[list[dict[str, Any]]] = None  # sub-conditions for AND/OR
+    # Temporal fields
+    condition: Optional[dict[str, Any]] = None  # base condition
+    min_occurrences: Optional[int] = None
+    # Cross-modal fields
+    vision_condition: Optional[dict[str, Any]] = None
+    audio_condition: Optional[dict[str, Any]] = None
+    require_both: Optional[bool] = None
 
 
 class ActionSchema(BaseModel):
     """Action configuration for an alert rule."""
 
-    type: Literal["webhook", "email", "slack", "log"]
+    type: Literal["webhook", "email", "slack", "discord", "sms", "log"]
     config: dict[str, Any] = Field(default_factory=dict)
+
+
+class EscalationLevelSchema(BaseModel):
+    """A single escalation level configuration."""
+
+    after_minutes: int = Field(..., gt=0)
+    action: str
+
+
+class EscalationConfigSchema(BaseModel):
+    """Full escalation policy configuration."""
+
+    levels: list[EscalationLevelSchema] = Field(default_factory=list)
 
 
 # ------------------------------------------------------------------
@@ -39,6 +65,7 @@ class AlertRuleCreate(BaseModel):
     conditions: dict[str, Any]
     actions: list[dict[str, Any]]
     enabled: bool = True
+    escalation_config: Optional[dict[str, Any]] = None
 
 
 class AlertRuleRead(BaseModel):
@@ -59,6 +86,7 @@ class AlertRuleUpdate(BaseModel):
     conditions: Optional[dict[str, Any]] = None
     actions: Optional[list[dict[str, Any]]] = None
     enabled: Optional[bool] = None
+    escalation_config: Optional[dict[str, Any]] = None
 
 
 # ------------------------------------------------------------------
@@ -91,3 +119,45 @@ class AlertAction(BaseModel):
     action: str
     status: Literal["sent", "failed"]
     error: Optional[str] = None
+
+
+# ------------------------------------------------------------------
+# Test / delivery schemas
+# ------------------------------------------------------------------
+
+
+class RuleTestRequest(BaseModel):
+    """Request body for testing a rule against sample metrics."""
+
+    conditions: dict[str, Any]
+    sample_metrics: dict[str, float]
+
+
+class RuleTestResponse(BaseModel):
+    """Result of testing a rule."""
+
+    triggered: bool
+    matched_conditions: list[str]
+    details: str
+
+
+class DeliveryTestRequest(BaseModel):
+    """Request body for testing a delivery channel."""
+
+    channel: Literal["webhook", "email", "slack", "discord", "sms"]
+    config: dict[str, Any]
+
+
+class DeliveryTestResponse(BaseModel):
+    """Result of testing a delivery channel."""
+
+    status: str
+    note: Optional[str] = None
+    status_code: Optional[int] = None
+    response_time_ms: Optional[float] = None
+
+
+class EscalateRequest(BaseModel):
+    """Request body for manually escalating an alert."""
+
+    escalation_config: dict[str, Any]

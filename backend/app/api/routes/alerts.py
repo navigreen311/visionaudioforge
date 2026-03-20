@@ -1,4 +1,4 @@
-"""Alert system routes — rule management, incident lifecycle, and statistics."""
+"""Alert system routes — rule management, incident lifecycle, delivery, and escalation."""
 
 from typing import Optional
 from uuid import UUID
@@ -13,9 +13,24 @@ from app.schemas.alert import (
     AlertRuleRead,
     AlertRuleUpdate,
     AlertStats,
+    DeliveryTestRequest,
+    DeliveryTestResponse,
+    EscalateRequest,
+    RuleTestRequest,
+    RuleTestResponse,
 )
-from app.services.alerts.actions import AlertActionExecutor
-from app.services.alerts.alert_service import AlertService
+from app.services.alerts.actions import (
+    AlertActionExecutor,
+    send_discord,
+    send_email,
+    send_slack,
+    send_sms_stub,
+    send_webhook,
+)
+from app.services.alerts.alert_service import (
+    AlertService,
+    EscalationPolicy,
+)
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -30,7 +45,7 @@ async def create_alert_rule(
     workspace_id: UUID = Query(..., description="Workspace ID"),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Create a new alert rule."""
+    """Create a new alert rule. Supports threshold, compound, temporal, and cross_modal conditions."""
     rule = await AlertService.create_rule(
         db,
         name=body.name,
@@ -90,6 +105,27 @@ async def delete_alert_rule(
         return await AlertService.delete_rule(db, rule_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ------------------------------------------------------------------
+# Rule testing
+# ------------------------------------------------------------------
+
+
+@router.post("/rules/{rule_id}/test", response_model=RuleTestResponse)
+async def test_rule_with_metrics(
+    rule_id: UUID,
+    body: RuleTestRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Test a rule against sample metrics without creating alerts."""
+    try:
+        await AlertService.get_rule(db, rule_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    result = await AlertService.test_rule(body.conditions, body.sample_metrics)
+    return RuleTestResponse(**result)
 
 
 # ------------------------------------------------------------------
@@ -164,6 +200,109 @@ async def dismiss_alert(
         return await AlertService.dismiss_alert(db, alert_id, user_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ------------------------------------------------------------------
+# Escalation endpoints
+# ------------------------------------------------------------------
+
+
+@router.get("/escalations", response_model=list[AlertRead])
+async def list_escalations(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List alerts that need escalation (unacknowledged past their timer)."""
+    alerts = await EscalationPolicy.check_escalations(db, workspace_id)
+    return [AlertRead.model_validate(a) for a in alerts]
+
+
+@router.post("/{alert_id}/escalate", response_model=AlertRead)
+async def escalate_alert(
+    alert_id: UUID,
+    body: EscalateRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Manually escalate an alert to the next level."""
+    try:
+        alert = await EscalationPolicy.escalate(db, alert_id, body.escalation_config)
+        return AlertRead.model_validate(alert)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+# ------------------------------------------------------------------
+# Delivery channel testing
+# ------------------------------------------------------------------
+
+
+@router.post("/delivery/test", response_model=DeliveryTestResponse)
+async def test_delivery_channel(body: DeliveryTestRequest):
+    """Test a delivery channel by sending a test message."""
+    try:
+        if body.channel == "webhook":
+            url = body.config.get("url", "")
+            if not url:
+                raise ValueError("Webhook URL is required")
+            result = await send_webhook(
+                url=url,
+                payload={"test": True, "message": "Test alert from VAF system"},
+                headers=body.config.get("headers"),
+                timeout=body.config.get("timeout", 10),
+            )
+            return DeliveryTestResponse(**result)
+
+        elif body.channel == "email":
+            to = body.config.get("to", "")
+            if not to:
+                raise ValueError("Email recipient is required")
+            result = await send_email(
+                to=to,
+                subject="[TEST] VAF Alert System Test",
+                body="This is a test message from the VAF alert system.",
+                smtp_config=body.config.get("smtp_config"),
+            )
+            return DeliveryTestResponse(**result)
+
+        elif body.channel == "slack":
+            webhook_url = body.config.get("webhook_url", "")
+            if not webhook_url:
+                raise ValueError("Slack webhook URL is required")
+            result = await send_slack(
+                webhook_url=webhook_url,
+                message=":test_tube: *Test Alert* from VAF system",
+            )
+            return DeliveryTestResponse(**result)
+
+        elif body.channel == "discord":
+            webhook_url = body.config.get("webhook_url", "")
+            if not webhook_url:
+                raise ValueError("Discord webhook URL is required")
+            result = await send_discord(
+                webhook_url=webhook_url,
+                message="**Test Alert** from VAF system",
+            )
+            return DeliveryTestResponse(**result)
+
+        elif body.channel == "sms":
+            to = body.config.get("to", "")
+            if not to:
+                raise ValueError("Phone number is required")
+            result = await send_sms_stub(to=to, message="[TEST] VAF Alert System")
+            return DeliveryTestResponse(**result)
+
+        else:
+            raise ValueError(f"Unknown channel: {body.channel}")
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Delivery failed: {exc}")
+
+
+# ------------------------------------------------------------------
+# Test alert trigger
+# ------------------------------------------------------------------
 
 
 @router.post("/test", response_model=AlertRead, status_code=201)
