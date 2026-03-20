@@ -1,0 +1,23 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "unit: Unit tests (fast, no external deps)",
+    "integration: Integration tests (may need services)",
+    "e2e: End-to-end tests (full stack)",
+    "slow: Slow-running tests",
+]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/tests/*", "*/migrations/*", "*/alembic/*"]
+
+[tool.coverage.report]
+fail_under = 50
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+]

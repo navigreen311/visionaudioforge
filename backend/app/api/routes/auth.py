@@ -12,3 +12,8 @@ async def login():
 @router.post("/register")
 async def register():
     return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "auth"})
+
+
+@router.get("/me")
+async def get_current_user():
+    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "auth"})

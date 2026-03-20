@@ -1,0 +1,9 @@
+{
+  "nodes": [
+    {"id": "n1", "type": "input_image", "params": {}},
+    {"id": "n2", "type": "normalize", "params": {"method": "min_max"}}
+  ],
+  "edges": [
+    {"from": "n1", "to": "n2"}
+  ]
+}
