@@ -1,14 +1,18 @@
 """Tests for Validation & Trust module (M12) — calibration, drift, uncertainty,
-model cards, and API endpoints."""
+model cards, audit trails, explainability, and API endpoints."""
 
 from __future__ import annotations
 
+import io
 import math
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+import numpy as np
 import pytest
 
+from app.core.deps import get_db
+from app.main import app
 from app.services.validation.service import ValidationService
 from app.services.validation.explainability import ExplainabilityService
 
@@ -250,3 +254,120 @@ async def test_generate_explanation():
     assert len(result["top_factors"]) == 3
     assert "cat" in result["explanation_text"]
     assert "high confidence" in result["explanation_text"]
+
+
+# ---------------------------------------------------------------------------
+# API: Model Card endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_api_model_card(test_app):
+    """GET /api/validate/model-card/{id} should return a full model card."""
+    record = _mock_model_record()
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = record
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        resp = await test_app.get(f"/api/validate/model-card/{record.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model_name"] == "resnet50-detector"
+        assert data["version"] == "2.1.0"
+        assert "description" in data
+        assert "metrics" in data
+        assert "intended_use" in data
+        assert "limitations" in data
+        assert "training_data" in data
+        assert "evaluation_results" in data
+        assert "ethical_considerations" in data
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_api_model_card_not_found(test_app):
+    """GET /api/validate/model-card/{id} should return 404 for unknown model."""
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    missing_id = uuid.uuid4()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        resp = await test_app.get(f"/api/validate/model-card/{missing_id}")
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# API: Audit Trail endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_api_audit_trail(test_app):
+    """GET /api/validate/audit/{id} should return audit events."""
+    record = _mock_model_record()
+    # Make updated_at differ from created_at so we get two events
+    record.updated_at = "2026-03-20T12:00:00Z"
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = record
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        resp = await test_app.get(f"/api/validate/audit/{record.id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model_id"] == str(record.id)
+        assert "events" in data
+        assert len(data["events"]) >= 1
+        assert data["events"][0]["event"] == "model_registered"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.anyio
+async def test_api_audit_trail_not_found(test_app):
+    """GET /api/validate/audit/{id} should return empty events for unknown model."""
+    mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    missing_id = uuid.uuid4()
+    app.dependency_overrides[get_db] = lambda: mock_db
+    try:
+        resp = await test_app.get(f"/api/validate/audit/{missing_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["events"] == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+# ---------------------------------------------------------------------------
+# API: Explain endpoint
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_api_explain(test_app):
+    """POST /api/validate/explain should return a saliency map."""
+    # Create a small 4x4 grayscale image (16 bytes = 4*4)
+    img_bytes = np.random.randint(0, 255, (16,), dtype=np.uint8).tobytes()
+    resp = await test_app.post(
+        "/api/validate/explain",
+        files={"file": ("test.raw", io.BytesIO(img_bytes), "application/octet-stream")},
+        data={"model_output": "{}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "saliency_map_base64" in data
+    assert "shape" in data
+    assert len(data["shape"]) == 2
