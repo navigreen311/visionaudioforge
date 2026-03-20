@@ -1,5 +1,6 @@
 from sqlalchemy import Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.orm import relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
@@ -13,3 +14,6 @@ class ModelRecord(UUIDMixin, TimestampMixin, Base):
     backbone = Column(String(255), nullable=True)
     metrics = Column(JSON, nullable=True, default=dict)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+
+    # Relationships
+    workspace = relationship("Workspace", back_populates="models")
