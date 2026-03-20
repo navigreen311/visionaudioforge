@@ -100,117 +100,97 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Alerts API
+// Assets API
 // ---------------------------------------------------------------------------
 
-export type AlertSeverity = "critical" | "high" | "medium" | "low";
-export type AlertStatus = "new" | "acknowledged" | "resolved" | "dismissed";
+export type AssetType = "image" | "video" | "audio";
 
-export interface Alert {
+export interface Asset {
   id: string;
-  severity: AlertSeverity;
-  status: AlertStatus;
-  message: string;
-  source: string;
+  filename: string;
+  type: AssetType;
+  size: number;
+  tags: string[];
+  mime_type: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  thumbnail_url?: string;
+  url?: string;
   created_at: string;
   updated_at: string;
 }
 
-export interface AlertFilters {
-  severity?: AlertSeverity;
-  status?: AlertStatus;
-  start_date?: string;
-  end_date?: string;
-  skip?: number;
-  limit?: number;
-}
-
-export interface AlertStats {
+export interface PaginatedAssets {
+  items: Asset[];
   total: number;
-  critical_24h: number;
-  acknowledged: number;
-  unresolved: number;
-  by_severity: Record<AlertSeverity, number>;
-  by_status: Record<AlertStatus, number>;
-  recent: Alert[];
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
-export interface AlertRuleCondition {
-  metric: string;
-  operator: ">" | "<" | "==" | "!=";
-  threshold: number;
-  window_seconds: number;
+export interface AssetFiltersParams {
+  type?: AssetType;
+  tags?: string;
+  search?: string;
+  sort_by?: "created_at" | "filename" | "size";
+  sort_dir?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
 }
 
-export interface AlertRuleAction {
-  type: "webhook" | "email" | "slack" | "log";
-  target: string;
-}
-
-export interface AlertRule {
-  id: string;
-  name: string;
-  conditions: AlertRuleCondition[];
-  actions: AlertRuleAction[];
-  enabled: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AlertRuleCreatePayload {
-  name: string;
-  conditions: AlertRuleCondition[];
-  actions: AlertRuleAction[];
-  enabled: boolean;
-}
-
-export async function listAlerts(filters?: AlertFilters): Promise<Alert[]> {
+export async function listAssets(filters: AssetFiltersParams = {}): Promise<PaginatedAssets> {
   const params: Record<string, string | number> = {};
-  if (filters?.severity) params.severity = filters.severity;
-  if (filters?.status) params.status = filters.status;
-  if (filters?.start_date) params.start_date = filters.start_date;
-  if (filters?.end_date) params.end_date = filters.end_date;
-  if (filters?.skip !== undefined) params.skip = filters.skip;
-  if (filters?.limit !== undefined) params.limit = filters.limit;
-  const { data } = await api.get("/api/alerts", { params });
+  if (filters.type) params.type = filters.type;
+  if (filters.tags) params.tags = filters.tags;
+  if (filters.search) params.search = filters.search;
+  if (filters.sort_by) params.sort_by = filters.sort_by;
+  if (filters.sort_dir) params.sort_dir = filters.sort_dir;
+  if (filters.page) params.page = filters.page;
+  if (filters.page_size) params.page_size = filters.page_size;
+  const { data } = await api.get("/api/assets", { params });
   return data;
 }
 
-export async function getAlertStats(): Promise<AlertStats> {
-  const { data } = await api.get("/api/alerts/stats");
+export async function uploadAsset(
+  file: File,
+  type: AssetType,
+  tags: string[],
+  onProgress?: (pct: number) => void,
+): Promise<Asset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("type", type);
+  if (tags.length > 0) formData.append("tags", tags.join(","));
+  const { data } = await api.post("/api/assets/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: (e) => {
+      if (e.total && onProgress) {
+        onProgress(Math.round((e.loaded * 100) / e.total));
+      }
+    },
+  });
   return data;
 }
 
-export async function acknowledgeAlert(id: string): Promise<Alert> {
-  const { data } = await api.post(`/api/alerts/${id}/acknowledge`);
+export async function getAsset(assetId: string): Promise<Asset> {
+  const { data } = await api.get(`/api/assets/${assetId}`);
   return data;
 }
 
-export async function resolveAlert(id: string): Promise<Alert> {
-  const { data } = await api.post(`/api/alerts/${id}/resolve`);
+export async function updateAsset(
+  assetId: string,
+  updates: { tags?: string[]; filename?: string },
+): Promise<Asset> {
+  const { data } = await api.put(`/api/assets/${assetId}`, updates);
   return data;
 }
 
-export async function dismissAlert(id: string): Promise<Alert> {
-  const { data } = await api.post(`/api/alerts/${id}/dismiss`);
-  return data;
+export async function deleteAsset(assetId: string): Promise<void> {
+  await api.delete(`/api/assets/${assetId}`);
 }
 
-export async function listRules(): Promise<AlertRule[]> {
-  const { data } = await api.get("/api/alerts/rules");
-  return data;
-}
-
-export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
-  const { data } = await api.post("/api/alerts/rules", payload);
-  return data;
-}
-
-export async function updateRule(id: string, payload: Partial<AlertRuleCreatePayload>): Promise<AlertRule> {
-  const { data } = await api.put(`/api/alerts/rules/${id}`, payload);
-  return data;
-}
-
-export async function deleteRule(id: string): Promise<void> {
-  await api.delete(`/api/alerts/rules/${id}`);
+export function downloadAssetUrl(assetId: string): string {
+  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  return `${base}/api/assets/${assetId}/download`;
 }
