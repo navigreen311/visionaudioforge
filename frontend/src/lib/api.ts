@@ -194,3 +194,132 @@ export function downloadAssetUrl(assetId: string): string {
   const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   return `${base}/api/assets/${assetId}/download`;
 }
+
+// ---------------------------------------------------------------------------
+// Alerts API
+// ---------------------------------------------------------------------------
+
+export interface AlertRuleCondition {
+  metric: string;
+  operator: ">" | "<" | "==" | "!=" | ">=" | "<=";
+  threshold: number;
+  window_seconds: number;
+}
+
+export interface AlertRuleAction {
+  type: "webhook" | "email" | "slack" | "discord" | "sms" | "log";
+  target: string;
+}
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  conditions: AlertRuleCondition[];
+  actions: AlertRuleAction[];
+  enabled: boolean;
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleCreatePayload {
+  name: string;
+  conditions: AlertRuleCondition[] | Record<string, unknown>;
+  actions: AlertRuleAction[] | Record<string, unknown>[];
+  enabled: boolean;
+  escalation_config?: EscalationConfig;
+}
+
+export interface EscalationLevel {
+  after_minutes: number;
+  action: string;
+}
+
+export interface EscalationConfig {
+  levels: EscalationLevel[];
+}
+
+export interface DeliveryTestResult {
+  status: string;
+  note?: string;
+  status_code?: number;
+  response_time_ms?: number;
+}
+
+export interface RuleTestResult {
+  triggered: boolean;
+  matched_conditions: string[];
+  details: string;
+}
+
+const WORKSPACE_ID_PARAM = "00000000-0000-0000-0000-000000000001";
+
+function getWorkspaceId(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("workspace_id") || WORKSPACE_ID_PARAM;
+  }
+  return WORKSPACE_ID_PARAM;
+}
+
+export async function listRules(): Promise<AlertRule[]> {
+  const { data } = await api.get("/api/alerts/rules", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
+  const { data } = await api.post("/api/alerts/rules", payload, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function updateRule(
+  ruleId: string,
+  payload: Partial<AlertRuleCreatePayload>,
+): Promise<AlertRule> {
+  const { data } = await api.put(`/api/alerts/rules/${ruleId}`, payload);
+  return data;
+}
+
+export async function deleteRule(ruleId: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/${ruleId}`);
+}
+
+export async function testRule(
+  ruleId: string,
+  conditions: Record<string, unknown>,
+  sampleMetrics: Record<string, number>,
+): Promise<RuleTestResult> {
+  const { data } = await api.post(`/api/alerts/rules/${ruleId}/test`, {
+    conditions,
+    sample_metrics: sampleMetrics,
+  });
+  return data;
+}
+
+export async function testDeliveryChannel(
+  channel: string,
+  config: Record<string, unknown>,
+): Promise<DeliveryTestResult> {
+  const { data } = await api.post("/api/alerts/delivery/test", { channel, config });
+  return data;
+}
+
+export async function listEscalations(): Promise<unknown[]> {
+  const { data } = await api.get("/api/alerts/escalations", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function escalateAlert(
+  alertId: string,
+  escalationConfig: EscalationConfig,
+): Promise<unknown> {
+  const { data } = await api.post(`/api/alerts/${alertId}/escalate`, {
+    escalation_config: escalationConfig,
+  });
+  return data;
+}
