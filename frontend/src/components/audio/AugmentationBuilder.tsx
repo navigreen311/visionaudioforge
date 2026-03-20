@@ -67,7 +67,7 @@ export default function AugmentationBuilder({
   const [mode, setMode] = useState<"preset" | "custom">("preset");
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [steps, setSteps] = useState<AugmentationStep[]>([]);
-  const [addType, setAddType] = useState(AUGMENTATION_TYPES[0].type);
+  const [addType, setAddType] = useState<string>(AUGMENTATION_TYPES[0].type);
 
   const selectPreset = (id: string) => {
     setSelectedPreset(id);

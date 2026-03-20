@@ -80,11 +80,11 @@ export default function NodeConfig({ node, onUpdate }: NodeConfigProps) {
                   placeholder={spec.description as string}
                 />
               )}
-              {spec.description && (
+              {spec.description ? (
                 <p className="text-xs text-gray-400 mt-0.5">
                   {spec.description as string}
                 </p>
-              )}
+              ) : null}
             </div>
           );
         })}
