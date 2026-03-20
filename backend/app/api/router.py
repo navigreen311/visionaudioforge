@@ -13,6 +13,7 @@ from app.api.routes import (
     health,
     investigation,
     metrics,
+    mobile,
     pipeline,
     registry,
     safety,
@@ -47,3 +48,4 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
+api_router.include_router(mobile.router)
