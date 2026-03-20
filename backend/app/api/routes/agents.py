@@ -1,4 +1,4 @@
-"""Agent API routes — chat, CRUD, and memory management."""
+"""Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
 
 import uuid
 
@@ -9,13 +9,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
 from app.models.agent import Agent, AgentMemory
+from app.services.agents.conversation import ConversationManager
 from app.services.agents.copilot import CopilotService
 from app.services.agents.memory import AgentMemoryService
+from app.services.agents.patrol import get_patrol_agent
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 copilot_service = CopilotService()
 memory_service = AgentMemoryService()
+conversation_mgr = ConversationManager()
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +91,7 @@ async def agent_chat(
         context=body.context,
         skill_pack=body.skill_pack,
         memories=memory_strings,
+        db=db,
     ):
         if event["type"] == "token":
             full_response.append(event["content"])
@@ -203,3 +207,75 @@ async def delete_memory(
     if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"deleted": True, "memory_id": memory_id}
+
+
+# ---------------------------------------------------------------------------
+# Conversation history
+# ---------------------------------------------------------------------------
+
+@router.get("/{agent_id}/history")
+async def get_conversation_history(
+    agent_id: str,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get conversation history for an agent."""
+    history = await conversation_mgr.get_history(db, agent_id, limit=limit)
+    return {"agent_id": agent_id, "messages": history, "count": len(history)}
+
+
+@router.delete("/{agent_id}/history")
+async def clear_conversation_history(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear all conversation history for an agent."""
+    deleted = await conversation_mgr.clear_history(db, agent_id)
+    return {"agent_id": agent_id, "deleted_count": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Patrol mode
+# ---------------------------------------------------------------------------
+
+@router.post("/{agent_id}/patrol/start")
+async def start_patrol(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start autonomous patrol for an agent."""
+    patrol = get_patrol_agent(agent_id)
+    if patrol.is_running:
+        return {"agent_id": agent_id, "status": "already_running"}
+
+    await patrol.start_patrol()
+    return {"agent_id": agent_id, "status": "started"}
+
+
+@router.post("/{agent_id}/patrol/stop")
+async def stop_patrol(
+    agent_id: str,
+):
+    """Stop autonomous patrol for an agent."""
+    patrol = get_patrol_agent(agent_id)
+    if not patrol.is_running:
+        return {"agent_id": agent_id, "status": "not_running"}
+
+    await patrol.stop_patrol()
+    return {"agent_id": agent_id, "status": "stopped"}
+
+
+@router.get("/{agent_id}/patrol/report")
+async def get_patrol_report(
+    agent_id: str,
+    hours: int = 24,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get patrol findings for an agent."""
+    patrol = get_patrol_agent(agent_id)
+    report = await patrol.get_patrol_report(db, hours=hours)
+    return {
+        "agent_id": agent_id,
+        "is_patrolling": patrol.is_running,
+        **report,
+    }

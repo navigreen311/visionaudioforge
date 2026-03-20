@@ -9,6 +9,8 @@ interface Message {
   content: string;
   timestamp: string;
   toolName?: string;
+  toolInput?: Record<string, unknown>;
+  toolResult?: string;
 }
 
 interface CopilotChatProps {
@@ -67,18 +69,37 @@ export default function CopilotChat({
           }
           return updated;
         });
-      } else if (data.type === "tool_use") {
+      } else if (data.type === "tool_use" || data.type === "tool_use_start") {
         setActiveTool(data.tool);
         setMessages((prev) => [
           ...prev,
           {
             id: crypto.randomUUID(),
             role: "tool",
-            content: `Using tool...`,
+            content: `Using tool: ${data.tool}...`,
             timestamp: new Date().toLocaleTimeString(),
             toolName: data.tool,
           },
         ]);
+      } else if (data.type === "tool_result") {
+        setActiveTool(null);
+        // Show tool result inline
+        setMessages((prev) => {
+          const updated = [...prev];
+          // Find the last tool message and update it with result
+          for (let i = updated.length - 1; i >= 0; i--) {
+            if (updated[i].role === "tool" && updated[i].toolName === data.tool && !updated[i].toolResult) {
+              updated[i] = {
+                ...updated[i],
+                content: `Tool: ${data.tool} - completed`,
+                toolInput: data.input,
+                toolResult: typeof data.result === "string" ? data.result : JSON.stringify(data.result),
+              };
+              break;
+            }
+          }
+          return updated;
+        });
       } else if (data.type === "done") {
         setIsStreaming(false);
         setActiveTool(null);
@@ -171,6 +192,8 @@ export default function CopilotChat({
             content={msg.content}
             timestamp={msg.timestamp}
             toolName={msg.toolName}
+            toolInput={msg.toolInput}
+            toolResult={msg.toolResult}
           />
         ))}
 
