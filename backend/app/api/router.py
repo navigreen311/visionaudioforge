@@ -16,6 +16,7 @@ from app.api.routes import (
     search,
     transfer,
     transform,
+    validation,
     vision,
     workspaces,
 )
@@ -38,4 +39,5 @@ api_router.include_router(agents.router)
 api_router.include_router(assets.router)
 api_router.include_router(datasets.router)
 api_router.include_router(safety.router)
+api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
