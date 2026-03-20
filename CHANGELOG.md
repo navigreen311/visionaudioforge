@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-03-20
+
+### Added
+- Dataset Manager (M7) with full CRUD, upload, split, stats, and export
+- MinIO storage service (`MinIOStorageService`) for object upload/download/list/delete
+- Dataset service (`DatasetService`) with create, upload_samples, list, get, compute_stats, split, delete, export
+- API routes: POST/GET /api/datasets, POST upload/split/stats, GET export
+- Frontend Datasets tab on Train page with create modal, upload drag-and-drop, stats panel, split controls, export button
+- Pydantic schemas for dataset endpoints (`DatasetCreate`, `DatasetRead`, `SplitRequest`, etc.)
+- Unit and integration tests for dataset manager (9 tests covering service + API layer)
+
 ## [0.1.0] - 2026-03-20
 
 ### Added
