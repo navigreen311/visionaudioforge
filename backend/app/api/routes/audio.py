@@ -14,12 +14,17 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.responses import JSONResponse
 
 from app.schemas.audio import AudioAugmentResponse
+from pydantic import BaseModel
+
 from app.services.audio.augmentation import AudioAugmenter
 from app.services.audio.augmentation_presets import PRESETS
 from app.services.audio.stt import SpeechToTextService
 from app.services.audio.vad import VoiceActivityDetector
 from app.services.audio.separation import SourceSeparator
 from app.services.audio.classification import AudioClassifier
+from app.services.audio.diarization import SpeakerDiarizer
+from app.services.audio.keyword_spotter import KeywordSpotter
+from app.services.audio.call_intelligence import CallIntelligence
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
@@ -28,6 +33,9 @@ _stt = SpeechToTextService()
 _vad = VoiceActivityDetector()
 _separator = SourceSeparator()
 _classifier = AudioClassifier()
+_diarizer = SpeakerDiarizer()
+_keyword_spotter = KeywordSpotter()
+_call_intelligence = CallIntelligence()
 
 
 @router.post("/analyze")
@@ -187,3 +195,104 @@ async def classify(file: UploadFile = File(...)):
 
     result = _classifier.classify_sound(audio, sr)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Speaker Diarization
+# ---------------------------------------------------------------------------
+
+
+@router.post("/diarize")
+async def diarize(
+    file: UploadFile = File(...),
+    num_speakers: int | None = Form(None),
+):
+    """Diarize speakers in an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = _diarizer.diarize(audio, sr, num_speakers=num_speakers)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Keyword Spotting
+# ---------------------------------------------------------------------------
+
+
+@router.post("/keywords")
+async def keywords(
+    file: UploadFile = File(...),
+    keywords: str = Form(...),
+):
+    """Spot keywords in an uploaded audio file.
+
+    *keywords* should be a JSON-encoded list of strings.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    try:
+        keyword_list = json.loads(keywords)
+        if not isinstance(keyword_list, list):
+            raise ValueError("keywords must be a JSON array of strings")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid keywords: {exc}")
+
+    result = await _keyword_spotter.spot_keywords(audio, sr, keyword_list)
+    return {"keywords": result}
+
+
+# ---------------------------------------------------------------------------
+# Call Intelligence
+# ---------------------------------------------------------------------------
+
+
+@router.post("/call-analysis")
+async def call_analysis(file: UploadFile = File(...)):
+    """Full call analysis: transcription, diarization, summary, sentiment."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = await _call_intelligence.analyze_call(audio, sr)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Meeting Summarization
+# ---------------------------------------------------------------------------
+
+
+class TranscriptSegmentsBody(BaseModel):
+    transcript_segments: list[dict]
+
+
+@router.post("/summarize")
+async def summarize(body: TranscriptSegmentsBody):
+    """Summarize meeting transcript and extract action items."""
+    summary = _call_intelligence.summarize_meeting(body.transcript_segments)
+    action_items = _call_intelligence.extract_action_items(body.transcript_segments)
+    return {**summary, "action_items": action_items}
+
+
+# ---------------------------------------------------------------------------
+# Per-speaker Sentiment
+# ---------------------------------------------------------------------------
+
+
+@router.post("/sentiment")
+async def sentiment(body: TranscriptSegmentsBody):
+    """Analyze sentiment per speaker from transcript segments."""
+    result = _call_intelligence.analyze_sentiment_per_speaker(
+        body.transcript_segments
+    )
+    return {"sentiment": result}

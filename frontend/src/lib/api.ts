@@ -194,3 +194,186 @@ export function downloadAssetUrl(assetId: string): string {
   const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   return `${base}/api/assets/${assetId}/download`;
 }
+
+// ---------------------------------------------------------------------------
+// Audio Analysis API
+// ---------------------------------------------------------------------------
+
+export interface WaveformStats {
+  duration: number;
+  sample_rate: number;
+  rms: number;
+  peak: number;
+  samples: number;
+  image?: string;
+}
+
+export interface SpectralResult {
+  image?: string;
+  coefficients?: number[];
+}
+
+export interface AudioAnalysisResult {
+  waveform?: WaveformStats;
+  stft?: SpectralResult;
+  mel?: SpectralResult;
+  mfcc?: SpectralResult & { coefficients?: number[] };
+}
+
+export interface AugmentationStep {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface AugmentationConfig {
+  preset?: string;
+  steps?: AugmentationStep[];
+}
+
+export interface AugmentationResult {
+  audio_base64: string;
+  mime_type: string;
+  applied: string[];
+  original_duration: number;
+  augmented_duration: number;
+}
+
+export async function analyzeAudio(
+  file: File,
+  operations: string[],
+): Promise<AudioAnalysisResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("operations", JSON.stringify(operations));
+  const { data } = await api.post("/api/audio/analyze", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function augmentAudio(
+  file: File,
+  config: AugmentationConfig,
+): Promise<AugmentationResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const configStr = config.preset || JSON.stringify(config.steps || []);
+  formData.append("config", configStr);
+  const { data } = await api.post("/api/audio/augment", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Call Intelligence API
+// ---------------------------------------------------------------------------
+
+export interface DiarizationSegment {
+  speaker: string;
+  start_s: number;
+  end_s: number;
+  duration_s: number;
+}
+
+export interface SpeakerStats {
+  total_time: number;
+  percentage: number;
+  avg_energy: number;
+}
+
+export interface DiarizationResult {
+  segments: DiarizationSegment[];
+  num_speakers: number;
+  speaker_stats: Record<string, SpeakerStats>;
+}
+
+export interface CallAnalysisResult {
+  transcript: string;
+  speakers: DiarizationSegment[];
+  summary: string;
+  action_items: string[];
+  sentiment: Record<
+    string,
+    {
+      overall: string;
+      scores: { positive: number; negative: number; neutral: number };
+    }
+  >;
+  duration_s: number;
+  talk_ratio: Record<
+    string,
+    { time_s: number; percentage: number; interruptions: number }
+  >;
+}
+
+export interface TranscriptSegment {
+  speaker: string;
+  text: string;
+  start_s: number;
+  end_s: number;
+}
+
+export interface SummaryResult {
+  summary: string;
+  key_points: string[];
+  decisions: string[];
+  action_items: Array<{
+    action: string;
+    assignee: string | null;
+    deadline: string | null;
+    speaker: string;
+  }>;
+}
+
+export interface SentimentResult {
+  sentiment: Record<
+    string,
+    {
+      overall: string;
+      scores: { positive: number; negative: number; neutral: number };
+    }
+  >;
+}
+
+export async function diarizeAudio(
+  file: File,
+  numSpeakers?: number,
+): Promise<DiarizationResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (numSpeakers !== undefined) {
+    formData.append("num_speakers", String(numSpeakers));
+  }
+  const { data } = await api.post("/api/audio/diarize", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function analyzeCall(file: File): Promise<CallAnalysisResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post("/api/audio/call-analysis", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function summarizeMeeting(
+  segments: TranscriptSegment[],
+): Promise<SummaryResult> {
+  const { data } = await api.post("/api/audio/summarize", {
+    transcript_segments: segments,
+  });
+  return data;
+}
+
+export async function analyzeSentiment(
+  segments: TranscriptSegment[],
+): Promise<SentimentResult> {
+  const { data } = await api.post("/api/audio/sentiment", {
+    transcript_segments: segments,
+  });
+  return data;
+}
