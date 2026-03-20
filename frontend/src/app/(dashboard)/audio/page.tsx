@@ -12,9 +12,11 @@ import LiveMicVisualizer from "@/components/audio/LiveMicVisualizer";
 import {
   analyzeAudio,
   augmentAudio,
+  analyzeCall,
   type AudioAnalysisResult,
   type AugmentationConfig,
   type AugmentationResult,
+  type CallAnalysisResult,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -275,6 +277,217 @@ function LiveMicTab() {
 }
 
 // ---------------------------------------------------------------------------
+// Call Intelligence Tab
+// ---------------------------------------------------------------------------
+
+function CallIntelligenceTab() {
+  const [file, setFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<CallAnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAnalyze = async () => {
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await analyzeCall(file);
+      setResult(data);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Call analysis failed. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Compute pie chart segments for talk ratio
+  const talkRatioEntries = result?.talk_ratio
+    ? Object.entries(result.talk_ratio)
+    : [];
+  const pieColors = [
+    "#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6",
+    "#ec4899", "#06b6d4", "#84cc16",
+  ];
+
+  return (
+    <div className="space-y-6">
+      <Card title="Upload Call Recording">
+        <AudioUploadPlayer file={file} onFileSelected={setFile} />
+        <div className="mt-4 flex justify-end">
+          <Button onClick={handleAnalyze} disabled={!file} loading={loading}>
+            Analyze Call
+          </Button>
+        </div>
+      </Card>
+
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {result && (
+        <div className="space-y-4">
+          {/* Duration & Speaker Count */}
+          <Card title="Call Overview">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Duration</p>
+                <p className="text-lg font-semibold text-gray-900 tabular-nums">
+                  {result.duration_s.toFixed(1)}s
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Speakers</p>
+                <p className="text-lg font-semibold text-gray-900 tabular-nums">
+                  {Object.keys(result.talk_ratio).length}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Action Items</p>
+                <p className="text-lg font-semibold text-gray-900 tabular-nums">
+                  {result.action_items.length}
+                </p>
+              </div>
+              <div className="text-center">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Summary</p>
+                <p className="text-sm text-gray-700 mt-1">{result.summary || "N/A"}</p>
+              </div>
+            </div>
+          </Card>
+
+          {/* Speaker Transcript */}
+          <Card title="Speaker-Separated Transcript">
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {result.speakers.length > 0 ? (
+                result.speakers.map((seg, i) => (
+                  <div key={i} className="flex gap-3 items-start">
+                    <Badge
+                      variant="info"
+                    >
+                      {seg.speaker}
+                    </Badge>
+                    <div className="flex-1">
+                      <span className="text-xs text-gray-400 tabular-nums">
+                        {seg.start_s.toFixed(1)}s - {seg.end_s.toFixed(1)}s
+                      </span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-gray-500">No speaker segments detected.</p>
+              )}
+              {result.transcript && (
+                <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase mb-1">Full Transcript</p>
+                  <p className="text-sm text-gray-700">{result.transcript}</p>
+                </div>
+              )}
+            </div>
+          </Card>
+
+          {/* Action Items */}
+          {result.action_items.length > 0 && (
+            <Card title="Action Items">
+              <ul className="list-disc list-inside space-y-1">
+                {result.action_items.map((item, i) => (
+                  <li key={i} className="text-sm text-gray-700">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
+          {/* Sentiment per Speaker */}
+          {Object.keys(result.sentiment).length > 0 && (
+            <Card title="Sentiment per Speaker">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {Object.entries(result.sentiment).map(([speaker, sent]) => (
+                  <div key={speaker} className="rounded-lg border border-gray-200 p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-gray-900">{speaker}</span>
+                      <Badge
+                        variant={
+                          sent.overall === "positive"
+                            ? "success"
+                            : sent.overall === "negative"
+                              ? "error"
+                              : "default"
+                        }
+                      >
+                        {sent.overall}
+                      </Badge>
+                    </div>
+                    <div className="flex gap-4 text-xs text-gray-500">
+                      <span>
+                        Positive: {(sent.scores.positive * 100).toFixed(1)}%
+                      </span>
+                      <span>
+                        Negative: {(sent.scores.negative * 100).toFixed(1)}%
+                      </span>
+                      <span>
+                        Neutral: {(sent.scores.neutral * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Talk Ratio Pie Chart (CSS-based) */}
+          {talkRatioEntries.length > 0 && (
+            <Card title="Talk Ratio">
+              <div className="flex items-center gap-8">
+                {/* Simple CSS pie chart approximation using a stacked bar */}
+                <div className="flex-1">
+                  <div className="flex h-8 rounded-full overflow-hidden">
+                    {talkRatioEntries.map(([speaker, data], i) => (
+                      <div
+                        key={speaker}
+                        style={{
+                          width: `${data.percentage}%`,
+                          backgroundColor: pieColors[i % pieColors.length],
+                        }}
+                        title={`${speaker}: ${data.percentage.toFixed(1)}%`}
+                        className="transition-all"
+                      />
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-4 mt-3">
+                    {talkRatioEntries.map(([speaker, data], i) => (
+                      <div key={speaker} className="flex items-center gap-2">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{
+                            backgroundColor: pieColors[i % pieColors.length],
+                          }}
+                        />
+                        <span className="text-sm text-gray-700">
+                          {speaker}: {data.percentage.toFixed(1)}% ({data.time_s.toFixed(1)}s)
+                          {data.interruptions > 0 && (
+                            <span className="text-xs text-red-500 ml-1">
+                              ({data.interruptions} interruption{data.interruptions > 1 ? "s" : ""})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Page
 // ---------------------------------------------------------------------------
 
@@ -296,6 +509,11 @@ export default function AudioPage() {
       id: "live-mic",
       label: "Live Mic",
       content: <LiveMicTab />,
+    },
+    {
+      id: "call-intelligence",
+      label: "Call Intelligence",
+      content: <CallIntelligenceTab />,
     },
   ];
 
