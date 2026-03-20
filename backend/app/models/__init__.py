@@ -1,4 +1,4 @@
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.model_registry import ModelRecord
@@ -15,6 +15,7 @@ from app.models.agent import Agent, AgentMemory
 __all__ = [
     "Base",
     "TimestampMixin",
+    "UUIDMixin",
     "User",
     "Workspace",
     "ModelRecord",

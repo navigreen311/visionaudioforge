@@ -6,7 +6,25 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
-from app.models import Base
+from app.models import (  # noqa: F401 — ensure all models are imported for metadata
+    Agent,
+    AgentMemory,
+    Alert,
+    AlertRule,
+    Asset,
+    AuditLog,
+    Base,
+    Dataset,
+    Embedding,
+    Event,
+    Experiment,
+    ExperimentEpoch,
+    ModelRecord,
+    Pipeline,
+    PipelineRun,
+    User,
+    Workspace,
+)
 
 config = context.config
 
