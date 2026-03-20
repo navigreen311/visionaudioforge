@@ -1,26 +1,22 @@
-.PHONY: dev build test lint db-migrate clean
+.PHONY: dev build stop clean logs db-shell redis-shell
 
 dev:
-	docker compose up
+	docker compose up -d
 
 build:
 	docker compose build
 
-test:
-	docker compose exec api pytest backend/tests/ -v
-	docker compose exec frontend npm run lint
-
-lint:
-	docker compose exec api python -m py_compile backend/app/main.py
-	docker compose exec frontend npm run lint
-
-db-migrate:
-	docker compose exec api alembic upgrade head
-
-db-revision:
-	docker compose exec api alembic revision --autogenerate -m "$(msg)"
+stop:
+	docker compose down
 
 clean:
-	docker compose down -v --remove-orphans
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	docker compose down -v
+
+logs:
+	docker compose logs -f
+
+db-shell:
+	docker compose exec db psql -U vaf
+
+redis-shell:
+	docker compose exec redis redis-cli
