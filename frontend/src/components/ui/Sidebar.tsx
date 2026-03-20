@@ -19,6 +19,7 @@ const navItems = [
   { href: "/pipeline", label: "Pipeline", icon: "\u2699\uFE0F" },
   { href: "/investigate", label: "Investigate", icon: "\uD83D\uDD2C" },
   { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
+  { href: "/memory", label: "Memory", icon: "\uD83E\uDDE0" },
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
