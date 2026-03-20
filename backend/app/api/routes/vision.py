@@ -14,9 +14,10 @@ from starlette.responses import JSONResponse
 from app.services.vision.detection import ObjectDetector
 from app.services.vision.error_analysis import generate_quality_report
 from app.services.vision.ocr import OCREngine
-from app.services.vision.tracking import MultiObjectTracker
+from app.services.vision.tracking import MultiObjectTracker, TrajectoryAnalyzer
 from app.services.vision.segmentation import SegmentationService
 from app.services.vision.pose import PoseEstimator
+from app.services.vision.embedding_viz import EmbeddingVisualizer
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
@@ -25,6 +26,8 @@ _detector = ObjectDetector()
 _ocr_engine = OCREngine()
 _segmentation = SegmentationService()
 _pose_estimator = PoseEstimator()
+_trajectory_analyzer = TrajectoryAnalyzer()
+_embedding_viz = EmbeddingVisualizer()
 
 
 # ------------------------------------------------------------------
@@ -313,4 +316,99 @@ async def pose(file: UploadFile = File(...)):
         "count": len(poses),
         "visualization": visualization,
         "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Panoptic segmentation
+# ------------------------------------------------------------------
+
+
+@router.post("/panoptic")
+async def panoptic(file: UploadFile = File(...)):
+    """Perform panoptic segmentation on an uploaded image.
+
+    Combines semantic (stuff) and instance (thing) segmentation into a
+    single unified result.
+    """
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    # Get detections for instance segmentation
+    detections = _detector.detect(image, confidence=0.3)
+    result = _segmentation.panoptic_segmentation(image, detections)
+
+    # Encode combined mask as base64 PNG
+    _, buf = cv2.imencode(".png", result["combined_mask"])
+    combined_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    # Serialize thing masks
+    things = []
+    for thing in result["thing_masks"]:
+        things.append({
+            "instance_id": thing["instance_id"],
+            "class": thing["class"],
+            "bbox": thing["bbox"],
+            "area": thing["area"],
+        })
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "things": things,
+        "num_stuff_pixels": int(np.sum(result["stuff_mask"])),
+        "num_things": len(things),
+        "class_map": result["class_map"],
+        "combined_mask": combined_b64,
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Trajectory analysis
+# ------------------------------------------------------------------
+
+
+class TrajectoryRequest(BaseModel):
+    track_history: list[list[float]]
+
+
+@router.post("/trajectory")
+async def trajectory(body: TrajectoryRequest):
+    """Analyze a track trajectory for movement patterns."""
+    analysis = _trajectory_analyzer.analyze_trajectory(body.track_history)
+    return analysis
+
+
+# ------------------------------------------------------------------
+# Embedding visualization
+# ------------------------------------------------------------------
+
+
+class EmbeddingVisualizeRequest(BaseModel):
+    embeddings: list[list[float]]
+    labels: list | None = None
+    method: str = "tsne"
+
+
+@router.post("/embeddings/visualize")
+async def embeddings_visualize(body: EmbeddingVisualizeRequest):
+    """Reduce and visualize embeddings as a scatter plot.
+
+    Returns a base64-encoded PNG scatter plot.
+    """
+    embeddings = np.array(body.embeddings, dtype=np.float64)
+    reduced = _embedding_viz.reduce_dimensions(embeddings, method=body.method)
+    plot_b64 = _embedding_viz.plot_embeddings(reduced, labels=body.labels)
+
+    return {
+        "plot": plot_b64,
+        "method": body.method,
+        "num_points": len(body.embeddings),
     }
