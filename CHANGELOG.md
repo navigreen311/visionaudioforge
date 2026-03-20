@@ -3,15 +3,16 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- FAISS cross-modal search with CLIP embeddings (M13)
-- `EmbeddingService` — CLIP-based image/text embedding with lazy model loading and fallback mode
-- `FAISSIndexService` — FAISS vector index with flat (exact) and IVF (approximate) search support
-- `CrossModalSearchService` — high-level search orchestrator with text, image, and similarity search
-- Search API routes: `POST /api/search/query`, `POST /api/search/index`, `GET /api/search/stats`
-- Frontend search page with modality toggle (Text / Image / Audio), drag-drop upload, results grid, and preview modal
-- Frontend components: `SearchBar`, `ResultsGrid`, `ResultCard`
-- Unit and integration tests for embeddings, FAISS indexing, search service, and API endpoints
-- Documentation: `docs/faiss-search.md`
+- Visual Pipeline Builder (M16) with drag-and-drop React Flow editor
+- 21 pipeline node types across 6 categories (Input, Vision, Audio, Search, Action, Transform)
+- Pipeline execution engine with topological sort (Kahn's algorithm) and cycle detection
+- Node registry with BaseNode abstract class and per-node input/output schemas
+- API endpoints: create, list, get, validate, run pipelines; list node types; get run results
+- Celery task for asynchronous pipeline execution
+- Frontend: NodePalette (categorized accordion), PipelineCanvas (React Flow), NodeConfig (dynamic forms)
+- Pipeline run history panel with status, duration, and timestamps
+- Pydantic schemas for all pipeline request/response models
+- Unit and integration tests for engine, registry, and API
 
 ## [0.1.0] - 2026-03-20
 
