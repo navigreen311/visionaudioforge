@@ -61,6 +61,55 @@ def _encode_png(image: np.ndarray) -> str:
 # AUDIO TRANSFORM ENDPOINTS
 # ===================================================================
 
+@router.post("/audio")
+async def audio_transform(
+    file: UploadFile = File(...),
+    operations: str = Form(...),
+):
+    """Apply a chain of audio transforms to an uploaded file.
+
+    *operations* is a JSON array of step objects, each with an ``"op"`` key
+    and optional ``"params"`` dict.
+    """
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    try:
+        parsed = json.loads(operations)
+        if not isinstance(parsed, list):
+            raise ValueError("operations must be a JSON array")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    original_duration_s = len(audio) / sr
+
+    try:
+        result, applied = _audio_svc.apply_chain(audio, sr, parsed)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Processing error: {exc}")
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "format": "wav",
+        "sample_rate": sr,
+        "operations_applied": applied,
+        "original_duration_s": round(original_duration_s, 4),
+        "result_duration_s": round(len(result) / sr, 4),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
 @router.post("/audio/denoise")
 async def audio_denoise(
     file: UploadFile = File(...),

@@ -174,3 +174,90 @@ async def test_api_audio_analyze_all(client):
     assert "mfcc" in body["features"]
     assert "waveform" in body["features"]
     assert body["processing_time_ms"] > 0
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_mel_only(client):
+    audio = create_test_audio(duration=0.5)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"operations": json.dumps(["mel"])},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "mel" in body["features"]
+    assert "stft" not in body["features"]
+    assert body["features"]["mel"]["n_mels"] == 128
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_mfcc_only(client):
+    audio = create_test_audio(duration=0.5)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"operations": json.dumps(["mfcc"])},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "mfcc" in body["features"]
+    assert body["features"]["mfcc"]["n_mfcc"] == 13
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_waveform_only(client):
+    audio = create_test_audio(duration=0.5)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"operations": json.dumps(["waveform"])},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "waveform" in body["features"]
+    assert body["features"]["waveform"]["duration_s"] > 0
+    assert body["features"]["waveform"]["is_silent"] is False
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_invalid_file(client):
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("bad.wav", b"not-audio-data", "audio/wav")},
+        data={"operations": json.dumps(["stft"])},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_invalid_operations(client):
+    audio = create_test_audio(duration=0.5)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"operations": "not-valid-json{"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_api_audio_analyze_visualizations(client):
+    audio = create_test_audio(duration=0.5)
+    wav_bytes = _audio_to_wav_bytes(audio)
+    resp = await client.post(
+        "/api/audio/analyze",
+        files={"file": ("test.wav", wav_bytes, "audio/wav")},
+        data={"operations": json.dumps(["stft", "waveform"])},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "spectrogram" in body["visualizations"]
+    assert "waveform" in body["visualizations"]
+    # Verify base64 is valid
+    raw = base64.b64decode(body["visualizations"]["spectrogram"])
+    assert len(raw) > 100

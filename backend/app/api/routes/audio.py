@@ -16,6 +16,13 @@ from starlette.responses import JSONResponse
 from app.schemas.audio import AudioAugmentResponse
 from app.services.audio.augmentation import AudioAugmenter
 from app.services.audio.augmentation_presets import PRESETS
+from app.services.audio.spectral import SpectralAnalyzer
+from app.services.audio.visualization import (
+    plot_mfcc,
+    plot_mel_spectrogram,
+    plot_spectrogram,
+    plot_waveform,
+)
 from app.services.audio.stt import SpeechToTextService
 from app.services.audio.vad import VoiceActivityDetector
 from app.services.audio.separation import SourceSeparator
@@ -28,6 +35,7 @@ from app.services.audio.translation import AudioTranslator
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
+_analyzer = SpectralAnalyzer()
 _augmenter = AudioAugmenter()
 _stt = SpeechToTextService()
 _vad = VoiceActivityDetector()
@@ -41,8 +49,89 @@ _translator = AudioTranslator()
 
 
 @router.post("/analyze")
-async def analyze():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "audio"})
+async def analyze(
+    file: UploadFile = File(...),
+    operations: str = Form('["all"]'),
+):
+    """Analyse an uploaded audio file with selectable spectral operations.
+
+    *operations* is a JSON array of operation names. Supported values:
+    ``"stft"``, ``"mel"``, ``"mfcc"``, ``"power"``, ``"waveform"``, ``"all"``.
+    """
+    start = time.perf_counter()
+
+    # --- Load audio -------------------------------------------------------
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    # --- Parse requested operations ---------------------------------------
+    try:
+        ops = json.loads(operations)
+        if not isinstance(ops, list):
+            raise ValueError("operations must be a JSON array")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid operations parameter: {exc}")
+
+    run_all = "all" in ops
+
+    # --- Run analyses -----------------------------------------------------
+    features: dict = {}
+    visualizations: dict = {}
+
+    try:
+        if run_all or "stft" in ops:
+            stft = _analyzer.compute_stft(audio, sr)
+            features["stft"] = {
+                "shape": list(stft["magnitude"].shape),
+                "freqs_count": len(stft["freqs"]),
+                "times_count": len(stft["times"]),
+            }
+            visualizations["spectrogram"] = plot_spectrogram(stft["magnitude"], sr)
+
+        if run_all or "mel" in ops:
+            mel = _analyzer.compute_mel_spectrogram(audio, sr)
+            features["mel"] = {
+                "shape": list(mel["mel_spectrogram"].shape),
+                "n_mels": mel["mel_spectrogram"].shape[0],
+            }
+            visualizations["mel_spectrogram"] = plot_mel_spectrogram(mel["mel_spectrogram"], sr)
+
+        if run_all or "mfcc" in ops:
+            mfcc = _analyzer.compute_mfcc(audio, sr)
+            features["mfcc"] = {
+                "shape": list(mfcc["mfcc"].shape),
+                "n_mfcc": mfcc["mfcc"].shape[0],
+            }
+            visualizations["mfcc"] = plot_mfcc(mfcc["mfcc"], sr)
+
+        if run_all or "power" in ops:
+            power = _analyzer.compute_power_spectrogram(audio, sr)
+            features["power"] = {
+                "shape": list(power["power_spec"].shape),
+            }
+
+        if run_all or "waveform" in ops:
+            waveform = _analyzer.compute_waveform_stats(audio, sr)
+            features["waveform"] = waveform
+            visualizations["waveform"] = plot_waveform(audio, sr)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Audio processing error: {exc}")
+
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+
+    return {
+        "features": features,
+        "visualizations": visualizations,
+        "audio_info": {
+            "sample_rate": sr,
+            "duration_s": round(len(audio) / sr, 4),
+            "samples": len(audio),
+        },
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
 
 
 @router.post("/augment", response_model=AudioAugmentResponse)
