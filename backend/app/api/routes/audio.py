@@ -20,6 +20,11 @@ from app.services.audio.stt import SpeechToTextService
 from app.services.audio.vad import VoiceActivityDetector
 from app.services.audio.separation import SourceSeparator
 from app.services.audio.classification import AudioClassifier
+from app.services.audio.voice_biometrics import VoiceBiometrics
+from app.services.audio.fingerprinting import AudioFingerprinter
+from app.services.audio.av_sync import AVSyncDetector
+from app.services.audio.audio_embeddings import AudioEmbeddingService
+from app.services.audio.translation import AudioTranslator
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
@@ -28,6 +33,11 @@ _stt = SpeechToTextService()
 _vad = VoiceActivityDetector()
 _separator = SourceSeparator()
 _classifier = AudioClassifier()
+_biometrics = VoiceBiometrics()
+_fingerprinter = AudioFingerprinter()
+_av_sync = AVSyncDetector()
+_embedder = AudioEmbeddingService()
+_translator = AudioTranslator()
 
 
 @router.post("/analyze")
@@ -186,4 +196,166 @@ async def classify(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
 
     result = _classifier.classify_sound(audio, sr)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Voice Biometrics
+# ---------------------------------------------------------------------------
+
+
+@router.post("/voiceprint")
+async def voiceprint(file: UploadFile = File(...)):
+    """Extract a 128-dim voiceprint from an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    vp = _biometrics.extract_voiceprint(audio, sr)
+    return {"voiceprint": vp.tolist(), "dimensions": len(vp)}
+
+
+@router.post("/voiceprint/compare")
+async def voiceprint_compare(
+    file1: UploadFile = File(...),
+    file2: UploadFile = File(...),
+):
+    """Compare voiceprints of two audio files."""
+    try:
+        bytes1 = await file1.read()
+        audio1, sr1 = librosa.load(io.BytesIO(bytes1), sr=None)
+        bytes2 = await file2.read()
+        audio2, sr2 = librosa.load(io.BytesIO(bytes2), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    vp1 = _biometrics.extract_voiceprint(audio1, sr1)
+    vp2 = _biometrics.extract_voiceprint(audio2, sr2)
+    result = _biometrics.compare_voiceprints(vp1, vp2)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Audio Fingerprinting
+# ---------------------------------------------------------------------------
+
+
+@router.post("/fingerprint")
+async def fingerprint(file: UploadFile = File(...)):
+    """Generate an acoustic fingerprint for an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    fp = _fingerprinter.generate_fingerprint(audio, sr)
+    return {
+        "fingerprint": fp["fingerprint"],
+        "duration_s": fp["duration_s"],
+        "peaks": fp["peaks"],
+    }
+
+
+@router.post("/fingerprint/match")
+async def fingerprint_match(
+    file1: UploadFile = File(...),
+    file2: UploadFile = File(...),
+):
+    """Compare fingerprints of two audio files."""
+    try:
+        bytes1 = await file1.read()
+        audio1, sr1 = librosa.load(io.BytesIO(bytes1), sr=None)
+        bytes2 = await file2.read()
+        audio2, sr2 = librosa.load(io.BytesIO(bytes2), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    fp1 = _fingerprinter.generate_fingerprint(audio1, sr1)
+    fp2 = _fingerprinter.generate_fingerprint(audio2, sr2)
+    result = _fingerprinter.match_fingerprints(fp1, fp2)
+    return {
+        "match": result["match"],
+        "similarity": result["similarity"],
+        "offset_s": result["offset_s"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# AV Sync Detection
+# ---------------------------------------------------------------------------
+
+
+@router.post("/av-sync")
+async def av_sync(
+    file: UploadFile = File(...),
+    fps: float = Form(30.0),
+):
+    """Detect audio-video sync offset.
+
+    Expects an audio file. Video frame brightness data is extracted
+    from the audio energy envelope for demonstration purposes.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    # Generate synthetic video frames from audio for demo
+    samples_per_frame = int(sr / fps)
+    n_frames = len(audio) // samples_per_frame
+    video_frames = [
+        np.array([np.sqrt(np.mean(audio[i * samples_per_frame : (i + 1) * samples_per_frame] ** 2))])
+        for i in range(n_frames)
+    ]
+
+    result = _av_sync.detect_sync_offset(video_frames, audio, sr, fps)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Audio Embeddings
+# ---------------------------------------------------------------------------
+
+
+@router.post("/embed")
+async def embed(
+    file: UploadFile = File(...),
+    model: str = Form("mfcc_stats"),
+):
+    """Generate a 512-dim embedding for an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    embedding = _embedder.embed_audio(audio, sr, model=model)
+    return {"embedding": embedding.tolist(), "dimensions": len(embedding), "model": model}
+
+
+# ---------------------------------------------------------------------------
+# Audio Translation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/translate")
+async def translate(
+    file: UploadFile = File(...),
+    source_lang: str = Form("en"),
+    target_lang: str = Form("es"),
+):
+    """Translate speech in an uploaded audio file (stub)."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = await _translator.translate_audio(audio, sr, source_lang, target_lang)
+    # Remove numpy array from response (not JSON-serializable)
+    result.pop("audio", None)
     return result

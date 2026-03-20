@@ -12,6 +12,11 @@ from app.services.audio.stt import SpeechToTextService
 from app.services.audio.vad import VoiceActivityDetector
 from app.services.audio.separation import SourceSeparator
 from app.services.audio.classification import AudioClassifier
+from app.services.audio.voice_biometrics import VoiceBiometrics
+from app.services.audio.fingerprinting import AudioFingerprinter
+from app.services.audio.av_sync import AVSyncDetector
+from app.services.audio.audio_embeddings import AudioEmbeddingService
+from app.services.audio.translation import AudioTranslator
 
 __all__ = [
     "SpectralAnalyzer",
@@ -27,4 +32,9 @@ __all__ = [
     "VoiceActivityDetector",
     "SourceSeparator",
     "AudioClassifier",
+    "VoiceBiometrics",
+    "AudioFingerprinter",
+    "AVSyncDetector",
+    "AudioEmbeddingService",
+    "AudioTranslator",
 ]
