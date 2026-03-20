@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import time
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from app.services.vision.detection import ObjectDetector
 from app.services.vision.error_analysis import generate_quality_report
+from app.services.vision.motion import MotionAnalyzer
 from app.services.vision.ocr import OCREngine
+from app.services.vision.preprocessing import ImagePreprocessor
+from app.services.vision.screen_intel import ScreenIntelligence
 from app.services.vision.tracking import MultiObjectTracker, TrajectoryAnalyzer
 from app.services.vision.segmentation import SegmentationService
 from app.services.vision.pose import PoseEstimator
@@ -28,31 +33,241 @@ _segmentation = SegmentationService()
 _pose_estimator = PoseEstimator()
 _trajectory_analyzer = TrajectoryAnalyzer()
 _embedding_viz = EmbeddingVisualizer()
+_preprocessor = ImagePreprocessor()
+_motion_analyzer = MotionAnalyzer()
+_screen_intel = ScreenIntelligence()
+
+logger = logging.getLogger(__name__)
 
 
 # ------------------------------------------------------------------
-# Existing stub endpoints (preserved)
+# Helper
+# ------------------------------------------------------------------
+
+
+async def _decode_upload(file: UploadFile, flags: int = cv2.IMREAD_COLOR) -> np.ndarray | None:
+    """Read an UploadFile and decode it into an OpenCV image."""
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    return cv2.imdecode(nparr, flags)
+
+
+# ------------------------------------------------------------------
+# Image preprocessing / analyze
 # ------------------------------------------------------------------
 
 
 @router.post("/analyze")
-async def analyze():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "vision"})
+async def analyze(
+    file: UploadFile = File(...),
+    operations: str = Form("[]", description="JSON array of pipeline steps"),
+):
+    """Apply preprocessing operations to an uploaded image.
+
+    Accepts a file and a JSON string of operations (list of
+    ``{"op": "<name>", "params": {…}}`` dicts).  Returns the
+    processed image as base64 PNG together with statistics.
+    """
+    t0 = time.perf_counter()
+
+    try:
+        steps = json.loads(operations)
+        if not isinstance(steps, list):
+            return JSONResponse(status_code=400, content={"error": "operations must be a JSON array"})
+    except json.JSONDecodeError as exc:
+        return JSONResponse(status_code=400, content={"error": f"Invalid operations JSON: {exc}"})
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        if steps:
+            result = _preprocessor.preprocess_pipeline(image, steps)
+        else:
+            result = image.copy()
+    except (ValueError, KeyError) as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Preprocessing failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    # Encode result to base64 PNG (handle float images)
+    out = result
+    if out.dtype != np.uint8:
+        out = np.clip(out * 255 if out.max() <= 1.0 else out, 0, 255).astype(np.uint8)
+
+    _, buf = cv2.imencode(".png", out)
+    image_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "image": image_b64,
+        "original_shape": list(image.shape),
+        "result_shape": list(result.shape),
+        "operations_applied": len(steps),
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Optical flow
+# ------------------------------------------------------------------
 
 
 @router.post("/optical-flow")
-async def optical_flow():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "vision"})
+async def optical_flow(
+    frame1: UploadFile = File(...),
+    frame2: UploadFile = File(...),
+    method: str = Query("lucas_kanade", description="lucas_kanade or farneback"),
+):
+    """Compute optical flow between two consecutive frames."""
+    t0 = time.perf_counter()
+
+    img1 = await _decode_upload(frame1)
+    img2 = await _decode_upload(frame2)
+    if img1 is None or img2 is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file(s)"})
+
+    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+    try:
+        if method == "farneback":
+            result = _motion_analyzer.farneback_dense(gray1, gray2)
+            # Create HSV flow visualization
+            hsv = np.zeros((*gray1.shape, 3), dtype=np.uint8)
+            hsv[..., 1] = 255
+            mag = result["magnitude"]
+            ang = result["angle"]
+            hsv[..., 0] = (ang * 180 / np.pi / 2).astype(np.uint8)
+            hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            vis = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+            _, buf = cv2.imencode(".png", vis)
+            vis_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+            stats = _motion_analyzer.compute_motion_stats(result)
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return {
+                "method": "farneback",
+                "mean_magnitude": result["mean_magnitude"],
+                "max_magnitude": result["max_magnitude"],
+                "stats": stats,
+                "visualization": vis_b64,
+                "processing_time_ms": round(elapsed_ms, 2),
+            }
+        else:
+            result = _motion_analyzer.lucas_kanade(gray1, gray2)
+            stats = _motion_analyzer.compute_motion_stats(result)
+
+            # Visualization: draw arrows on frame1
+            from app.services.vision.visualization import draw_optical_flow_arrows
+            tracked = result["tracked_points"]
+            vis = draw_optical_flow_arrows(img1, tracked["old"], tracked["new"])
+            _, buf = cv2.imencode(".png", vis)
+            vis_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000.0
+            return {
+                "method": "lucas_kanade",
+                "num_tracked": result["num_tracked"],
+                "mean_magnitude": result["mean_magnitude"],
+                "stats": stats,
+                "visualization": vis_b64,
+                "processing_time_ms": round(elapsed_ms, 2),
+            }
+    except Exception as exc:
+        logger.exception("Optical flow computation failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+
+# ------------------------------------------------------------------
+# Frame differencing
+# ------------------------------------------------------------------
 
 
 @router.post("/frame-diff")
-async def frame_diff():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "vision"})
+async def frame_diff(
+    files: list[UploadFile] = File(...),
+    threshold: int = Query(25, ge=0, le=255, description="Binarization threshold"),
+):
+    """Compute frame differencing for motion detection.
+
+    Upload 2 frames for consecutive diff or 3 frames for three-frame diff.
+    """
+    t0 = time.perf_counter()
+
+    if len(files) < 2 or len(files) > 3:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Upload exactly 2 or 3 frames"},
+        )
+
+    frames = []
+    for f in files:
+        img = await _decode_upload(f)
+        if img is None:
+            return JSONResponse(status_code=400, content={"error": f"Invalid image: {f.filename}"})
+        frames.append(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+
+    try:
+        if len(frames) == 2:
+            result = _motion_analyzer.frame_diff_consecutive(frames[0], frames[1], threshold=threshold)
+            diff_method = "consecutive"
+        else:
+            result = _motion_analyzer.frame_diff_three_frame(frames[0], frames[1], frames[2], threshold=threshold)
+            diff_method = "three_frame"
+    except Exception as exc:
+        logger.exception("Frame differencing failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    # Encode motion mask
+    _, buf = cv2.imencode(".png", result["motion_mask"])
+    mask_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "method": diff_method,
+        "motion_percentage": round(result["motion_percentage"], 4),
+        "motion_mask": mask_b64,
+        "threshold": threshold,
+        "num_frames": len(frames),
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Screen analysis
+# ------------------------------------------------------------------
 
 
 @router.post("/screen-analyze")
-async def screen_analyze():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "vision"})
+async def screen_analyze(file: UploadFile = File(...)):
+    """Analyze a screenshot for UI elements, layout, brightness, and text."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        result = _screen_intel.analyze_screenshot(image)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Screen analysis failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "brightness": result["brightness"],
+        "edge_density": result["edge_density"],
+        "dominant_colors": result["dominant_colors"],
+        "ui_elements": result["ui_elements"],
+        "text_content": result["text_content"],
+        "layout_type": result["layout_type"],
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
 
 
 # ------------------------------------------------------------------
