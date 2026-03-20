@@ -7,6 +7,10 @@ import SourceSwitcher, {
 import CaptureControls from "@/components/capture/CaptureControls";
 import LiveFeedPanel from "@/components/capture/LiveFeedPanel";
 import AudioMeter from "@/components/capture/AudioMeter";
+import MultiCamGrid, {
+  type CaptureSource,
+} from "@/components/capture/MultiCamGrid";
+import RecordingControls from "@/components/capture/RecordingControls";
 
 interface AnalysisResult {
   frame_id: number;
@@ -19,7 +23,17 @@ interface AnalysisResult {
   detections: { label: string; bbox: [number, number, number, number]; confidence: number }[];
 }
 
+interface RTSPInfo {
+  url: string;
+  width: number;
+  height: number;
+  fps: number;
+  codec: string;
+}
+
 type ConnectionStatus = "disconnected" | "connecting" | "connected";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export default function CapturePage() {
   const [activeSource, setActiveSource] = useState<SourceType>("camera");
@@ -30,6 +44,21 @@ export default function CapturePage() {
   const [frameCount, setFrameCount] = useState(0);
   const [fps, setFps] = useState(0);
   const [startTime, setStartTime] = useState<number | null>(null);
+
+  // RTSP state
+  const [rtspUrl, setRtspUrl] = useState("");
+  const [rtspInfo, setRtspInfo] = useState<RTSPInfo | null>(null);
+  const [rtspConnecting, setRtspConnecting] = useState(false);
+  const [rtspError, setRtspError] = useState<string | null>(null);
+
+  // Multi-cam state
+  const [multiCamSources, setMultiCamSources] = useState<CaptureSource[]>([]);
+  const [addSourceType, setAddSourceType] = useState("webcam");
+  const [workspaceId] = useState("default");
+
+  // Recording state
+  const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const fpsCounterRef = useRef(0);
@@ -101,8 +130,15 @@ export default function CapturePage() {
         mediaStream = await navigator.mediaDevices.getUserMedia({ video: true });
       } else if (activeSource === "screen") {
         mediaStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      } else {
+      } else if (activeSource === "microphone") {
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } else {
+        // RTSP and multicam don't use browser MediaStream
+        setIsCapturing(true);
+        setFrameCount(0);
+        setStartTime(Date.now());
+        setAnalysisResult(null);
+        return;
       }
 
       setStream(mediaStream);
@@ -129,20 +165,32 @@ export default function CapturePage() {
     setStartTime(null);
   }, [stream, disconnectWebSocket]);
 
-  const handleSnapshot = useCallback(() => {
-    // Create a download link from current video frame
+  const handleSnapshot = useCallback(async () => {
+    // Client-side snapshot from video element
     const video = document.querySelector("video");
-    if (!video) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    const link = document.createElement("a");
-    link.download = `snapshot-${Date.now()}.jpg`;
-    link.href = canvas.toDataURL("image/jpeg", 0.95);
-    link.click();
+    if (video) {
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(video, 0, 0);
+      const link = document.createElement("a");
+      link.download = `snapshot-${Date.now()}.jpg`;
+      link.href = canvas.toDataURL("image/jpeg", 0.95);
+      link.click();
+    }
+
+    // Also trigger server-side snapshot
+    try {
+      await fetch(`${API_BASE}/api/capture/snapshot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "current" }),
+      });
+    } catch {
+      // server snapshot is best-effort
+    }
   }, []);
 
   const handleFrame = useCallback(
@@ -162,6 +210,130 @@ export default function CapturePage() {
     [isCapturing, stopCapture]
   );
 
+  // RTSP connect
+  const handleRtspConnect = useCallback(async () => {
+    if (!rtspUrl.trim()) return;
+    setRtspConnecting(true);
+    setRtspError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/capture/rtsp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: rtspUrl }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Connection failed");
+      }
+      const info: RTSPInfo = await res.json();
+      setRtspInfo(info);
+    } catch (err: unknown) {
+      setRtspError(err instanceof Error ? err.message : "Connection failed");
+    } finally {
+      setRtspConnecting(false);
+    }
+  }, [rtspUrl]);
+
+  // Multi-cam: add source
+  const handleAddSource = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/capture/sources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_id: workspaceId,
+          source_type: addSourceType,
+          config: {},
+        }),
+      });
+      if (res.ok) {
+        // Refresh sources
+        const listRes = await fetch(
+          `${API_BASE}/api/capture/sources?workspace_id=${workspaceId}`
+        );
+        if (listRes.ok) {
+          const data = await listRes.json();
+          setMultiCamSources(data.sources || []);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [workspaceId, addSourceType]);
+
+  // Multi-cam: switch primary
+  const handleSwitchSource = useCallback(
+    async (sourceId: string) => {
+      try {
+        await fetch(`${API_BASE}/api/capture/sources/${sourceId}/switch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workspace_id: workspaceId }),
+        });
+        // Refresh
+        const listRes = await fetch(
+          `${API_BASE}/api/capture/sources?workspace_id=${workspaceId}`
+        );
+        if (listRes.ok) {
+          const data = await listRes.json();
+          setMultiCamSources(data.sources || []);
+        }
+      } catch {
+        // ignore
+      }
+    },
+    [workspaceId]
+  );
+
+  // Multi-cam: remove source
+  const handleRemoveSource = useCallback(
+    async (sourceId: string) => {
+      try {
+        // Remove via switch then re-list (no dedicated DELETE endpoint for now)
+        setMultiCamSources((prev) =>
+          prev.filter((s) => s.source_id !== sourceId)
+        );
+      } catch {
+        // ignore
+      }
+    },
+    []
+  );
+
+  // Recording controls
+  const handleRecordStart = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/capture/record/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: "current", fps: 30 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRecordingId(data.recording_id);
+        setIsRecording(true);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleRecordStop = useCallback(async () => {
+    if (!recordingId) return;
+    try {
+      await fetch(`${API_BASE}/api/capture/record/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recording_id: recordingId }),
+      });
+    } catch {
+      // ignore
+    } finally {
+      setRecordingId(null);
+      setIsRecording(false);
+    }
+  }, [recordingId]);
+
   const elapsed = startTime ? Math.floor((Date.now() - startTime) / 1000) : 0;
   const minutes = Math.floor(elapsed / 60)
     .toString()
@@ -178,6 +350,16 @@ export default function CapturePage() {
     return () => clearInterval(id);
   }, [isCapturing]);
 
+  // Load multi-cam sources on tab switch
+  useEffect(() => {
+    if (activeSource === "multicam") {
+      fetch(`${API_BASE}/api/capture/sources?workspace_id=${workspaceId}`)
+        .then((r) => r.json())
+        .then((data) => setMultiCamSources(data.sources || []))
+        .catch(() => {});
+    }
+  }, [activeSource, workspaceId]);
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -185,19 +367,97 @@ export default function CapturePage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Live Capture</h1>
           <p className="text-gray-500 text-sm mt-1">
-            Capture video, screen, or audio for real-time AI analysis
+            Capture video, screen, audio, or RTSP streams for real-time AI analysis
           </p>
         </div>
-        <CaptureControls
-          isCapturing={isCapturing}
-          onStart={startCapture}
-          onStop={stopCapture}
-          onSnapshot={handleSnapshot}
-        />
+        <div className="flex items-center gap-4">
+          <RecordingControls
+            isCapturing={isCapturing}
+            onRecordStart={handleRecordStart}
+            onRecordStop={handleRecordStop}
+            onSnapshot={handleSnapshot}
+          />
+          <CaptureControls
+            isCapturing={isCapturing}
+            onStart={startCapture}
+            onStop={stopCapture}
+            onSnapshot={handleSnapshot}
+          />
+        </div>
       </div>
+
+      {/* Recording indicator */}
+      {isRecording && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+          <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-red-700 font-medium text-sm">
+            Recording in progress...
+          </span>
+        </div>
+      )}
 
       {/* Source Tabs */}
       <SourceSwitcher activeSource={activeSource} onChange={handleSourceChange} />
+
+      {/* RTSP Tab Content */}
+      {activeSource === "rtsp" && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-4">
+          <h3 className="text-sm font-medium text-gray-700">RTSP Stream Connection</h3>
+          <div className="flex gap-3">
+            <input
+              type="text"
+              value={rtspUrl}
+              onChange={(e) => setRtspUrl(e.target.value)}
+              placeholder="rtsp://camera-ip:554/stream"
+              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+            />
+            <button
+              onClick={handleRtspConnect}
+              disabled={rtspConnecting || !rtspUrl.trim()}
+              className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              {rtspConnecting ? "Connecting..." : "Connect"}
+            </button>
+          </div>
+          {rtspError && (
+            <p className="text-red-600 text-sm">{rtspError}</p>
+          )}
+          {rtspInfo && (
+            <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+              <h4 className="text-sm font-medium text-gray-800">Stream Info</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div>
+                  <span className="text-gray-500">URL</span>
+                  <p className="font-mono text-xs mt-0.5 truncate">{rtspInfo.url}</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Resolution</span>
+                  <p className="font-medium mt-0.5">{rtspInfo.width}x{rtspInfo.height}</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">FPS</span>
+                  <p className="font-medium mt-0.5">{rtspInfo.fps}</p>
+                </div>
+                <div>
+                  <span className="text-gray-500">Codec</span>
+                  <p className="font-medium mt-0.5">{rtspInfo.codec}</p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Multi-Cam Tab Content */}
+      {activeSource === "multicam" && (
+        <div className="space-y-4">
+          <MultiCamGrid
+            sources={multiCamSources}
+            onSourceClick={handleSwitchSource}
+            onRemoveSource={handleRemoveSource}
+          />
+        </div>
+      )}
 
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -210,7 +470,7 @@ export default function CapturePage() {
               </h3>
               <AudioMeter stream={stream} />
             </div>
-          ) : (
+          ) : activeSource === "rtsp" || activeSource === "multicam" ? null : (
             <LiveFeedPanel
               sourceType={activeSource}
               stream={stream}
@@ -219,7 +479,7 @@ export default function CapturePage() {
             />
           )}
 
-          {!isCapturing && activeSource !== "microphone" && (
+          {!isCapturing && activeSource !== "microphone" && activeSource !== "rtsp" && activeSource !== "multicam" && (
             <div className="flex items-center justify-center bg-gray-900 rounded-lg" style={{ aspectRatio: "16/9" }}>
               <p className="text-gray-400">
                 Click <span className="font-medium text-white">Start</span> to begin {activeSource} capture
@@ -228,7 +488,7 @@ export default function CapturePage() {
           )}
         </div>
 
-        {/* Sidebar — Stats & Analysis */}
+        {/* Sidebar -- Stats, Analysis & Sources */}
         <div className="space-y-4">
           {/* Status Bar */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 space-y-3">
@@ -264,6 +524,57 @@ export default function CapturePage() {
                 </p>
               </div>
             </div>
+          </div>
+
+          {/* Source List Sidebar */}
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 space-y-3">
+            <h3 className="text-sm font-medium text-gray-700">Capture Sources</h3>
+            <div className="flex gap-2">
+              <select
+                value={addSourceType}
+                onChange={(e) => setAddSourceType(e.target.value)}
+                className="flex-1 px-3 py-1.5 border border-gray-300 rounded-lg text-sm"
+              >
+                <option value="webcam">Webcam</option>
+                <option value="screen">Screen</option>
+                <option value="rtsp">RTSP</option>
+                <option value="file">File</option>
+              </select>
+              <button
+                onClick={handleAddSource}
+                className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                Add
+              </button>
+            </div>
+            <ul className="space-y-1.5">
+              {multiCamSources.map((s) => (
+                <li
+                  key={s.source_id}
+                  className="flex items-center justify-between py-1.5 px-2 bg-gray-50 rounded-lg text-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        s.status === "active" ? "bg-green-500" : "bg-gray-400"
+                      }`}
+                    />
+                    <span className="font-medium">{s.source_type}</span>
+                    {s.is_primary && (
+                      <span className="text-[10px] bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded">
+                        PRIMARY
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-gray-400 text-xs font-mono">
+                    {s.source_id.slice(0, 8)}
+                  </span>
+                </li>
+              ))}
+              {multiCamSources.length === 0 && (
+                <li className="text-gray-400 text-sm py-1">No sources added</li>
+              )}
+            </ul>
           </div>
 
           {/* Analysis Results */}

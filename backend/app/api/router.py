@@ -6,6 +6,7 @@ from app.api.routes import (
     assets,
     audio,
     auth,
+    capture,
     datasets,
     experiments,
     health,
@@ -41,3 +42,4 @@ api_router.include_router(datasets.router)
 api_router.include_router(safety.router)
 api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
+api_router.include_router(capture.router)
