@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import settings
+from app.ws.capture import CaptureWebSocket
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -19,3 +20,9 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+
+@app.websocket("/ws/live/stream/{session_id}")
+async def websocket_capture_stream(websocket: WebSocket, session_id: str):
+    handler = CaptureWebSocket()
+    await handler.handle_connection(websocket, session_id)
