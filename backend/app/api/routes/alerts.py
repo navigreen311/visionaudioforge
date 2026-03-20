@@ -1,4 +1,4 @@
-"""Alert system routes — rule management, incident lifecycle, and statistics."""
+"""Alert system routes — rule management, incident lifecycle, evidence, and statistics."""
 
 from typing import Optional
 from uuid import UUID
@@ -16,6 +16,9 @@ from app.schemas.alert import (
 )
 from app.services.alerts.actions import AlertActionExecutor
 from app.services.alerts.alert_service import AlertService
+from app.services.alerts.auto_clip import AutoClipService
+from app.services.alerts.evidence_bundle import EvidenceBundleService
+from app.services.alerts.chain_of_custody import ChainOfCustodyService
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -191,3 +194,169 @@ async def test_alert(
     await AlertActionExecutor.execute_actions(alert, actions_config)
 
     return alert
+
+
+# ------------------------------------------------------------------
+# Incident endpoints (aggregated alert views)
+# ------------------------------------------------------------------
+
+
+@router.get("/incidents", response_model=dict)
+async def list_incidents(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    window_minutes: int = Query(30, description="Time window for grouping alerts into incidents"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Aggregated incident view: group alerts by rule + time window."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models.alert import Alert
+
+    stmt = (
+        select(Alert)
+        .where(Alert.workspace_id == workspace_id)
+        .order_by(Alert.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    alerts = list(result.scalars().all())
+
+    # Group by rule_id and time window
+    incidents: list[dict] = []
+    used: set[UUID] = set()
+
+    for alert in alerts:
+        if alert.id in used:
+            continue
+        group = [alert]
+        used.add(alert.id)
+        for other in alerts:
+            if other.id in used:
+                continue
+            if other.rule_id == alert.rule_id:
+                if alert.created_at and other.created_at:
+                    diff = abs((alert.created_at - other.created_at).total_seconds())
+                    if diff <= window_minutes * 60:
+                        group.append(other)
+                        used.add(other.id)
+
+        incident_id = str(group[0].id)
+        incidents.append({
+            "incident_id": incident_id,
+            "rule_id": str(alert.rule_id),
+            "alert_count": len(group),
+            "severity": max(
+                (a.severity.value if hasattr(a.severity, "value") else str(a.severity) for a in group),
+                key=lambda s: {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(s, 0),
+            ),
+            "first_alert_at": min(
+                a.created_at.isoformat() for a in group if a.created_at
+            ) if any(a.created_at for a in group) else None,
+            "last_alert_at": max(
+                a.created_at.isoformat() for a in group if a.created_at
+            ) if any(a.created_at for a in group) else None,
+            "alert_ids": [str(a.id) for a in group],
+            "status": group[0].status.value if hasattr(group[0].status, "value") else str(group[0].status),
+        })
+
+    return {"incidents": incidents, "total": len(incidents)}
+
+
+@router.get("/incidents/{incident_id}/timeline", response_model=dict)
+async def incident_timeline(
+    incident_id: UUID,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Chronological timeline for an incident (alerts + events + evidence)."""
+    from sqlalchemy import select
+    from app.models.alert import Alert
+
+    result = await db.execute(select(Alert).where(Alert.id == incident_id))
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    timeline_entries = [
+        {
+            "type": "alert",
+            "timestamp": alert.created_at.isoformat() if alert.created_at else None,
+            "data": AlertRead.model_validate(alert).model_dump(),
+        }
+    ]
+
+    return {
+        "incident_id": str(incident_id),
+        "timeline": sorted(timeline_entries, key=lambda x: x.get("timestamp") or ""),
+    }
+
+
+@router.get("/incidents/{incident_id}/bundle", response_model=dict)
+async def get_or_create_incident_bundle(
+    incident_id: UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get or create an evidence bundle for an incident."""
+    bundle = await EvidenceBundleService.create_bundle(db, str(incident_id))
+    return bundle
+
+
+# ------------------------------------------------------------------
+# Auto-clip endpoint
+# ------------------------------------------------------------------
+
+
+@router.post("/{alert_id}/auto-clip", response_model=dict, status_code=201)
+async def trigger_auto_clip(
+    alert_id: UUID,
+    before_s: float = Query(10, description="Seconds before alert to capture"),
+    after_s: float = Query(5, description="Seconds after alert to capture"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Trigger auto-clip capture for an alert."""
+    clip_result = await AutoClipService.capture_clip_on_alert(
+        alert_id=str(alert_id),
+        before_s=before_s,
+        after_s=after_s,
+    )
+    snapshot_result = await AutoClipService.create_snapshot_on_alert(
+        alert_id=str(alert_id),
+    )
+    return {
+        "clip": clip_result,
+        "snapshot": snapshot_result,
+    }
+
+
+# ------------------------------------------------------------------
+# Evidence bundle endpoints
+# ------------------------------------------------------------------
+
+
+@router.post("/{alert_id}/bundle", response_model=dict, status_code=201)
+async def create_evidence_bundle(
+    alert_id: UUID,
+    case_id: Optional[str] = Query(None, description="Optional case/incident ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Create an evidence bundle for an alert."""
+    bundle = await EvidenceBundleService.create_bundle(
+        db, str(alert_id), case_id=case_id,
+    )
+    return bundle
+
+
+# ------------------------------------------------------------------
+# Chain of custody endpoint
+# ------------------------------------------------------------------
+
+
+@router.get("/{alert_id}/custody", response_model=dict)
+async def get_chain_of_custody(
+    alert_id: UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get chain of custody for an alert's evidence."""
+    report = await ChainOfCustodyService.generate_custody_report(
+        db, str(alert_id),
+    )
+    return report
