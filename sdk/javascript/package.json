@@ -1,6 +1,6 @@
 {
   "name": "@visionaudioforge/sdk",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "JavaScript/TypeScript SDK for the VisionAudioForge API",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
