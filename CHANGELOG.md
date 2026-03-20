@@ -3,14 +3,12 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Optical flow services: Lucas-Kanade (sparse) and Farneback (dense) via `MotionAnalyzer`
-- Frame differencing: consecutive two-frame and three-frame methods with morphological cleanup
-- Motion visualization: flow arrows, HSV heatmaps, flow-to-RGB conversion, motion mask overlays
-- `POST /api/vision/optical-flow` endpoint (supports `lucas-kanade` and `farneback` methods)
-- `POST /api/vision/frame-diff` endpoint (supports `consecutive` and `three-frame` methods)
-- Pydantic schemas: `OpticalFlowResponse`, `FrameDiffResponse`, `MotionStats`
-- Comprehensive test suite for motion analysis (unit + API integration)
-- Documentation at `docs/vision-motion.md`
+- Object detection service (`ObjectDetector`) with YOLOv8 and graceful ImportError fallback
+- OCR service (`OCREngine`) with pytesseract and stub fallback
+- Systematic error analysis: confusion matrix, per-class metrics, top confusions, quality reports
+- API endpoints: `POST /api/vision/detect`, `/api/vision/ocr`, `/api/vision/error-analysis`
+- Comprehensive test suite for detection, OCR, error analysis, and API routes
+- Documentation at `docs/vision-detection.md`
 
 ## [0.1.0] - 2026-03-20
 
