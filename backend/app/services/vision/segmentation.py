@@ -118,6 +118,119 @@ class SegmentationService:
 
         return instances
 
+    def panoptic_segmentation(
+        self, image: np.ndarray, detections: list[dict] | None = None,
+    ) -> dict:
+        """Perform panoptic segmentation combining semantic and instance masks.
+
+        Stuff regions are background areas not covered by any instance.
+        Thing regions are individual instance masks with class labels.
+
+        Args:
+            image: Input image (BGR).
+            detections: Optional list of dicts with 'bbox' and 'class_name'.
+
+        Returns:
+            dict with stuff_mask, thing_masks, combined_mask, and class_map.
+        """
+        h, w = image.shape[:2]
+
+        # Semantic segmentation for background/foreground
+        semantic = self.semantic_segmentation(image)
+        semantic_mask = semantic["mask"]  # 0=background, 1=foreground
+
+        # Instance segmentation for individual objects
+        if detections:
+            instances = self.instance_segmentation(image, detections)
+        else:
+            instances = []
+
+        # Build combined mask with unique IDs
+        # ID 0 = background stuff, ID 1+ = thing instances
+        combined = np.zeros((h, w), dtype=np.int32)
+        thing_masks: list[dict] = []
+        class_map: dict[int, str] = {0: "background"}
+
+        # Accumulate instance coverage
+        instance_coverage = np.zeros((h, w), dtype=np.uint8)
+
+        for idx, inst in enumerate(instances):
+            instance_id = idx + 1
+            inst_mask = inst["mask"].astype(np.uint8)
+            combined[inst_mask > 0] = instance_id
+            instance_coverage[inst_mask > 0] = 1
+            class_name = inst.get("class", "unknown")
+            class_map[instance_id] = class_name
+            thing_masks.append({
+                "instance_id": instance_id,
+                "class": class_name,
+                "mask": inst_mask,
+                "bbox": inst.get("bbox", [0, 0, 0, 0]),
+                "area": int(np.sum(inst_mask)),
+            })
+
+        # Stuff mask = foreground regions NOT covered by any instance
+        stuff_mask = np.zeros((h, w), dtype=np.uint8)
+        stuff_mask[(semantic_mask == 0) & (instance_coverage == 0)] = 1
+
+        # Create colored combined visualization
+        rng = np.random.default_rng(42)
+        colored = np.zeros((h, w, 3), dtype=np.uint8)
+        # Stuff regions in dark gray
+        colored[stuff_mask > 0] = (50, 50, 50)
+        # Each instance gets a unique color
+        for thing in thing_masks:
+            color = tuple(int(c) for c in rng.integers(80, 255, size=3))
+            colored[thing["mask"] > 0] = color
+
+        return {
+            "stuff_mask": stuff_mask,
+            "thing_masks": thing_masks,
+            "combined_mask": colored,
+            "class_map": class_map,
+        }
+
+    @staticmethod
+    def mask_to_polygon(mask: np.ndarray) -> list[list[int]]:
+        """Convert a binary mask to polygon contour points.
+
+        Args:
+            mask: Binary mask (H, W) with values 0 or 1.
+
+        Returns:
+            List of [x, y] coordinate pairs forming the polygon.
+        """
+        mask_uint8 = (mask * 255).astype(np.uint8)
+        contours, _ = cv2.findContours(
+            mask_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            return []
+
+        # Return the largest contour
+        largest = max(contours, key=cv2.contourArea)
+        points = largest.reshape(-1, 2).tolist()
+        return points
+
+    @staticmethod
+    def mask_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+        """Compute intersection over union between two binary masks.
+
+        Args:
+            mask_a: Binary mask (H, W).
+            mask_b: Binary mask (H, W).
+
+        Returns:
+            IoU score as float between 0.0 and 1.0.
+        """
+        a = mask_a.astype(bool)
+        b = mask_b.astype(bool)
+        intersection = np.logical_and(a, b).sum()
+        union = np.logical_or(a, b).sum()
+        if union == 0:
+            return 0.0
+        return float(intersection / union)
+
     @staticmethod
     def mask_overlay(
         image: np.ndarray,
