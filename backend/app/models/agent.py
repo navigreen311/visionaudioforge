@@ -1,5 +1,6 @@
 from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.orm import relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
@@ -12,6 +13,9 @@ class Agent(UUIDMixin, TimestampMixin, Base):
     config = Column(JSON, nullable=True, default=dict)
     status = Column(String(50), nullable=False, default="idle")
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+
+    # Relationships
+    workspace = relationship("Workspace", back_populates="agents")
 
 
 class AgentMemory(UUIDMixin, TimestampMixin, Base):

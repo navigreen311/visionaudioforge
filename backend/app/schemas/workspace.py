@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 
 class WorkspaceCreate(BaseModel):
@@ -21,5 +21,34 @@ class WorkspaceRead(BaseModel):
 
 class WorkspaceUpdate(BaseModel):
     name: Optional[str] = None
-    plan: Optional[str] = None
     settings: Optional[dict] = None
+
+
+class WorkspaceStats(BaseModel):
+    members: int
+    models: int
+    datasets: int
+    assets: int
+    pipelines: int
+
+
+class WorkspaceDetail(WorkspaceRead):
+    """Workspace with embedded stats."""
+    stats: WorkspaceStats
+
+
+class MemberRead(BaseModel):
+    id: UUID
+    email: str
+    role: str
+
+    model_config = {"from_attributes": True}
+
+
+class MemberInvite(BaseModel):
+    email: EmailStr
+    role: str = "viewer"
+
+
+class MemberRoleUpdate(BaseModel):
+    role: str
