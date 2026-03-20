@@ -16,13 +16,17 @@ import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.responses import JSONResponse
 
+from app.services.transform.audio_advanced import AdvancedAudioTransform
 from app.services.transform.audio_transform import AudioTransformService
+from app.services.transform.video_advanced import AdvancedVideoTransform
 from app.services.transform.video_transform import VideoTransformService
 
 router = APIRouter(prefix="/api/transform", tags=["transform"])
 
 _audio_svc = AudioTransformService()
 _video_svc = VideoTransformService()
+_adv_audio = AdvancedAudioTransform()
+_adv_video = AdvancedVideoTransform()
 
 
 # ===================================================================
@@ -302,4 +306,168 @@ async def thumbnail(
     return {
         "thumbnail": _encode_png(thumb),
         "frame_index": idx,
+    }
+
+
+# ===================================================================
+# ADVANCED AUDIO ENDPOINTS
+# ===================================================================
+
+
+@router.post("/audio/voice-convert")
+async def audio_voice_convert(
+    file: UploadFile = File(...),
+    target_voice: str = Form("male_deep"),
+):
+    """Convert voice using pitch shift + formant approximation."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    result = await _adv_audio.voice_conversion_stub(audio, sr, target_voice=target_voice)
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "target_voice": target_voice,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/audio/chapters")
+async def audio_chapters(
+    file: UploadFile = File(...),
+    min_silence: float = Form(2.0),
+):
+    """Detect chapters by finding long silences."""
+    import librosa
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    chapters = await _adv_audio.auto_chapter(audio, sr, min_silence_s=min_silence)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "chapters": chapters,
+        "total_chapters": len(chapters),
+        "duration_s": round(len(audio) / sr, 4),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/audio/noise-profile")
+async def audio_noise_profile(
+    file: UploadFile = File(...),
+):
+    """Analyze noise profile of the audio file."""
+    import librosa
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    profile = await _adv_audio.noise_profile(audio, sr)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        **profile,
+        "sample_rate": sr,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+# ===================================================================
+# ADVANCED VIDEO ENDPOINTS
+# ===================================================================
+
+
+@router.post("/video/inpaint")
+async def video_inpaint(
+    file: UploadFile = File(...),
+    mask: UploadFile = File(...),
+):
+    """Inpaint image regions specified by a mask."""
+    start = time.perf_counter()
+    image = await _read_image(file)
+
+    mask_data = await mask.read()
+    mask_arr = np.frombuffer(mask_data, np.uint8)
+    mask_img = cv2.imdecode(mask_arr, cv2.IMREAD_GRAYSCALE)
+    if mask_img is None:
+        raise HTTPException(status_code=400, detail="Could not decode mask image")
+
+    result = await _adv_video.inpaint(image, mask_img)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "image": _encode_png(result),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/video/color-grade")
+async def video_color_grade(
+    file: UploadFile = File(...),
+    preset: str = Form("cinematic"),
+):
+    """Apply color grading preset to an image."""
+    start = time.perf_counter()
+    image = await _read_image(file)
+    result = await _adv_video.color_grade(image, preset=preset)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "image": _encode_png(result),
+        "preset": preset,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/video/subtitle")
+async def video_subtitle(
+    file: UploadFile = File(...),
+    text: str = Form(...),
+    position: str = Form("bottom"),
+):
+    """Burn subtitle text onto an image."""
+    start = time.perf_counter()
+    image = await _read_image(file)
+    result = await _adv_video.subtitle_burn(image, text=text, position=position)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "image": _encode_png(result),
+        "text": text,
+        "position": position,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/video/interpolate")
+async def video_interpolate(
+    frame1: UploadFile = File(...),
+    frame2: UploadFile = File(...),
+    count: int = Form(1),
+):
+    """Generate intermediate frames between two input frames."""
+    start = time.perf_counter()
+    img1 = await _read_image(frame1)
+    img2 = await _read_image(frame2)
+
+    intermediates = await _adv_video.frame_interpolation(img1, img2, num_intermediate=count)
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "frames": [_encode_png(f) for f in intermediates],
+        "count": len(intermediates),
+        "processing_time_ms": round(elapsed, 2),
     }

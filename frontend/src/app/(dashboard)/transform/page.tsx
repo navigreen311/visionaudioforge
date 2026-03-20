@@ -5,13 +5,16 @@ import BeforeAfterSlider from "@/components/transform/BeforeAfterSlider";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
-type VideoMode = "background-remove" | "super-resolution" | "style" | "auto-crop";
-type AudioMode = "denoise" | "silence-remove" | "pitch-shift" | "time-stretch" | "eq" | "chain";
+type VideoMode = "background-remove" | "super-resolution" | "style" | "auto-crop" | "color-grade" | "subtitle" | "inpaint";
+type AudioMode = "denoise" | "silence-remove" | "pitch-shift" | "time-stretch" | "eq" | "chain" | "voice-convert" | "chapters" | "noise-profile";
 
 const BG_METHODS = ["threshold", "grabcut"] as const;
 const STYLES = ["sketch", "edges", "cartoon", "oil_painting"] as const;
 const ASPECTS = ["16:9", "4:3", "1:1", "9:16"] as const;
 const EQ_PRESETS = ["flat", "voice", "music", "podcast"] as const;
+const COLOR_GRADE_PRESETS = ["cinematic", "vintage", "high_contrast", "bw_dramatic"] as const;
+const VOICE_PRESETS = ["male_deep", "female_high", "robotic", "whisper"] as const;
+const SUBTITLE_POSITIONS = ["top", "center", "bottom"] as const;
 
 export default function TransformPage() {
   // --- shared state ---
@@ -35,7 +38,17 @@ export default function TransformPage() {
   const [stylePreset, setStylePreset] = useState<string>("sketch");
   const [aspect, setAspect] = useState<string>("16:9");
 
+  // --- advanced options ---
+  const [colorGradePreset, setColorGradePreset] = useState<string>("cinematic");
+  const [subtitleText, setSubtitleText] = useState<string>("");
+  const [subtitlePosition, setSubtitlePosition] = useState<string>("bottom");
+  const [voicePreset, setVoicePreset] = useState<string>("male_deep");
+  const [chapterResult, setChapterResult] = useState<Record<string, unknown> | null>(null);
+  const [noiseResult, setNoiseResult] = useState<Record<string, unknown> | null>(null);
+  const [maskFile, setMaskFile] = useState<File | null>(null);
+
   const fileRef = useRef<HTMLInputElement>(null);
+  const maskRef = useRef<HTMLInputElement>(null);
 
   // ---- file select ----
   const onFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -60,6 +73,8 @@ export default function TransformPage() {
     setError(null);
     setResultB64(null);
     setMeta(null);
+    setChapterResult(null);
+    setNoiseResult(null);
     try {
       const form = new FormData();
       form.append("file", srcFile);
@@ -74,6 +89,16 @@ export default function TransformPage() {
       } else if (mode === "style") {
         endpoint = "/api/transform/video/style";
         form.append("style", stylePreset);
+      } else if (mode === "color-grade") {
+        endpoint = "/api/transform/video/color-grade";
+        form.append("preset", colorGradePreset);
+      } else if (mode === "subtitle") {
+        endpoint = "/api/transform/video/subtitle";
+        form.append("text", subtitleText);
+        form.append("position", subtitlePosition);
+      } else if (mode === "inpaint") {
+        endpoint = "/api/transform/video/inpaint";
+        if (maskFile) form.append("mask", maskFile);
       } else {
         endpoint = "/api/transform/video/auto-crop";
         form.append("aspect", aspect);
@@ -89,7 +114,48 @@ export default function TransformPage() {
     } finally {
       setLoading(false);
     }
-  }, [srcFile, mode, bgMethod, srScale, stylePreset, aspect]);
+  }, [srcFile, mode, bgMethod, srScale, stylePreset, aspect, colorGradePreset, subtitleText, subtitlePosition, maskFile]);
+
+  // ---- run audio transform ----
+  const runAudio = useCallback(async () => {
+    if (!srcFile) return;
+    setLoading(true);
+    setError(null);
+    setChapterResult(null);
+    setNoiseResult(null);
+    setMeta(null);
+    try {
+      const form = new FormData();
+      form.append("file", srcFile);
+
+      let endpoint = "";
+      if (audioMode === "voice-convert") {
+        endpoint = "/api/transform/audio/voice-convert";
+        form.append("target_voice", voicePreset);
+      } else if (audioMode === "chapters") {
+        endpoint = "/api/transform/audio/chapters";
+      } else if (audioMode === "noise-profile") {
+        endpoint = "/api/transform/audio/noise-profile";
+      } else {
+        endpoint = `/api/transform/audio/${audioMode}`;
+      }
+
+      const res = await fetch(`${API_BASE}${endpoint}`, { method: "POST", body: form });
+      if (!res.ok) throw new Error(`API error ${res.status}`);
+      const json = await res.json();
+
+      if (audioMode === "chapters") {
+        setChapterResult(json);
+      } else if (audioMode === "noise-profile") {
+        setNoiseResult(json);
+      }
+      setMeta(json);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }, [srcFile, audioMode, voicePreset]);
 
   // ---- download helper ----
   const download = useCallback(() => {
@@ -146,6 +212,9 @@ export default function TransformPage() {
                 ["time-stretch", "Time Stretch"],
                 ["eq", "Equalizer"],
                 ["chain", "Chain"],
+                ["voice-convert", "Voice Conversion"],
+                ["chapters", "Auto-Chapter"],
+                ["noise-profile", "Noise Profile"],
               ] as const
             ).map(([key, label]) => (
               <button
@@ -161,14 +230,114 @@ export default function TransformPage() {
               </button>
             ))}
           </div>
-          <div className="bg-gray-50 rounded-lg p-6 text-center">
-            <p className="text-gray-500 text-sm">
-              Audio transform mode: <span className="font-medium">{audioMode}</span>
-            </p>
-            <p className="text-gray-400 text-xs mt-2">
-              Upload an audio file and apply transforms via the API at <code>/api/transform/audio/{audioMode}</code>
-            </p>
+
+          {/* Audio file upload */}
+          <div
+            onClick={() => fileRef.current?.click()}
+            className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-brand-400 transition"
+          >
+            <input
+              ref={fileRef}
+              type="file"
+              accept="audio/*"
+              className="hidden"
+              onChange={onFileChange}
+            />
+            {srcFile ? (
+              <p className="text-gray-700 font-medium">{srcFile.name}</p>
+            ) : (
+              <p className="text-gray-400">Click to upload an audio file</p>
+            )}
           </div>
+
+          {/* Voice Conversion options */}
+          {audioMode === "voice-convert" && (
+            <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+              <label className="text-sm font-medium text-gray-700">Voice Preset:</label>
+              <div className="flex flex-wrap gap-2">
+                {VOICE_PRESETS.map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setVoicePreset(v)}
+                    className={`px-3 py-1 rounded text-sm capitalize ${
+                      voicePreset === v ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
+                    }`}
+                  >
+                    {v.replace("_", " ")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Auto-Chapter info */}
+          {audioMode === "chapters" && (
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">
+                Detects long silences in audio and splits into chapters automatically.
+              </p>
+            </div>
+          )}
+
+          {/* Noise Profile info */}
+          {audioMode === "noise-profile" && (
+            <div className="bg-gray-50 rounded-lg p-4">
+              <p className="text-sm text-gray-600">
+                Analyzes the noise characteristics of your audio and provides recommendations.
+              </p>
+            </div>
+          )}
+
+          {/* Run audio button */}
+          <button
+            onClick={runAudio}
+            disabled={!srcFile || loading}
+            className="px-6 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-brand-700 transition"
+          >
+            {loading ? "Processing..." : "Transform Audio"}
+          </button>
+
+          {/* Chapter results */}
+          {chapterResult && (
+            <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+              <h3 className="text-lg font-semibold text-gray-900">Chapters Detected</h3>
+              <p className="text-sm text-gray-600">Total: {(chapterResult as Record<string, unknown>).total_chapters as number}</p>
+              <div className="space-y-1">
+                {((chapterResult as Record<string, unknown>).chapters as Array<Record<string, unknown>>)?.map((ch) => (
+                  <div key={ch.chapter as number} className="flex gap-4 text-sm text-gray-700 bg-white rounded p-2">
+                    <span className="font-medium">Ch. {ch.chapter as number}</span>
+                    <span>{ch.start_s as number}s - {ch.end_s as number}s</span>
+                    <span className="text-gray-400">({ch.duration_s as number}s)</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Noise profile results */}
+          {noiseResult && (
+            <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+              <h3 className="text-lg font-semibold text-gray-900">Noise Analysis</h3>
+              <div className="text-sm text-gray-700 space-y-1">
+                <p>Noise Floor: {(noiseResult as Record<string, unknown>).noise_floor_db as number} dB</p>
+                <p>SNR Estimate: {(noiseResult as Record<string, unknown>).snr_estimate_db as number} dB</p>
+                <p>Dominant Frequencies: {((noiseResult as Record<string, unknown>).dominant_noise_freqs as number[])?.join(", ")} Hz</p>
+                <p className="mt-2 font-medium text-brand-600">{(noiseResult as Record<string, unknown>).recommendation as string}</p>
+              </div>
+            </div>
+          )}
+
+          {/* Generic audio info */}
+          {!chapterResult && !noiseResult && audioMode !== "voice-convert" && audioMode !== "chapters" && audioMode !== "noise-profile" && (
+            <div className="bg-gray-50 rounded-lg p-6 text-center">
+              <p className="text-gray-500 text-sm">
+                Audio transform mode: <span className="font-medium">{audioMode}</span>
+              </p>
+              <p className="text-gray-400 text-xs mt-2">
+                Upload an audio file and apply transforms via the API at <code>/api/transform/audio/{audioMode}</code>
+              </p>
+            </div>
+          )}
         </div>
       )}
 
@@ -182,6 +351,9 @@ export default function TransformPage() {
             ["super-resolution", "Super Resolution"],
             ["style", "Style Transfer"],
             ["auto-crop", "Auto Crop"],
+            ["color-grade", "Color Grade"],
+            ["subtitle", "Subtitle"],
+            ["inpaint", "Inpaint"],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -280,6 +452,68 @@ export default function TransformPage() {
                 <option key={a} value={a}>{a}</option>
               ))}
             </select>
+          </div>
+        )}
+
+        {mode === "color-grade" && (
+          <div className="flex items-center gap-3 flex-wrap">
+            <label className="text-sm font-medium text-gray-700">Preset:</label>
+            {COLOR_GRADE_PRESETS.map((p) => (
+              <button
+                key={p}
+                onClick={() => setColorGradePreset(p)}
+                className={`px-3 py-1 rounded text-sm capitalize ${
+                  colorGradePreset === p ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
+                }`}
+              >
+                {p.replace("_", " ")}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {mode === "subtitle" && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-gray-700">Text:</label>
+              <input
+                type="text"
+                value={subtitleText}
+                onChange={(e) => setSubtitleText(e.target.value)}
+                placeholder="Enter subtitle text..."
+                className="flex-1 rounded border-gray-300 text-sm px-3 py-1 border"
+              />
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-gray-700">Position:</label>
+              {SUBTITLE_POSITIONS.map((pos) => (
+                <button
+                  key={pos}
+                  onClick={() => setSubtitlePosition(pos)}
+                  className={`px-3 py-1 rounded text-sm capitalize ${
+                    subtitlePosition === pos ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
+                  }`}
+                >
+                  {pos}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {mode === "inpaint" && (
+          <div className="space-y-3">
+            <p className="text-sm text-gray-600">Upload a mask image where white pixels indicate areas to inpaint.</p>
+            <div className="flex items-center gap-3">
+              <label className="text-sm font-medium text-gray-700">Mask:</label>
+              <input
+                ref={maskRef}
+                type="file"
+                accept="image/*"
+                className="text-sm"
+                onChange={(e) => setMaskFile(e.target.files?.[0] ?? null)}
+              />
+            </div>
           </div>
         )}
 
