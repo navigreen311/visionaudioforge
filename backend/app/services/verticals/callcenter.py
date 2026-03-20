@@ -1,173 +1,81 @@
-"""Call Center & QA vertical pack for automated call quality analysis."""
+"""Call Center vertical starter pack."""
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.verticals.base import VerticalPack
 
-class CallCenterVerticalPack:
-    """Vertical pack providing call-centre pipelines, alerts, dashboards, and rubrics."""
 
-    PACK_INFO: dict[str, str] = {
-        "name": "Call Center & QA",
-        "version": "1.0",
-        "description": (
-            "Automated call quality analysis, agent performance scoring, "
-            "and compliance monitoring"
-        ),
-    }
+class CallCenterVerticalPack(VerticalPack):
+    """Pre-built pipelines and alerts for call-center / contact-center deployments."""
 
-    # ------------------------------------------------------------------
-    # Pipeline templates
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_pipeline_templates() -> dict[str, list[dict[str, Any]]]:
-        """Return the five standard call-centre pipeline templates."""
+    def info(self) -> dict[str, Any]:
         return {
-            "call_quality_analysis": [
-                {"step": "InputAudio"},
-                {"step": "Transcribe"},
-                {"step": "Diarize"},
-                {"step": "SentimentPerSpeaker"},
-                {"step": "QualityScore"},
-                {"step": "Report"},
-            ],
-            "compliance_monitoring": [
-                {"step": "InputAudio"},
-                {"step": "Transcribe"},
-                {
-                    "step": "KeywordSpot",
-                    "params": {
-                        "keywords": ["guarantee", "promise", "refund", "legal"],
-                    },
-                },
-                {"step": "ComplianceCheck"},
-                {"step": "Alert", "params": {"condition": "if_violation"}},
-            ],
-            "agent_coaching": [
-                {"step": "InputAudio"},
-                {"step": "Transcribe"},
-                {"step": "Diarize"},
-                {"step": "TalkRatio"},
-                {"step": "SentimentAnalysis"},
-                {"step": "CoachingReport"},
-            ],
-            "customer_satisfaction": [
-                {"step": "InputAudio"},
-                {"step": "Transcribe"},
-                {"step": "SentimentAnalysis"},
-                {"step": "CSATScore"},
-                {"step": "Dashboard"},
-            ],
-            "escalation_detection": [
-                {"step": "InputAudio"},
-                {"step": "Transcribe"},
-                {"step": "SentimentPerSpeaker"},
-                {
-                    "step": "EscalationDetect",
-                    "params": {"negative_threshold": 0.7},
-                },
-                {"step": "Alert"},
-                {"step": "NotifyManager"},
-            ],
+            "name": "Call Center",
+            "slug": "callcenter",
+            "icon": "headphones",
+            "description": "Call transcription, sentiment analysis, agent coaching, and SLA monitoring.",
+            "category": "Customer Service",
         }
 
-    # ------------------------------------------------------------------
-    # Alert presets
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_alert_presets() -> list[dict[str, str]]:
-        """Return pre-configured alert definitions."""
-        return [
-            {
-                "name": "compliance_violation",
-                "severity": "critical",
+    def pipelines(self) -> dict[str, dict[str, Any]]:
+        return {
+            "call_transcription": {
+                "name": "Call Transcription",
+                "description": "Transcribe incoming calls and extract MFCC features for analysis.",
+                "nodes": [
+                    {"id": "input_1", "type": "input_audio", "params": {"path": ""}},
+                    {"id": "mfcc_1", "type": "mfcc", "params": {"n_mfcc": 13}},
+                    {"id": "save_1", "type": "save_asset", "params": {"filename": "transcription.json", "format": "json"}},
+                ],
+                "edges": [
+                    {"from": "input_1", "to": "mfcc_1", "from_port": "output", "to_port": "input"},
+                    {"from": "mfcc_1", "to": "save_1", "from_port": "output", "to_port": "input"},
+                ],
             },
-            {
-                "name": "negative_sentiment_spike",
+            "sentiment_analysis": {
+                "name": "Sentiment Analysis",
+                "description": "Analyze call audio for sentiment and emotional tone.",
+                "nodes": [
+                    {"id": "input_1", "type": "input_audio", "params": {"path": ""}},
+                    {"id": "mel_1", "type": "mel_spectrogram", "params": {"n_mels": 128}},
+                    {"id": "mfcc_1", "type": "mfcc", "params": {"n_mfcc": 13}},
+                    {"id": "save_1", "type": "save_asset", "params": {"filename": "sentiment.json", "format": "json"}},
+                ],
+                "edges": [
+                    {"from": "input_1", "to": "mel_1", "from_port": "output", "to_port": "input"},
+                    {"from": "mel_1", "to": "mfcc_1", "from_port": "output", "to_port": "input"},
+                    {"from": "mfcc_1", "to": "save_1", "from_port": "output", "to_port": "input"},
+                ],
+            },
+        }
+
+    def alert_presets(self) -> dict[str, dict[str, Any]]:
+        return {
+            "negative_sentiment": {
+                "name": "Negative Sentiment Detected",
+                "severity": "warning",
+                "conditions": {"sentiment_score": {"<": -0.5}},
+                "cooldown_seconds": 60,
+            },
+            "long_hold_time": {
+                "name": "Long Hold Time",
                 "severity": "high",
+                "conditions": {"hold_seconds": {">": 300}},
+                "cooldown_seconds": 120,
             },
-            {
-                "name": "long_hold_time",
-                "severity": "medium",
-            },
-            {
-                "name": "agent_talk_ratio_high",
-                "severity": "low",
-            },
-        ]
-
-    # ------------------------------------------------------------------
-    # Dashboard config
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_dashboard_config() -> dict[str, Any]:
-        """Return the default dashboard widget layout."""
-        return {
-            "widgets": [
-                {"type": "chart", "name": "call_volume", "label": "Call Volume"},
-                {"type": "metric", "name": "avg_handle_time", "label": "Avg Handle Time"},
-                {"type": "metric", "name": "csat_score", "label": "CSAT Score"},
-                {"type": "leaderboard", "name": "agent_leaderboard", "label": "Agent Leaderboard"},
-                {"type": "metric", "name": "compliance_rate", "label": "Compliance Rate"},
-            ],
         }
 
-    # ------------------------------------------------------------------
-    # Report templates
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_report_templates() -> list[str]:
-        """Return available report template names."""
+    def dashboard_widgets(self) -> list[dict[str, Any]]:
         return [
-            "agent_scorecard",
-            "daily_call_summary",
-            "compliance_report",
-            "coaching_report",
+            {"type": "chart", "title": "Call Volume", "metric": "call_count"},
+            {"type": "stat", "title": "Avg Handle Time", "metric": "avg_handle_time"},
+            {"type": "chart", "title": "Sentiment Trend", "metric": "sentiment_avg"},
         ]
 
-    # ------------------------------------------------------------------
-    # Quality rubric
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_quality_rubric() -> dict[str, Any]:
-        """Return the default quality-scoring rubric (weights sum to 1.0)."""
+    def reports(self) -> dict[str, dict[str, Any]]:
         return {
-            "categories": [
-                {
-                    "name": "greeting",
-                    "weight": 0.1,
-                    "criteria": "Agent greets customer by name",
-                },
-                {
-                    "name": "problem_identification",
-                    "weight": 0.2,
-                    "criteria": "Correctly identifies customer issue",
-                },
-                {
-                    "name": "resolution",
-                    "weight": 0.3,
-                    "criteria": "Provides complete solution",
-                },
-                {
-                    "name": "compliance",
-                    "weight": 0.2,
-                    "criteria": "Follows required disclosures",
-                },
-                {
-                    "name": "closing",
-                    "weight": 0.1,
-                    "criteria": "Professional closing",
-                },
-                {
-                    "name": "tone",
-                    "weight": 0.1,
-                    "criteria": "Maintains positive tone throughout",
-                },
-            ],
+            "daily_call_summary": {"name": "Daily Call Summary", "schedule": "daily"},
+            "agent_performance": {"name": "Agent Performance Report", "schedule": "weekly"},
         }

@@ -1,294 +1,184 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useState } from "react";
+import Card from "@/components/ui/Card";
+import Badge from "@/components/ui/Badge";
 
-interface PackInfo {
-  pack_name: string;
+// ---------------------------------------------------------------------------
+// Vertical pack definitions (mirrors backend AVAILABLE_PACKS)
+// ---------------------------------------------------------------------------
+
+interface VerticalPack {
+  slug: string;
   name: string;
-  version: string;
+  icon: string;
   description: string;
-  modules_used: string[];
+  category: string;
+  pipelineCount: number;
+  alertPresetCount: number;
 }
 
-interface PackDetails {
-  info: PackInfo;
-  pipelines: { name: string; description: string }[];
-  alert_presets: { name: string; description: string }[];
-  dashboard: { widgets: { type: string }[]; kpis: string[] };
-  report_templates: string[];
-  model_configs: Record<string, unknown>;
-}
+const VERTICAL_PACKS: VerticalPack[] = [
+  {
+    slug: "security",
+    name: "Security & Surveillance",
+    icon: "\uD83D\uDEE1\uFE0F",
+    description:
+      "Perimeter monitoring, intrusion detection, license plate recognition, and incident management.",
+    category: "Public Safety",
+    pipelineCount: 2,
+    alertPresetCount: 2,
+  },
+  {
+    slug: "healthcare",
+    name: "Healthcare",
+    icon: "\uD83C\uDFE5",
+    description:
+      "Patient monitoring, fall detection, hand-hygiene compliance, and clinical workflow analytics.",
+    category: "Healthcare",
+    pipelineCount: 2,
+    alertPresetCount: 2,
+  },
+  {
+    slug: "callcenter",
+    name: "Call Center",
+    icon: "\uD83C\uDFA7",
+    description:
+      "Call transcription, sentiment analysis, agent coaching, and SLA monitoring.",
+    category: "Customer Service",
+    pipelineCount: 2,
+    alertPresetCount: 2,
+  },
+  {
+    slug: "retail",
+    name: "Retail Analytics",
+    icon: "\uD83D\uDED2",
+    description:
+      "Customer counting, heat-map analytics, shelf monitoring, queue management, and loss-prevention.",
+    category: "Retail",
+    pipelineCount: 5,
+    alertPresetCount: 4,
+  },
+  {
+    slug: "industrial",
+    name: "Industrial Inspection",
+    icon: "\uD83C\uDFED",
+    description:
+      "Equipment defect detection, PPE compliance, vibration analysis, production-line monitoring, and environmental sound classification.",
+    category: "Manufacturing",
+    pipelineCount: 5,
+    alertPresetCount: 4,
+  },
+  {
+    slug: "media",
+    name: "Media Production",
+    icon: "\uD83C\uDFAC",
+    description:
+      "Content moderation, auto-highlight extraction, podcast production, subtitle generation, and thumbnail creation.",
+    category: "Media & Entertainment",
+    pipelineCount: 5,
+    alertPresetCount: 3,
+  },
+  {
+    slug: "education",
+    name: "Education",
+    icon: "\uD83C\uDF93",
+    description:
+      "Lecture transcription, engagement monitoring, lab safety detection, and accessibility captioning.",
+    category: "Education",
+    pipelineCount: 4,
+    alertPresetCount: 3,
+  },
+];
 
-const PACK_ICONS: Record<string, string> = {
-  security: "\u{1F6E1}\uFE0F",
-  healthcare: "\u{1FA7A}",
-  retail: "\u{1F6D2}",
-  manufacturing: "\u{1F3ED}",
-};
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export default function VerticalsPage() {
-  const [packs, setPacks] = useState<PackInfo[]>([]);
-  const [installed, setInstalled] = useState<PackInfo[]>([]);
-  const [selected, setSelected] = useState<PackDetails | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [installed, setInstalled] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState<string | null>(null);
 
-  const workspaceId = "00000000-0000-0000-0000-000000000001";
+  const handleInstall = async (slug: string) => {
+    setLoading(slug);
+    // Simulate install (in production this calls POST /api/verticals/{slug}/install)
+    await new Promise((r) => setTimeout(r, 600));
+    setInstalled((prev) => ({ ...prev, [slug]: true }));
+    setLoading(null);
+  };
 
-  useEffect(() => {
-    fetchPacks();
-  }, []);
-
-  async function fetchPacks() {
-    setLoading(true);
-    try {
-      const [availRes, instRes] = await Promise.all([
-        fetch("/api/verticals"),
-        fetch(`/api/verticals/installed?workspace_id=${workspaceId}`),
-      ]);
-      setPacks(await availRes.json());
-      setInstalled(await instRes.json());
-    } catch {
-      /* swallow for demo */
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleInstall(name: string) {
-    await fetch(`/api/verticals/${name}/install?workspace_id=${workspaceId}`, {
-      method: "POST",
-    });
-    fetchPacks();
-  }
-
-  async function handleUninstall(name: string) {
-    await fetch(`/api/verticals/${name}/uninstall?workspace_id=${workspaceId}`, {
-      method: "POST",
-    });
-    fetchPacks();
-  }
-
-  async function handleDetails(name: string) {
-    const res = await fetch(`/api/verticals/${name}`);
-    setSelected(await res.json());
-  }
-
-  const installedNames = new Set(installed.map((p) => p.pack_name));
+  const handleUninstall = async (slug: string) => {
+    setLoading(slug);
+    await new Promise((r) => setTimeout(r, 400));
+    setInstalled((prev) => ({ ...prev, [slug]: false }));
+    setLoading(null);
+  };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
+      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Vertical Packs</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Pre-configured pipelines, alert rules, dashboards, and report
-          templates for specific industries.
+          Industry-specific starter packs with pre-built pipelines, alert
+          presets, dashboards, and reports.
         </p>
       </div>
 
-      {/* Installed packs */}
-      {installed.length > 0 && (
-        <section>
-          <h2 className="text-lg font-semibold text-gray-800 mb-3">
-            Installed Packs
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {installed.map((pack) => (
-              <div
-                key={pack.pack_name}
-                className="rounded-xl border border-green-200 bg-green-50 p-5 shadow-sm"
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-2xl">
-                    {PACK_ICONS[pack.pack_name] || "\u{1F4E6}"}
-                  </span>
+      {/* Gallery Grid */}
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        {VERTICAL_PACKS.map((pack) => {
+          const isInstalled = !!installed[pack.slug];
+          const isLoading = loading === pack.slug;
+
+          return (
+            <Card key={pack.slug}>
+              <div className="flex flex-col gap-4">
+                {/* Icon + Title */}
+                <div className="flex items-center gap-3">
+                  <span className="text-3xl">{pack.icon}</span>
                   <div>
-                    <h3 className="font-semibold text-gray-900">
+                    <h3 className="text-lg font-semibold text-gray-900">
                       {pack.name}
                     </h3>
-                    <span className="text-xs text-green-700 font-medium">
-                      v{pack.version} — Active
-                    </span>
+                    <Badge variant="info">{pack.category}</Badge>
                   </div>
                 </div>
-                <p className="text-sm text-gray-600 mb-4">
+
+                {/* Description */}
+                <p className="text-sm text-gray-600 leading-relaxed">
                   {pack.description}
                 </p>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleDetails(pack.pack_name)}
-                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    Details
-                  </button>
-                  <button
-                    onClick={() => handleUninstall(pack.pack_name)}
-                    className="rounded-lg border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50"
-                  >
-                    Uninstall
-                  </button>
+
+                {/* Stats */}
+                <div className="flex gap-4 text-xs text-gray-500">
+                  <span>{pack.pipelineCount} pipelines</span>
+                  <span>{pack.alertPresetCount} alert presets</span>
                 </div>
+
+                {/* Install / Uninstall Button */}
+                {isInstalled ? (
+                  <button
+                    onClick={() => handleUninstall(pack.slug)}
+                    disabled={isLoading}
+                    className="w-full rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-100 disabled:opacity-50 transition-colors"
+                  >
+                    {isLoading ? "Removing..." : "Uninstall"}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleInstall(pack.slug)}
+                    disabled={isLoading}
+                    className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                  >
+                    {isLoading ? "Installing..." : "Install Pack"}
+                  </button>
+                )}
               </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Available packs gallery */}
-      <section>
-        <h2 className="text-lg font-semibold text-gray-800 mb-3">
-          Available Packs
-        </h2>
-        {loading ? (
-          <p className="text-sm text-gray-500">Loading...</p>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {packs.map((pack) => (
-              <div
-                key={pack.pack_name}
-                className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm hover:shadow-md transition-shadow"
-              >
-                <div className="flex items-center gap-3 mb-2">
-                  <span className="text-2xl">
-                    {PACK_ICONS[pack.pack_name] || "\u{1F4E6}"}
-                  </span>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">
-                      {pack.name}
-                    </h3>
-                    <span className="text-xs text-gray-500">
-                      v{pack.version}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-sm text-gray-600 mb-2">
-                  {pack.description}
-                </p>
-                <div className="flex flex-wrap gap-1 mb-4">
-                  {pack.modules_used.map((m) => (
-                    <span
-                      key={m}
-                      className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700"
-                    >
-                      {m}
-                    </span>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => handleDetails(pack.pack_name)}
-                    className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    Details
-                  </button>
-                  {installedNames.has(pack.pack_name) ? (
-                    <span className="rounded-lg bg-green-100 px-3 py-1.5 text-sm font-medium text-green-700">
-                      Installed
-                    </span>
-                  ) : (
-                    <button
-                      onClick={() => handleInstall(pack.pack_name)}
-                      className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
-                    >
-                      Install
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Pack detail modal/panel */}
-      {selected && (
-        <section className="rounded-xl border border-gray-200 bg-white p-6 shadow">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-bold text-gray-900">
-              {selected.info.name} — Details
-            </h2>
-            <button
-              onClick={() => setSelected(null)}
-              className="rounded p-1 text-gray-400 hover:text-gray-600"
-            >
-              Close
-            </button>
-          </div>
-
-          {/* Pipelines */}
-          <div className="mb-4">
-            <h3 className="font-semibold text-gray-800 mb-1">
-              Pipelines ({selected.pipelines.length})
-            </h3>
-            <ul className="list-disc list-inside text-sm text-gray-600 space-y-0.5">
-              {selected.pipelines.map((p) => (
-                <li key={p.name}>
-                  <span className="font-medium text-gray-700">{p.name}</span>{" "}
-                  — {p.description}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Alert presets */}
-          <div className="mb-4">
-            <h3 className="font-semibold text-gray-800 mb-1">
-              Alert Presets ({selected.alert_presets.length})
-            </h3>
-            <ul className="list-disc list-inside text-sm text-gray-600 space-y-0.5">
-              {selected.alert_presets.map((a) => (
-                <li key={a.name}>
-                  <span className="font-medium text-gray-700">{a.name}</span>{" "}
-                  — {a.description}
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Dashboard widgets */}
-          <div className="mb-4">
-            <h3 className="font-semibold text-gray-800 mb-1">
-              Dashboard Widgets
-            </h3>
-            <div className="flex flex-wrap gap-2">
-              {selected.dashboard.widgets.map((w) => (
-                <span
-                  key={w.type}
-                  className="rounded bg-gray-100 px-2 py-1 text-xs text-gray-700"
-                >
-                  {w.type}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* KPIs */}
-          <div className="mb-4">
-            <h3 className="font-semibold text-gray-800 mb-1">KPIs</h3>
-            <div className="flex flex-wrap gap-2">
-              {selected.dashboard.kpis.map((k) => (
-                <span
-                  key={k}
-                  className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700"
-                >
-                  {k}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Report templates */}
-          <div>
-            <h3 className="font-semibold text-gray-800 mb-1">
-              Report Templates
-            </h3>
-            <ul className="list-disc list-inside text-sm text-gray-600 space-y-0.5">
-              {selected.report_templates.map((t) => (
-                <li key={t}>{t}</li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      )}
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

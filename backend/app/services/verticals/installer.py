@@ -1,119 +1,123 @@
-"""Vertical pack installer — provision and remove vertical resources for a workspace."""
+"""Vertical pack installer — registry, install, and uninstall logic."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
-from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.services.verticals.base import VerticalPack
+from app.services.verticals.callcenter import CallCenterVerticalPack
+from app.services.verticals.education import EducationVerticalPack
+from app.services.verticals.healthcare import HealthcareVerticalPack
+from app.services.verticals.industrial import IndustrialVerticalPack
+from app.services.verticals.media import MediaVerticalPack
+from app.services.verticals.retail import RetailVerticalPack
+from app.services.verticals.security import SecurityVerticalPack
 
-from app.services.verticals import VERTICAL_PACKS
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Pack registry — every available vertical pack
+# ---------------------------------------------------------------------------
+
+AVAILABLE_PACKS: dict[str, type[VerticalPack]] = {
+    "security": SecurityVerticalPack,
+    "healthcare": HealthcareVerticalPack,
+    "callcenter": CallCenterVerticalPack,
+    "retail": RetailVerticalPack,
+    "industrial": IndustrialVerticalPack,
+    "media": MediaVerticalPack,
+    "education": EducationVerticalPack,
+}
+
+# In-memory store of installed packs (slug → instance).
+# In a real deployment this would be backed by a database.
+_installed_packs: dict[str, VerticalPack] = {}
 
 
-class VerticalInstaller:
-    """Install / uninstall vertical starter packs into workspaces."""
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
-    # In-memory registry of installed packs per workspace (swap for DB table in production).
-    _installed: dict[UUID, dict[str, dict]] = {}
 
-    # ------------------------------------------------------------------
-    # Install
-    # ------------------------------------------------------------------
+def list_available_packs() -> list[dict[str, Any]]:
+    """Return metadata for every available vertical pack."""
+    result: list[dict[str, Any]] = []
+    for slug, cls in AVAILABLE_PACKS.items():
+        pack = cls()
+        info = pack.info()
+        info["installed"] = slug in _installed_packs
+        result.append(info)
+    return result
 
-    @classmethod
-    async def install_pack(
-        cls,
-        db: AsyncSession,
-        workspace_id: UUID,
-        pack_name: str,
-    ) -> dict[str, Any]:
-        """Install a vertical pack into the given workspace.
 
-        Creates pipeline templates, alert rules, applies dashboard config,
-        and records installation metadata.
-        """
-        pack_cls = VERTICAL_PACKS.get(pack_name)
-        if pack_cls is None:
-            raise ValueError(f"Unknown vertical pack: {pack_name}")
+def get_pack(slug: str) -> VerticalPack | None:
+    """Return a pack instance by slug, or ``None``."""
+    cls = AVAILABLE_PACKS.get(slug)
+    return cls() if cls else None
 
-        pipelines = pack_cls.get_pipeline_templates()
-        alert_presets = pack_cls.get_alert_presets()
-        dashboard = pack_cls.get_dashboard_config()
-        model_configs = pack_cls.get_model_configs()
-        report_templates = pack_cls.get_report_templates()
 
-        # Persist installation record
-        ws_packs = cls._installed.setdefault(workspace_id, {})
-        ws_packs[pack_name] = {
-            "info": pack_cls.PACK_INFO,
-            "pipelines": pipelines,
-            "alert_presets": alert_presets,
-            "dashboard": dashboard,
-            "model_configs": model_configs,
-            "report_templates": report_templates,
+def install_pack(slug: str) -> dict[str, Any]:
+    """Install a vertical pack and return summary of what was provisioned.
+
+    Returns::
+
+        {
+            "slug": str,
+            "pipelines_installed": int,
+            "alert_presets_installed": int,
+            "dashboard_widgets": int,
+            "reports_installed": int,
         }
+    """
+    cls = AVAILABLE_PACKS.get(slug)
+    if cls is None:
+        raise KeyError(f"Unknown vertical pack: {slug}")
 
-        return {
-            "installed": True,
-            "pipelines_created": len(pipelines),
-            "rules_created": len(alert_presets),
-            "configs_applied": len(model_configs) + 1,  # +1 for dashboard
-        }
+    pack = cls()
+    _installed_packs[slug] = pack
 
-    # ------------------------------------------------------------------
-    # Uninstall
-    # ------------------------------------------------------------------
+    pipelines = pack.pipelines()
+    presets = pack.alert_presets()
+    widgets = pack.dashboard_widgets()
+    reports = pack.reports()
 
-    @classmethod
-    async def uninstall_pack(
-        cls,
-        db: AsyncSession,
-        workspace_id: UUID,
-        pack_name: str,
-    ) -> dict[str, Any]:
-        """Remove a previously installed vertical pack from a workspace."""
-        ws_packs = cls._installed.get(workspace_id, {})
-        if pack_name in ws_packs:
-            del ws_packs[pack_name]
-            return {"removed": True}
-        return {"removed": False}
+    logger.info(
+        "Installed vertical pack '%s': %d pipelines, %d alert presets, %d widgets, %d reports",
+        slug,
+        len(pipelines),
+        len(presets),
+        len(widgets),
+        len(reports),
+    )
 
-    # ------------------------------------------------------------------
-    # Queries
-    # ------------------------------------------------------------------
+    return {
+        "slug": slug,
+        "pipelines_installed": len(pipelines),
+        "alert_presets_installed": len(presets),
+        "dashboard_widgets": len(widgets),
+        "reports_installed": len(reports),
+    }
 
-    @classmethod
-    async def list_available_packs(cls) -> list[dict]:
-        """Return metadata for every registered vertical pack."""
-        return [
-            {"pack_name": name, **pack_cls.PACK_INFO}
-            for name, pack_cls in VERTICAL_PACKS.items()
-        ]
 
-    @classmethod
-    async def list_installed_packs(
-        cls,
-        db: AsyncSession,
-        workspace_id: UUID,
-    ) -> list[dict]:
-        """Return the list of packs currently installed for a workspace."""
-        ws_packs = cls._installed.get(workspace_id, {})
-        return [
-            {"pack_name": name, **data["info"]}
-            for name, data in ws_packs.items()
-        ]
+def uninstall_pack(slug: str) -> bool:
+    """Remove an installed pack. Returns ``True`` if it was installed."""
+    removed = _installed_packs.pop(slug, None)
+    if removed:
+        logger.info("Uninstalled vertical pack '%s'", slug)
+    return removed is not None
 
-    @classmethod
-    async def get_pack_info(cls, pack_name: str) -> dict[str, Any]:
-        """Return full details for a vertical pack (without installing)."""
-        pack_cls = VERTICAL_PACKS.get(pack_name)
-        if pack_cls is None:
-            raise ValueError(f"Unknown vertical pack: {pack_name}")
-        return {
-            "info": pack_cls.PACK_INFO,
-            "pipelines": pack_cls.get_pipeline_templates(),
-            "alert_presets": pack_cls.get_alert_presets(),
-            "dashboard": pack_cls.get_dashboard_config(),
-            "report_templates": pack_cls.get_report_templates(),
-            "model_configs": pack_cls.get_model_configs(),
-        }
+
+def is_installed(slug: str) -> bool:
+    """Check whether a pack is currently installed."""
+    return slug in _installed_packs
+
+
+def get_installed_packs() -> dict[str, VerticalPack]:
+    """Return all currently installed packs."""
+    return dict(_installed_packs)
+
+
+def reset() -> None:
+    """Clear all installed packs (useful for testing)."""
+    _installed_packs.clear()

@@ -1,189 +1,85 @@
-"""Security & Surveillance vertical pack — pipelines, alert presets, dashboards, and report templates."""
+"""Security vertical starter pack."""
 
 from __future__ import annotations
 
+from typing import Any
 
-class SecurityVerticalPack:
-    """Pre-configured resources for security/surveillance operations."""
+from app.services.verticals.base import VerticalPack
 
-    PACK_INFO = {
-        "name": "Security & Surveillance",
-        "version": "1.0",
-        "description": (
-            "Pre-configured pipelines, alert rules, and dashboards for security operations"
-        ),
-        "modules_used": ["capture", "vision", "alerts", "investigation", "search"],
-    }
 
-    # ------------------------------------------------------------------
-    # Pipeline templates
-    # ------------------------------------------------------------------
+class SecurityVerticalPack(VerticalPack):
+    """Pre-built pipelines and alerts for security / surveillance deployments."""
 
-    @staticmethod
-    def get_pipeline_templates() -> list[dict]:
-        """Return five security-focused pipeline templates."""
-        return [
-            {
-                "name": "perimeter_monitoring",
-                "description": "Detect persons or vehicles breaching the perimeter",
-                "steps": [
-                    {"type": "InputVideo"},
-                    {"type": "DetectObjects", "params": {"classes": ["person", "vehicle"]}},
-                    {"type": "FrameDiff", "params": {"threshold": 15}},
-                    {"type": "Filter", "params": {"condition": "motion", "operator": ">", "value": 5}},
-                    {
-                        "type": "Alert",
-                        "params": {
-                            "severity": "high",
-                            "message": "Perimeter breach detected",
-                        },
-                    },
-                ],
-            },
-            {
-                "name": "intrusion_detection",
-                "description": "Detect and track new objects entering a monitored zone",
-                "steps": [
-                    {"type": "InputVideo"},
-                    {"type": "DetectObjects", "params": {}},
-                    {"type": "Tracking", "params": {}},
-                    {"type": "Filter", "params": {"condition": "new_object_in_zone"}},
-                    {"type": "Alert", "params": {"severity": "critical", "message": "Intrusion detected"}},
-                    {"type": "AutoClip", "params": {"pre_seconds": 10, "post_seconds": 30}},
-                ],
-            },
-            {
-                "name": "loitering_detection",
-                "description": "Alert when a person lingers in an area beyond threshold",
-                "steps": [
-                    {"type": "InputVideo"},
-                    {"type": "DetectObjects", "params": {"classes": ["person"]}},
-                    {"type": "Tracking", "params": {}},
-                    {"type": "LoiteringCheck", "params": {"threshold_seconds": 120}},
-                    {"type": "Alert", "params": {"severity": "medium", "message": "Loitering detected"}},
-                ],
-            },
-            {
-                "name": "vehicle_monitoring",
-                "description": "Track vehicles and read license plates",
-                "steps": [
-                    {"type": "InputVideo"},
-                    {"type": "DetectObjects", "params": {"classes": ["vehicle"]}},
-                    {"type": "LicensePlateOCR", "params": {}},
-                    {"type": "Log", "params": {}},
-                    {
-                        "type": "Alert",
-                        "params": {
-                            "severity": "high",
-                            "condition": "if_unauthorized",
-                            "message": "Unauthorized vehicle detected",
-                        },
-                    },
-                ],
-            },
-            {
-                "name": "crowd_density",
-                "description": "Alert when crowd size exceeds threshold",
-                "steps": [
-                    {"type": "InputVideo"},
-                    {"type": "DetectObjects", "params": {"classes": ["person"]}},
-                    {"type": "CountFilter", "params": {"threshold": 20}},
-                    {"type": "Alert", "params": {"severity": "medium", "message": "Crowd density threshold exceeded"}},
-                ],
-            },
-        ]
-
-    # ------------------------------------------------------------------
-    # Alert presets
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_alert_presets() -> list[dict]:
-        """Return pre-configured alert rules for security operations."""
-        return [
-            {
-                "name": "unauthorized_access",
-                "description": "Triggers when any person is detected in a restricted zone",
-                "conditions": {
-                    "type": "threshold",
-                    "metric": "person_count_in_restricted_zone",
-                    "operator": ">",
-                    "value": 0,
-                },
-                "severity": "critical",
-                "actions": ["webhook", "slack"],
-            },
-            {
-                "name": "camera_tampering",
-                "description": "Triggers on sudden brightness changes indicating tampering",
-                "conditions": {
-                    "type": "threshold",
-                    "metric": "brightness_change",
-                    "operator": ">",
-                    "value": 80,
-                },
-                "severity": "critical",
-                "actions": ["webhook"],
-            },
-            {
-                "name": "unusual_activity",
-                "description": "Triggers when excessive motion events occur in a short window",
-                "conditions": {
-                    "type": "temporal",
-                    "metric": "motion_events",
-                    "min_occurrences": 5,
-                    "window": 60,
-                },
-                "severity": "high",
-                "actions": ["webhook"],
-            },
-        ]
-
-    # ------------------------------------------------------------------
-    # Dashboard configuration
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_dashboard_config() -> dict:
-        """Return default dashboard layout and KPI configuration."""
+    def info(self) -> dict[str, Any]:
         return {
-            "widgets": [
-                {"type": "live_feed_grid", "layout": "2x2"},
-                {"type": "incident_queue"},
-                {"type": "zone_map"},
-                {"type": "alert_history_chart"},
-            ],
-            "kpis": ["response_time", "false_alarm_rate", "coverage_pct"],
+            "name": "Security & Surveillance",
+            "slug": "security",
+            "icon": "shield",
+            "description": "Perimeter monitoring, intrusion detection, license plate recognition, and incident management.",
+            "category": "Public Safety",
         }
 
-    # ------------------------------------------------------------------
-    # Report templates
-    # ------------------------------------------------------------------
+    def pipelines(self) -> dict[str, dict[str, Any]]:
+        return {
+            "perimeter_monitoring": {
+                "name": "Perimeter Monitoring",
+                "description": "Detect motion at facility perimeters and alert on intrusion.",
+                "nodes": [
+                    {"id": "input_1", "type": "input_video", "params": {"path": "", "max_frames": 30}},
+                    {"id": "diff_1", "type": "frame_diff", "params": {}},
+                    {"id": "filter_1", "type": "filter", "params": {"condition": "threshold", "value": 0.15}},
+                    {"id": "detect_1", "type": "detect_objects", "params": {"confidence": 0.5}},
+                    {"id": "alert_1", "type": "alert", "params": {"message": "Perimeter breach detected", "severity": "critical"}},
+                ],
+                "edges": [
+                    {"from": "input_1", "to": "diff_1", "from_port": "output", "to_port": "input"},
+                    {"from": "diff_1", "to": "filter_1", "from_port": "output", "to_port": "input"},
+                    {"from": "filter_1", "to": "detect_1", "from_port": "output", "to_port": "input"},
+                    {"from": "detect_1", "to": "alert_1", "from_port": "output", "to_port": "input"},
+                ],
+            },
+            "license_plate_recognition": {
+                "name": "License Plate Recognition",
+                "description": "Detect and read license plates from camera feeds.",
+                "nodes": [
+                    {"id": "input_1", "type": "input_image", "params": {"path": ""}},
+                    {"id": "normalize_1", "type": "normalize", "params": {"method": "min_max"}},
+                    {"id": "detect_1", "type": "detect_objects", "params": {"confidence": 0.6}},
+                    {"id": "save_1", "type": "save_asset", "params": {"filename": "plates.json", "format": "json"}},
+                ],
+                "edges": [
+                    {"from": "input_1", "to": "normalize_1", "from_port": "output", "to_port": "input"},
+                    {"from": "normalize_1", "to": "detect_1", "from_port": "output", "to_port": "input"},
+                    {"from": "detect_1", "to": "save_1", "from_port": "output", "to_port": "input"},
+                ],
+            },
+        }
 
-    @staticmethod
-    def get_report_templates() -> list[str]:
-        """Return available report template names."""
+    def alert_presets(self) -> dict[str, dict[str, Any]]:
+        return {
+            "intrusion_detected": {
+                "name": "Intrusion Detected",
+                "severity": "critical",
+                "conditions": {"motion_score": {">": 0.8}, "zone": "perimeter"},
+                "cooldown_seconds": 30,
+            },
+            "loitering": {
+                "name": "Loitering Alert",
+                "severity": "warning",
+                "conditions": {"dwell_time_seconds": {">": 120}},
+                "cooldown_seconds": 60,
+            },
+        }
+
+    def dashboard_widgets(self) -> list[dict[str, Any]]:
         return [
-            "daily_security_summary",
-            "incident_report",
-            "weekly_analytics",
-            "compliance_audit",
+            {"type": "chart", "title": "Incidents Over Time", "metric": "incident_count"},
+            {"type": "map", "title": "Camera Coverage", "metric": "camera_status"},
+            {"type": "stat", "title": "Active Alerts", "metric": "active_alert_count"},
         ]
 
-    # ------------------------------------------------------------------
-    # Model / detection configuration
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def get_model_configs() -> dict:
-        """Return tuned model configurations for security use-cases."""
+    def reports(self) -> dict[str, dict[str, Any]]:
         return {
-            "object_detection": {
-                "model": "yolov8n",
-                "confidence": 0.6,
-                "classes": ["person", "vehicle", "backpack", "knife"],
-            },
-            "anomaly": {
-                "sensitivity": "high",
-            },
+            "daily_incident": {"name": "Daily Incident Report", "schedule": "daily"},
+            "weekly_security": {"name": "Weekly Security Summary", "schedule": "weekly"},
         }

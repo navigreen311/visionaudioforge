@@ -1,1 +1,1 @@
-"""Vertical-specific packs for industry solutions."""
+"""Vertical starter packs for industry-specific deployments."""
