@@ -11,6 +11,7 @@ from app.models.embedding import Embedding
 from app.models.event import Event
 from app.models.audit_log import AuditLog
 from app.models.agent import Agent, AgentMemory
+from app.models.annotation import Annotation
 
 __all__ = [
     "Base",
@@ -32,4 +33,5 @@ __all__ = [
     "AuditLog",
     "Agent",
     "AgentMemory",
+    "Annotation",
 ]
