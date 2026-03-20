@@ -22,9 +22,8 @@ const navItems = [
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
-  { href: "/edge", label: "Edge Deploy", icon: "\uD83D\uDCE6" },
   { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
-  { href: "/verticals", label: "Verticals", icon: "\uD83D\uDEE1\uFE0F" },
+  { href: "/federated", label: "Federated", icon: "\uD83C\uDF10" },
   { href: "/settings", label: "Settings", icon: "\u2699" },
 ];
 
