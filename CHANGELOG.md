@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0] - 2026-03-20
+
+### Added
+- Object detection service (`ObjectDetector`) with YOLOv8 and graceful ImportError fallback
+- OCR service (`OCREngine`) with pytesseract and stub fallback
+- Systematic error analysis: confusion matrix, per-class metrics, top confusions, quality reports
+- API endpoints: `POST /api/vision/detect`, `/api/vision/ocr`, `/api/vision/error-analysis`
+- Comprehensive test suite for detection, OCR, error analysis, and API routes
+- Documentation at `docs/vision-detection.md`
+
 ## [0.1.0] - 2026-03-20
 
 ### Added
