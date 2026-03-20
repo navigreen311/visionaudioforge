@@ -1,13 +1,15 @@
-"""Vision API routes: detection, OCR, error analysis, and stubs."""
+"""Vision API routes: detection, OCR, error analysis, depth, anomaly,
+face/plate detection, screen intelligence, and stubs."""
 
 from __future__ import annotations
 
 import base64
+import json
 import time
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
@@ -17,6 +19,10 @@ from app.services.vision.ocr import OCREngine
 from app.services.vision.tracking import MultiObjectTracker
 from app.services.vision.segmentation import SegmentationService
 from app.services.vision.pose import PoseEstimator
+from app.services.vision.depth import DepthEstimator
+from app.services.vision.anomaly import AnomalyDetector
+from app.services.vision.face_plate import FacePlateDetector
+from app.services.vision.screen_intel import ScreenIntelligence
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
@@ -25,6 +31,10 @@ _detector = ObjectDetector()
 _ocr_engine = OCREngine()
 _segmentation = SegmentationService()
 _pose_estimator = PoseEstimator()
+_depth_estimator = DepthEstimator()
+_anomaly_detector = AnomalyDetector()
+_face_plate_detector = FacePlateDetector()
+_screen_intel = ScreenIntelligence()
 
 
 # ------------------------------------------------------------------
@@ -48,8 +58,9 @@ async def frame_diff():
 
 
 @router.post("/screen-analyze")
-async def screen_analyze():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "vision"})
+async def screen_analyze(file: UploadFile = File(...)):
+    """Analyze a screenshot for UI elements, layout, and content."""
+    return await screen_intel(file)
 
 
 # ------------------------------------------------------------------
@@ -312,5 +323,173 @@ async def pose(file: UploadFile = File(...)):
         "poses": serialized_poses,
         "count": len(poses),
         "visualization": visualization,
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Depth estimation
+# ------------------------------------------------------------------
+
+
+@router.post("/depth")
+async def depth(
+    file: UploadFile = File(...),
+    method: str = Query("relative", description="Depth method: relative"),
+):
+    """Estimate depth from an uploaded image."""
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    result = _depth_estimator.estimate_depth(image, method=method)
+
+    # Encode visualization as base64
+    _, buf = cv2.imencode(".png", result["visualization"])
+    visualization_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "min_depth": result["min_depth"],
+        "max_depth": result["max_depth"],
+        "depth_map_shape": list(result["depth_map"].shape),
+        "visualization": visualization_b64,
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Anomaly detection
+# ------------------------------------------------------------------
+
+
+@router.post("/anomaly")
+async def anomaly(
+    file: UploadFile = File(...),
+    reference_stats: str | None = Form(None, description="JSON reference stats"),
+):
+    """Detect anomalies in an uploaded image."""
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    result = _anomaly_detector.detect_anomaly(image)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "is_anomaly": result["is_anomaly"],
+        "anomaly_score": result["anomaly_score"],
+        "anomaly_regions": result["anomaly_regions"],
+        "reason": result["reason"],
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Face detection
+# ------------------------------------------------------------------
+
+
+@router.post("/faces")
+async def faces(file: UploadFile = File(...)):
+    """Detect faces in an uploaded image."""
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    face_detections = _face_plate_detector.detect_faces(image)
+
+    # Generate visualization
+    annotated = _face_plate_detector.draw_detections(image, faces=face_detections)
+    _, buf = cv2.imencode(".png", annotated)
+    visualization = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "faces": face_detections,
+        "count": len(face_detections),
+        "visualization": visualization,
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# License plate detection
+# ------------------------------------------------------------------
+
+
+@router.post("/plates")
+async def plates(file: UploadFile = File(...)):
+    """Detect license plates in an uploaded image with optional OCR."""
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    plate_detections = _face_plate_detector.detect_license_plates(image)
+
+    # Generate visualization
+    annotated = _face_plate_detector.draw_detections(image, plates=plate_detections)
+    _, buf = cv2.imencode(".png", annotated)
+    visualization = base64.b64encode(buf.tobytes()).decode("utf-8")
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "plates": plate_detections,
+        "count": len(plate_detections),
+        "visualization": visualization,
+        "processing_time_ms": round(elapsed_ms, 2),
+    }
+
+
+# ------------------------------------------------------------------
+# Screen intelligence
+# ------------------------------------------------------------------
+
+
+@router.post("/screen-intel")
+async def screen_intel(file: UploadFile = File(...)):
+    """Full screen analysis: UI elements, text, layout, colors."""
+    t0 = time.perf_counter()
+
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    result = _screen_intel.analyze_screenshot(image)
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return {
+        "ui_elements": result["ui_elements"],
+        "text_content": result["text_content"],
+        "brightness": result["brightness"],
+        "edge_density": result["edge_density"],
+        "dominant_colors": result["dominant_colors"],
+        "layout_type": result["layout_type"],
         "processing_time_ms": round(elapsed_ms, 2),
     }
