@@ -16,10 +16,18 @@ from starlette.responses import JSONResponse
 from app.schemas.audio import AudioAugmentResponse
 from app.services.audio.augmentation import AudioAugmenter
 from app.services.audio.augmentation_presets import PRESETS
+from app.services.audio.stt import SpeechToTextService
+from app.services.audio.vad import VoiceActivityDetector
+from app.services.audio.separation import SourceSeparator
+from app.services.audio.classification import AudioClassifier
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
 _augmenter = AudioAugmenter()
+_stt = SpeechToTextService()
+_vad = VoiceActivityDetector()
+_separator = SourceSeparator()
+_classifier = AudioClassifier()
 
 
 @router.post("/analyze")
@@ -86,3 +94,96 @@ async def augment(
         augmented_duration_s=round(augmented_duration_s, 4),
         processing_time_ms=round(elapsed_ms, 2),
     )
+
+
+# ---------------------------------------------------------------------------
+# Speech-to-text
+# ---------------------------------------------------------------------------
+
+
+@router.post("/transcribe")
+async def transcribe(
+    file: UploadFile = File(...),
+    language: str | None = Form(None),
+):
+    """Transcribe speech in an uploaded audio file using Whisper."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = await _stt.transcribe(audio, sr, language=language)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Voice Activity Detection
+# ---------------------------------------------------------------------------
+
+
+@router.post("/vad")
+async def vad(file: UploadFile = File(...)):
+    """Detect speech segments in an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    segments = _vad.get_speech_segments(audio, sr)
+    speech_ratio = _vad.get_speech_ratio(audio, sr)
+
+    return {
+        "segments": segments,
+        "speech_ratio": round(speech_ratio, 4),
+        "duration_s": round(len(audio) / sr, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Source Separation
+# ---------------------------------------------------------------------------
+
+
+@router.post("/separate")
+async def separate(
+    file: UploadFile = File(...),
+    stems: str = Form("vocals,drums,bass,other"),
+):
+    """Separate an audio file into stems, returned as base64-encoded WAV."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    stem_list = [s.strip() for s in stems.split(",") if s.strip()]
+    separated = await _separator.separate(audio, sr, stems=stem_list)
+
+    # Encode each stem as base64 WAV
+    result: dict[str, str] = {}
+    for name, stem_audio in separated.items():
+        buf = io.BytesIO()
+        sf.write(buf, stem_audio, sr, format="WAV")
+        result[name] = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return {"stems": result}
+
+
+# ---------------------------------------------------------------------------
+# Audio Classification
+# ---------------------------------------------------------------------------
+
+
+@router.post("/classify")
+async def classify(file: UploadFile = File(...)):
+    """Classify the content of an uploaded audio file."""
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = _classifier.classify_sound(audio, sr)
+    return result
