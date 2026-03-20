@@ -20,6 +20,263 @@ api.interceptors.request.use((config) => {
 export default api;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const WORKSPACE_ID_PARAM = "00000000-0000-0000-0000-000000000001";
+
+function getWorkspaceId(): string {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("workspace_id") || WORKSPACE_ID_PARAM;
+  }
+  return WORKSPACE_ID_PARAM;
+}
+
+// ---------------------------------------------------------------------------
+// Auth API
+// ---------------------------------------------------------------------------
+
+export interface UserResponse {
+  id: string;
+  email: string;
+  workspace_id: string;
+  created_at: string;
+}
+
+export interface AuthResponse {
+  access_token: string;
+  refresh_token: string;
+  user: UserResponse;
+}
+
+export interface TokenResponse {
+  access_token: string;
+  refresh_token: string;
+}
+
+export async function login(email: string, password: string): Promise<AuthResponse> {
+  const { data } = await api.post("/api/auth/login", { email, password });
+  return data;
+}
+
+export async function register(
+  email: string,
+  password: string,
+  workspace_name: string,
+): Promise<AuthResponse> {
+  const { data } = await api.post("/api/auth/register", { email, password, workspace_name });
+  return data;
+}
+
+export async function refresh(refreshToken: string): Promise<TokenResponse> {
+  const { data } = await api.post("/api/auth/refresh", { refresh_token: refreshToken });
+  return data;
+}
+
+export async function getMe(): Promise<UserResponse> {
+  const { data } = await api.get("/api/auth/me");
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Vision API
+// ---------------------------------------------------------------------------
+
+export interface VisionAnalyzeResult {
+  stft?: unknown;
+  mel?: unknown;
+  mfcc?: unknown;
+  waveform?: unknown;
+  [key: string]: unknown;
+}
+
+export interface OpticalFlowResult {
+  flow_magnitude: number;
+  flow_image?: string;
+  [key: string]: unknown;
+}
+
+export interface DetectResult {
+  detections: Array<{
+    label: string;
+    confidence: number;
+    bbox: [number, number, number, number];
+  }>;
+  [key: string]: unknown;
+}
+
+export interface OCRResult {
+  text: string;
+  blocks: Array<{ text: string; confidence: number; bbox: number[] }>;
+  [key: string]: unknown;
+}
+
+export interface ErrorAnalysisResult {
+  summary: string;
+  errors: Array<{ type: string; description: string; severity: string }>;
+  [key: string]: unknown;
+}
+
+export async function analyzeImage(
+  file: File,
+  operations?: Record<string, unknown>,
+): Promise<VisionAnalyzeResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (operations) formData.append("operations", JSON.stringify(operations));
+  const { data } = await api.post("/api/vision/analyze", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function computeOpticalFlow(
+  frame1: File,
+  frame2: File,
+  method?: string,
+): Promise<OpticalFlowResult> {
+  const formData = new FormData();
+  formData.append("frame1", frame1);
+  formData.append("frame2", frame2);
+  if (method) formData.append("method", method);
+  const { data } = await api.post("/api/vision/optical-flow", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function detectObjects(
+  file: File,
+  confidence?: number,
+  classFilter?: string,
+): Promise<DetectResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (confidence !== undefined) formData.append("confidence", String(confidence));
+  if (classFilter) formData.append("class_filter", classFilter);
+  const { data } = await api.post("/api/vision/detect", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function extractText(file: File): Promise<OCRResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post("/api/vision/ocr", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function analyzeErrors(body: {
+  model_id: string;
+  dataset_id: string;
+  metric?: string;
+}): Promise<ErrorAnalysisResult> {
+  const { data } = await api.post("/api/vision/error-analysis", body);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Audio API
+// ---------------------------------------------------------------------------
+
+export interface AudioAnalysisResult {
+  stft?: unknown;
+  mel?: unknown;
+  mfcc?: unknown;
+  waveform?: unknown;
+  [key: string]: unknown;
+}
+
+export interface AugmentationStep {
+  name: string;
+  params: Record<string, unknown>;
+}
+
+export interface AugmentationConfig {
+  preset?: string;
+  steps: AugmentationStep[];
+}
+
+export interface AugmentationResult {
+  audio_base64: string;
+  sample_rate: number;
+  duration: number;
+  steps_applied: string[];
+}
+
+export interface CallAnalysisResult {
+  transcript: string;
+  sentiment: string;
+  topics: string[];
+  summary: string;
+  [key: string]: unknown;
+}
+
+export async function analyzeAudio(
+  file: File,
+  operations: string[],
+): Promise<AudioAnalysisResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  operations.forEach((op) => formData.append("operations", op));
+  const { data } = await api.post("/api/audio/analyze", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function augmentAudio(
+  file: File,
+  config: AugmentationConfig,
+): Promise<AugmentationResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("config", JSON.stringify(config));
+  const { data } = await api.post("/api/audio/augment", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function transcribeAudio(
+  file: File,
+  language?: string,
+): Promise<{ text: string; segments: unknown[] }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  if (language) formData.append("language", language);
+  const { data } = await api.post("/api/audio/transcribe", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function diarizeAudio(
+  file: File,
+): Promise<{ segments: Array<{ speaker: string; start: number; end: number; text?: string }> }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post("/api/audio/diarize", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function analyzeCall(
+  file: File,
+): Promise<CallAnalysisResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post("/api/audio/analyze-call", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
 // Model Registry API
 // ---------------------------------------------------------------------------
 
@@ -96,6 +353,489 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
   const { data } = await api.post(`/api/registry/models/${modelId}/rollback`, {
     to_version: toVersion,
   });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Experiments API
+// ---------------------------------------------------------------------------
+
+export interface Experiment {
+  id: string;
+  name: string;
+  model_id: string;
+  dataset_id: string;
+  config: Record<string, unknown>;
+  status: string;
+  metrics?: Record<string, number>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedExperiments {
+  items: Experiment[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function listExperiments(
+  skip = 0,
+  limit = 20,
+): Promise<PaginatedExperiments> {
+  const { data } = await api.get("/api/experiments", {
+    params: { skip, limit, workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createExperiment(payload: {
+  name: string;
+  model_id: string;
+  dataset_id: string;
+  config: Record<string, unknown>;
+}): Promise<Experiment> {
+  const { data } = await api.post("/api/experiments", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
+export async function startTraining(experimentId: string): Promise<Experiment> {
+  const { data } = await api.post(`/api/experiments/${experimentId}/epochs`, {
+    action: "start",
+  });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Datasets API
+// ---------------------------------------------------------------------------
+
+export interface Dataset {
+  id: string;
+  name: string;
+  format: string;
+  sample_count: number;
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedDatasets {
+  items: Dataset[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function listDatasets(
+  skip = 0,
+  limit = 20,
+): Promise<PaginatedDatasets> {
+  const { data } = await api.get("/api/datasets", {
+    params: { skip, limit, workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createDataset(payload: {
+  name: string;
+  format: string;
+}): Promise<Dataset> {
+  const { data } = await api.post("/api/datasets", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
+export async function uploadSamples(
+  datasetId: string,
+  file: File,
+): Promise<{ count: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const { data } = await api.post(`/api/datasets/${datasetId}/upload`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function splitDataset(
+  datasetId: string,
+  ratios: { train: number; val: number; test: number },
+): Promise<{ train: number; val: number; test: number }> {
+  const { data } = await api.post(`/api/datasets/${datasetId}/split`, ratios);
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Search API
+// ---------------------------------------------------------------------------
+
+export interface SearchResult {
+  id: string;
+  asset_id: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  query_time_ms: number;
+}
+
+export interface StatsResponse {
+  total_indexed: number;
+  by_modality: Record<string, number>;
+}
+
+export async function searchQuery(
+  query: string,
+  k = 10,
+  modality?: string,
+): Promise<SearchResponse> {
+  const { data } = await api.post("/api/search/query", { query, k, modality });
+  return data;
+}
+
+export async function indexAsset(body: {
+  asset_id: string;
+  modality: string;
+  content_url: string;
+}): Promise<{ status: string; asset_id: string }> {
+  const { data } = await api.post("/api/search/index", body);
+  return data;
+}
+
+export async function searchStats(): Promise<StatsResponse> {
+  const { data } = await api.get("/api/search/stats");
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline API
+// ---------------------------------------------------------------------------
+
+export interface PipelineNode {
+  type: string;
+  label: string;
+  description: string;
+  inputs: string[];
+  outputs: string[];
+}
+
+export interface Pipeline {
+  id: string;
+  name: string;
+  description?: string;
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedPipelines {
+  items: Pipeline[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface PipelineRunStart {
+  run_id: string;
+  status: string;
+}
+
+export async function listPipelines(
+  skip = 0,
+  limit = 20,
+): Promise<PaginatedPipelines> {
+  const { data } = await api.get("/api/pipelines", {
+    params: { skip, limit, workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createPipeline(payload: {
+  name: string;
+  description?: string;
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+}): Promise<Pipeline> {
+  const { data } = await api.post("/api/pipeline/create", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
+export async function runPipeline(pipelineId: string): Promise<PipelineRunStart> {
+  const { data } = await api.post(`/api/pipeline/run/${pipelineId}`);
+  return data;
+}
+
+export async function listNodes(): Promise<PipelineNode[]> {
+  const { data } = await api.get("/api/pipeline/nodes");
+  return data;
+}
+
+export async function generateFromDescription(
+  description: string,
+): Promise<{ nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }> {
+  const { data } = await api.post("/api/pipeline/generate", { description });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Alerts API
+// ---------------------------------------------------------------------------
+
+export type AlertSeverity = "critical" | "high" | "medium" | "low";
+export type AlertStatus = "firing" | "acknowledged" | "resolved" | "dismissed";
+
+export interface Alert {
+  id: string;
+  rule_id: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  message: string;
+  metric_value: number;
+  threshold: number;
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertFilters {
+  severity?: AlertSeverity;
+  status?: AlertStatus;
+  skip?: number;
+  limit?: number;
+}
+
+export interface AlertStatsData {
+  total: number;
+  by_severity: Record<AlertSeverity, number>;
+  by_status: Record<AlertStatus, number>;
+}
+
+export interface AlertRuleCondition {
+  metric: string;
+  operator: ">" | "<" | "==" | "!=" | ">=" | "<=";
+  threshold: number;
+  window_seconds: number;
+}
+
+export interface AlertRuleAction {
+  type: "webhook" | "email" | "slack" | "discord" | "sms" | "log";
+  target: string;
+}
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  conditions: AlertRuleCondition[];
+  actions: AlertRuleAction[];
+  enabled: boolean;
+  workspace_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleCreatePayload {
+  name: string;
+  conditions: AlertRuleCondition[] | Record<string, unknown>;
+  actions: AlertRuleAction[] | Record<string, unknown>[];
+  enabled: boolean;
+  escalation_config?: EscalationConfig;
+}
+
+export interface EscalationLevel {
+  after_minutes: number;
+  action: string;
+}
+
+export interface EscalationConfig {
+  levels: EscalationLevel[];
+}
+
+export interface DeliveryTestResult {
+  status: string;
+  note?: string;
+  status_code?: number;
+  response_time_ms?: number;
+}
+
+export interface RuleTestResult {
+  triggered: boolean;
+  matched_conditions: string[];
+  details: string;
+}
+
+export async function listAlerts(filters: AlertFilters = {}): Promise<{ items: Alert[]; total: number }> {
+  const { data } = await api.get("/api/alerts", {
+    params: { workspace_id: getWorkspaceId(), ...filters },
+  });
+  return data;
+}
+
+export async function getAlertStats(): Promise<AlertStatsData> {
+  const { data } = await api.get("/api/alerts/stats", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function acknowledgeAlert(alertId: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${alertId}/acknowledge`);
+  return data;
+}
+
+export async function resolveAlert(alertId: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${alertId}/resolve`);
+  return data;
+}
+
+export async function dismissAlert(alertId: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${alertId}/dismiss`);
+  return data;
+}
+
+export async function listRules(): Promise<AlertRule[]> {
+  const { data } = await api.get("/api/alerts/rules", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
+  const { data } = await api.post("/api/alerts/rules", payload, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function updateRule(
+  ruleId: string,
+  payload: Partial<AlertRuleCreatePayload>,
+): Promise<AlertRule> {
+  const { data } = await api.put(`/api/alerts/rules/${ruleId}`, payload);
+  return data;
+}
+
+export async function deleteRule(ruleId: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/${ruleId}`);
+}
+
+export async function testRule(
+  ruleId: string,
+  conditions: Record<string, unknown>,
+  sampleMetrics: Record<string, number>,
+): Promise<RuleTestResult> {
+  const { data } = await api.post(`/api/alerts/rules/${ruleId}/test`, {
+    conditions,
+    sample_metrics: sampleMetrics,
+  });
+  return data;
+}
+
+export async function testDeliveryChannel(
+  channel: string,
+  config: Record<string, unknown>,
+): Promise<DeliveryTestResult> {
+  const { data } = await api.post("/api/alerts/delivery/test", { channel, config });
+  return data;
+}
+
+export async function listEscalations(): Promise<unknown[]> {
+  const { data } = await api.get("/api/alerts/escalations", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function escalateAlert(
+  alertId: string,
+  escalationConfig: EscalationConfig,
+): Promise<unknown> {
+  const { data } = await api.post(`/api/alerts/${alertId}/escalate`, {
+    escalation_config: escalationConfig,
+  });
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Agents API
+// ---------------------------------------------------------------------------
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResponse {
+  reply: string;
+  actions?: Array<{ type: string; description: string }>;
+}
+
+export interface Agent {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  workspace_id: string;
+  created_at: string;
+}
+
+export interface Memory {
+  id: string;
+  agent_id: string;
+  content: string;
+  importance: number;
+  created_at: string;
+}
+
+export async function chatWithCopilot(
+  agentId: string,
+  message: string,
+  history?: ChatMessage[],
+): Promise<ChatResponse> {
+  const { data } = await api.post("/api/agents/chat", {
+    agent_id: agentId,
+    message,
+    history: history || [],
+  });
+  return data;
+}
+
+export async function listAgents(): Promise<Agent[]> {
+  const { data } = await api.get("/api/agents", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createAgent(payload: {
+  name: string;
+  type: string;
+}): Promise<Agent> {
+  const { data } = await api.post("/api/agents", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
+export async function getMemory(agentId: string): Promise<Memory[]> {
+  const { data } = await api.get(`/api/agents/${agentId}/memory`);
   return data;
 }
 
@@ -196,130 +936,40 @@ export function downloadAssetUrl(assetId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Alerts API
+// Transform API
 // ---------------------------------------------------------------------------
 
-export interface AlertRuleCondition {
-  metric: string;
-  operator: ">" | "<" | "==" | "!=" | ">=" | "<=";
-  threshold: number;
-  window_seconds: number;
+export interface TransformResult {
+  output_url?: string;
+  output_base64?: string;
+  duration?: number;
+  [key: string]: unknown;
 }
 
-export interface AlertRuleAction {
-  type: "webhook" | "email" | "slack" | "discord" | "sms" | "log";
-  target: string;
-}
-
-export interface AlertRule {
-  id: string;
-  name: string;
-  conditions: AlertRuleCondition[];
-  actions: AlertRuleAction[];
-  enabled: boolean;
-  workspace_id: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface AlertRuleCreatePayload {
-  name: string;
-  conditions: AlertRuleCondition[] | Record<string, unknown>;
-  actions: AlertRuleAction[] | Record<string, unknown>[];
-  enabled: boolean;
-  escalation_config?: EscalationConfig;
-}
-
-export interface EscalationLevel {
-  after_minutes: number;
-  action: string;
-}
-
-export interface EscalationConfig {
-  levels: EscalationLevel[];
-}
-
-export interface DeliveryTestResult {
-  status: string;
-  note?: string;
-  status_code?: number;
-  response_time_ms?: number;
-}
-
-export interface RuleTestResult {
-  triggered: boolean;
-  matched_conditions: string[];
-  details: string;
-}
-
-const WORKSPACE_ID_PARAM = "00000000-0000-0000-0000-000000000001";
-
-function getWorkspaceId(): string {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("workspace_id") || WORKSPACE_ID_PARAM;
-  }
-  return WORKSPACE_ID_PARAM;
-}
-
-export async function listRules(): Promise<AlertRule[]> {
-  const { data } = await api.get("/api/alerts/rules", {
-    params: { workspace_id: getWorkspaceId() },
+export async function audioTransform(
+  file: File,
+  operations: Array<{ name: string; params?: Record<string, unknown> }>,
+): Promise<TransformResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("operations", JSON.stringify(operations));
+  const { data } = await api.post("/api/transform/audio/chain", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
   return data;
 }
 
-export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
-  const { data } = await api.post("/api/alerts/rules", payload, {
-    params: { workspace_id: getWorkspaceId() },
-  });
-  return data;
-}
-
-export async function updateRule(
-  ruleId: string,
-  payload: Partial<AlertRuleCreatePayload>,
-): Promise<AlertRule> {
-  const { data } = await api.put(`/api/alerts/rules/${ruleId}`, payload);
-  return data;
-}
-
-export async function deleteRule(ruleId: string): Promise<void> {
-  await api.delete(`/api/alerts/rules/${ruleId}`);
-}
-
-export async function testRule(
-  ruleId: string,
-  conditions: Record<string, unknown>,
-  sampleMetrics: Record<string, number>,
-): Promise<RuleTestResult> {
-  const { data } = await api.post(`/api/alerts/rules/${ruleId}/test`, {
-    conditions,
-    sample_metrics: sampleMetrics,
-  });
-  return data;
-}
-
-export async function testDeliveryChannel(
-  channel: string,
-  config: Record<string, unknown>,
-): Promise<DeliveryTestResult> {
-  const { data } = await api.post("/api/alerts/delivery/test", { channel, config });
-  return data;
-}
-
-export async function listEscalations(): Promise<unknown[]> {
-  const { data } = await api.get("/api/alerts/escalations", {
-    params: { workspace_id: getWorkspaceId() },
-  });
-  return data;
-}
-
-export async function escalateAlert(
-  alertId: string,
-  escalationConfig: EscalationConfig,
-): Promise<unknown> {
-  const { data } = await api.post(`/api/alerts/${alertId}/escalate`, {
-    escalation_config: escalationConfig,
+export async function videoTransform(
+  file: File,
+  operation: string,
+  params?: Record<string, unknown>,
+): Promise<TransformResult> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("operation", operation);
+  if (params) formData.append("params", JSON.stringify(params));
+  const { data } = await api.post(`/api/transform/video/${operation}`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
   });
   return data;
 }
