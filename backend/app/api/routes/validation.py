@@ -7,10 +7,12 @@ import base64
 from uuid import UUID
 
 import numpy as np
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
+from app.core.deps import get_db
 from app.services.validation.service import ValidationService
 from app.services.validation.explainability import ExplainabilityService
 
@@ -70,36 +72,19 @@ async def uncertainty_estimation(body: UncertaintyRequest):
 
 
 @router.get("/model-card/{model_id}")
-async def get_model_card(model_id: UUID):
-    """Generate a model card for the specified model.
-
-    NOTE: requires a live DB session. Returns a stub when DB is unavailable.
-    """
-    # V1 stub — a real implementation would inject the DB dependency.
-    return JSONResponse(
-        status_code=501,
-        content={
-            "status": "not_implemented",
-            "detail": "Model card generation requires database integration (V2).",
-            "model_id": str(model_id),
-        },
-    )
+async def get_model_card(model_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Generate a model card for the specified model."""
+    card = await _svc.generate_model_card(db, model_id)
+    if "error" in card:
+        raise HTTPException(status_code=404, detail=card["error"])
+    return card
 
 
 @router.get("/audit/{model_id}")
-async def get_audit_trail(model_id: UUID):
-    """Return audit trail events for a model.
-
-    NOTE: requires a live DB session. Returns a stub when DB is unavailable.
-    """
-    return JSONResponse(
-        status_code=501,
-        content={
-            "status": "not_implemented",
-            "detail": "Audit trail requires database integration (V2).",
-            "model_id": str(model_id),
-        },
-    )
+async def get_audit_trail(model_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return audit trail events for a model."""
+    events = await _svc.audit_trail(db, model_id)
+    return {"model_id": str(model_id), "events": events}
 
 
 @router.post("/explain")
