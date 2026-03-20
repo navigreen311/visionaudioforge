@@ -98,3 +98,99 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
   });
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Assets API
+// ---------------------------------------------------------------------------
+
+export type AssetType = "image" | "video" | "audio";
+
+export interface Asset {
+  id: string;
+  filename: string;
+  type: AssetType;
+  size: number;
+  tags: string[];
+  mime_type: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  thumbnail_url?: string;
+  url?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaginatedAssets {
+  items: Asset[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AssetFiltersParams {
+  type?: AssetType;
+  tags?: string;
+  search?: string;
+  sort_by?: "created_at" | "filename" | "size";
+  sort_dir?: "asc" | "desc";
+  page?: number;
+  page_size?: number;
+}
+
+export async function listAssets(filters: AssetFiltersParams = {}): Promise<PaginatedAssets> {
+  const params: Record<string, string | number> = {};
+  if (filters.type) params.type = filters.type;
+  if (filters.tags) params.tags = filters.tags;
+  if (filters.search) params.search = filters.search;
+  if (filters.sort_by) params.sort_by = filters.sort_by;
+  if (filters.sort_dir) params.sort_dir = filters.sort_dir;
+  if (filters.page) params.page = filters.page;
+  if (filters.page_size) params.page_size = filters.page_size;
+  const { data } = await api.get("/api/assets", { params });
+  return data;
+}
+
+export async function uploadAsset(
+  file: File,
+  type: AssetType,
+  tags: string[],
+  onProgress?: (pct: number) => void,
+): Promise<Asset> {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("type", type);
+  if (tags.length > 0) formData.append("tags", tags.join(","));
+  const { data } = await api.post("/api/assets/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    onUploadProgress: (e) => {
+      if (e.total && onProgress) {
+        onProgress(Math.round((e.loaded * 100) / e.total));
+      }
+    },
+  });
+  return data;
+}
+
+export async function getAsset(assetId: string): Promise<Asset> {
+  const { data } = await api.get(`/api/assets/${assetId}`);
+  return data;
+}
+
+export async function updateAsset(
+  assetId: string,
+  updates: { tags?: string[]; filename?: string },
+): Promise<Asset> {
+  const { data } = await api.put(`/api/assets/${assetId}`, updates);
+  return data;
+}
+
+export async function deleteAsset(assetId: string): Promise<void> {
+  await api.delete(`/api/assets/${assetId}`);
+}
+
+export function downloadAssetUrl(assetId: string): string {
+  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  return `${base}/api/assets/${assetId}/download`;
+}
