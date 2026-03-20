@@ -214,9 +214,9 @@ function ScenariosTab() {
                   {ev?.confidence !== undefined && (
                     <span className="ml-2 text-gray-500">conf={String(ev.confidence)}</span>
                   )}
-                  {ev?.severity && (
+                  {ev?.severity ? (
                     <span className="ml-2 text-red-600">severity={String(ev.severity)}</span>
-                  )}
+                  ) : null}
                 </div>
               );
             })}

@@ -192,11 +192,11 @@ function PreprocessingTab() {
               stats={[
                 { label: "Shape", value: result.stats.shape.join(" x ") },
                 { label: "Dtype", value: result.stats.dtype },
-                ...result.stats.mean.map((m, i) => ({
+                ...result.stats.mean.map((m: number, i: number) => ({
                   label: `Mean Ch${i}`,
                   value: m,
                 })),
-                ...result.stats.std.map((s, i) => ({
+                ...result.stats.std.map((s: number, i: number) => ({
                   label: `Std Ch${i}`,
                   value: s,
                 })),
@@ -469,7 +469,7 @@ function DetectionTab() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {result.detections.map((d, i) => (
+                    {result.detections.map((d: { class_name: string; confidence: number; bbox: number[] }, i: number) => (
                       <tr key={i} className="hover:bg-gray-50">
                         <td className="px-3 py-2 font-medium text-gray-900">
                           {d.class_name}
@@ -554,7 +554,7 @@ function OCRTab() {
             <Card title="Text Regions">
               <DetectionOverlay
                 imageSrc={imgSrc}
-                boxes={result.blocks.map((b) => ({
+                boxes={result.blocks.map((b: { text: string; confidence: number; bbox: number[] }) => ({
                   label: b.text.slice(0, 20),
                   confidence: b.confidence,
                   bbox: b.bbox,
@@ -581,7 +581,7 @@ function OCRTab() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {result.blocks.map((b, i) => (
+                    {result.blocks.map((b: { text: string; confidence: number; bbox: number[] }, i: number) => (
                       <tr key={i} className="hover:bg-gray-50">
                         <td className="px-3 py-2 text-gray-900">{b.text}</td>
                         <td className="px-3 py-2 text-gray-600">
@@ -736,7 +736,7 @@ function ErrorAnalysisTab() {
                 <thead>
                   <tr>
                     <th className="px-3 py-2 text-xs text-gray-500">True \ Pred</th>
-                    {result.classes.map((c) => (
+                    {result.classes.map((c: string) => (
                       <th key={c} className="px-3 py-2 text-xs font-medium text-gray-700">
                         {c}
                       </th>
@@ -744,14 +744,14 @@ function ErrorAnalysisTab() {
                   </tr>
                 </thead>
                 <tbody>
-                  {result.confusion_matrix.map((row, ri) => {
+                  {result.confusion_matrix.map((row: number[], ri: number) => {
                     const maxVal = Math.max(...result.confusion_matrix.flat(), 1);
                     return (
                       <tr key={ri}>
                         <td className="px-3 py-2 text-xs font-medium text-gray-700">
                           {result.classes[ri]}
                         </td>
-                        {row.map((val, ci) => (
+                        {row.map((val: number, ci: number) => (
                           <td
                             key={ci}
                             className={`px-3 py-2 text-center font-mono text-sm ${cellColor(val, maxVal)}`}
@@ -780,7 +780,7 @@ function ErrorAnalysisTab() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {result.per_class_metrics.map((m) => (
+                  {result.per_class_metrics.map((m: { class_name: string; precision: number; recall: number; f1: number; support: number }) => (
                     <tr key={m.class_name} className="hover:bg-gray-50">
                       <td className="px-3 py-2 font-medium text-gray-900">{m.class_name}</td>
                       <td className="px-3 py-2 text-gray-600">{(m.precision * 100).toFixed(1)}%</td>
@@ -806,7 +806,7 @@ function ErrorAnalysisTab() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {result.top_confusions.map((c, i) => (
+                    {result.top_confusions.map((c: { true_label: string; predicted_label: string; count: number }, i: number) => (
                       <tr key={i} className="hover:bg-gray-50">
                         <td className="px-3 py-2 text-gray-900">{c.true_label}</td>
                         <td className="px-3 py-2 text-gray-600">{c.predicted_label}</td>

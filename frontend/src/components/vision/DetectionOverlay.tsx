@@ -5,7 +5,7 @@ import React, { useEffect, useRef } from "react";
 interface BBox {
   label: string;
   confidence: number;
-  bbox: [number, number, number, number]; // [x, y, w, h]
+  bbox: number[]; // [x, y, w, h]
 }
 
 interface DetectionOverlayProps {

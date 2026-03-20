@@ -444,11 +444,11 @@ export default function TransformPage() {
                 <p>Voice: {(meta as Record<string, unknown>).voice as string}</p>
                 <p>Text Length: {(meta as Record<string, unknown>).text_length as number} chars</p>
                 <p>Processing Time: {Number((meta as Record<string, unknown>).processing_time_ms).toFixed(1)} ms</p>
-                {(meta as Record<string, unknown>).audio && (
+                {(meta as Record<string, unknown>).audio ? (
                   <audio controls className="mt-2">
                     <source src={`data:audio/wav;base64,${(meta as Record<string, unknown>).audio as string}`} type="audio/wav" />
                   </audio>
-                )}
+                ) : null}
               </div>
             </div>
           )}
@@ -731,18 +731,18 @@ export default function TransformPage() {
               {meta.processing_time_ms != null && (
                 <p>Processing time: {Number(meta.processing_time_ms).toFixed(1)} ms</p>
               )}
-              {meta.original_size && (
+              {meta.original_size ? (
                 <p>Original size: {(meta.original_size as number[]).join(" x ")}</p>
-              )}
-              {meta.output_size && (
+              ) : null}
+              {meta.output_size ? (
                 <p>Output size: {(meta.output_size as number[]).join(" x ")}</p>
-              )}
-              {meta.cropped_size && (
+              ) : null}
+              {meta.cropped_size ? (
                 <p>Cropped size: {(meta.cropped_size as number[]).join(" x ")}</p>
-              )}
-              {meta.target_size && (
+              ) : null}
+              {meta.target_size ? (
                 <p>Target size: {(meta.target_size as number[]).join(" x ")}</p>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -863,13 +863,13 @@ export default function TransformPage() {
                   <div key={i} className={`p-3 rounded text-sm ${r.status === "ok" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
                     <span className="font-medium">File {i + 1}:</span>{" "}
                     {r.status === "ok" ? "Success" : `Error: ${r.error}`}
-                    {r.image && (
+                    {r.image ? (
                       <img
                         src={`data:image/png;base64,${r.image as string}`}
                         alt={`Result ${i + 1}`}
                         className="mt-2 max-h-32 rounded"
                       />
-                    )}
+                    ) : null}
                   </div>
                 ))}
               </div>

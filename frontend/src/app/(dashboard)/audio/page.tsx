@@ -234,7 +234,7 @@ function AugmentationTab() {
                   Applied Augmentations
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  {result.applied.map((aug, i) => (
+                  {result.applied.map((aug: string, i: number) => (
                     <Badge key={i} variant="info">
                       {aug}
                     </Badge>
@@ -362,7 +362,7 @@ function CallIntelligenceTab() {
           <Card title="Speaker-Separated Transcript">
             <div className="space-y-2 max-h-80 overflow-y-auto">
               {result.speakers.length > 0 ? (
-                result.speakers.map((seg, i) => (
+                result.speakers.map((seg: { speaker: string; start_s: number; end_s: number }, i: number) => (
                   <div key={i} className="flex gap-3 items-start">
                     <Badge
                       variant="info"
@@ -392,7 +392,7 @@ function CallIntelligenceTab() {
           {result.action_items.length > 0 && (
             <Card title="Action Items">
               <ul className="list-disc list-inside space-y-1">
-                {result.action_items.map((item, i) => (
+                {result.action_items.map((item: string, i: number) => (
                   <li key={i} className="text-sm text-gray-700">
                     {item}
                   </li>
@@ -405,7 +405,7 @@ function CallIntelligenceTab() {
           {Object.keys(result.sentiment).length > 0 && (
             <Card title="Sentiment per Speaker">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {Object.entries(result.sentiment).map(([speaker, sent]) => (
+                {Object.entries(result.sentiment).map(([speaker, sent]: [string, { overall: string; scores: { positive: number; negative: number; neutral: number } }]) => (
                   <div key={speaker} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-gray-900">{speaker}</span>
@@ -415,7 +415,7 @@ function CallIntelligenceTab() {
                             ? "success"
                             : sent.overall === "negative"
                               ? "error"
-                              : "default"
+                              : "neutral"
                         }
                       >
                         {sent.overall}
@@ -445,7 +445,7 @@ function CallIntelligenceTab() {
                 {/* Simple CSS pie chart approximation using a stacked bar */}
                 <div className="flex-1">
                   <div className="flex h-8 rounded-full overflow-hidden">
-                    {talkRatioEntries.map(([speaker, data], i) => (
+                    {talkRatioEntries.map(([speaker, data]: [string, { percentage: number; time_s: number; interruptions: number }], i: number) => (
                       <div
                         key={speaker}
                         style={{
@@ -458,7 +458,7 @@ function CallIntelligenceTab() {
                     ))}
                   </div>
                   <div className="flex flex-wrap gap-4 mt-3">
-                    {talkRatioEntries.map(([speaker, data], i) => (
+                    {talkRatioEntries.map(([speaker, data]: [string, { percentage: number; time_s: number; interruptions: number }], i: number) => (
                       <div key={speaker} className="flex items-center gap-2">
                         <div
                           className="w-3 h-3 rounded-full"
