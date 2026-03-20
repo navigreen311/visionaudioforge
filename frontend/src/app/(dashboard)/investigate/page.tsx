@@ -6,6 +6,7 @@ import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
+import Badge from "@/components/ui/Badge";
 import { TimelineEventData } from "@/components/investigate/TimelineEvent";
 import axios from "axios";
 
@@ -20,6 +21,431 @@ function getDefaultDateRange() {
   const fmt = (d: Date) => d.toISOString().slice(0, 16);
   return { start: fmt(start), end: fmt(end) };
 }
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface Comment {
+  id: string;
+  user_id: string;
+  content: string;
+  parent_id: string | null;
+  timestamp: string;
+  replies: Comment[];
+}
+
+interface ApprovalItem {
+  id: string;
+  case_id: string;
+  requester_id: string;
+  approver_id: string;
+  reason: string;
+  timestamp: string;
+}
+
+interface ReportData {
+  title: string;
+  sections: { heading: string; content: string }[];
+  evidence_refs: { id: string; asset_ids: string[]; notes: string }[];
+  timeline_summary: string;
+  generated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function CommentThread({ comment, onReply }: { comment: Comment; onReply: (parentId: string) => void }) {
+  return (
+    <div className="border-l-2 border-gray-200 pl-3 mb-2">
+      <div className="bg-white rounded-lg border border-gray-100 p-3">
+        <div className="flex items-center gap-2 mb-1">
+          <div className="w-6 h-6 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold">
+            {comment.user_id.charAt(0).toUpperCase()}
+          </div>
+          <span className="text-xs font-medium text-gray-700">{comment.user_id}</span>
+          <span className="text-xs text-gray-400">
+            {comment.timestamp ? new Date(comment.timestamp).toLocaleString() : ""}
+          </span>
+        </div>
+        <p className="text-sm text-gray-800 ml-8">{comment.content}</p>
+        <button
+          onClick={() => onReply(comment.id)}
+          className="text-xs text-brand-600 hover:text-brand-700 ml-8 mt-1"
+        >
+          Reply
+        </button>
+      </div>
+      {comment.replies.length > 0 && (
+        <div className="ml-4 mt-1">
+          {comment.replies.map((reply) => (
+            <CommentThread key={reply.id} comment={reply} onReply={onReply} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CommentsSection({ caseId }: { caseId: string }) {
+  const [comments, setComments] = useState<Comment[]>([]);
+  const [newComment, setNewComment] = useState("");
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const loadComments = useCallback(async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/api/investigate/cases/${caseId}/comments`);
+      setComments(resp.data);
+    } catch {
+      setComments([]);
+    }
+  }, [caseId]);
+
+  useEffect(() => {
+    loadComments();
+  }, [loadComments]);
+
+  const handleSubmit = async () => {
+    if (!newComment.trim()) return;
+    setLoading(true);
+    try {
+      await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/comments`, {
+        user_id: "current-user",
+        content: newComment.trim(),
+        parent_id: replyTo,
+      });
+      setNewComment("");
+      setReplyTo(null);
+      await loadComments();
+    } catch {
+      // Handle silently
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+        Comments ({comments.length})
+      </h3>
+      <div className="space-y-1 max-h-64 overflow-y-auto">
+        {comments.map((c) => (
+          <CommentThread key={c.id} comment={c} onReply={(id) => setReplyTo(id)} />
+        ))}
+        {comments.length === 0 && (
+          <p className="text-xs text-gray-400">No comments yet.</p>
+        )}
+      </div>
+      {replyTo && (
+        <div className="flex items-center gap-2 text-xs text-brand-600">
+          <span>Replying to thread</span>
+          <button onClick={() => setReplyTo(null)} className="text-gray-400 hover:text-gray-600">
+            Cancel
+          </button>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder={replyTo ? "Write a reply..." : "Add a comment..."}
+          value={newComment}
+          onChange={(e) => setNewComment(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+          className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+        />
+        <Button size="sm" onClick={handleSubmit} disabled={!newComment.trim()} loading={loading}>
+          Post
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ApprovalSection({ caseId }: { caseId: string }) {
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
+  const [showRequest, setShowRequest] = useState(false);
+  const [approverId, setApproverId] = useState("");
+  const [reason, setReason] = useState("");
+
+  const loadApprovals = useCallback(async () => {
+    try {
+      const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
+        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+      });
+      setApprovals(resp.data.filter((a: ApprovalItem) => a.case_id === caseId));
+    } catch {
+      setApprovals([]);
+    }
+  }, [caseId]);
+
+  useEffect(() => {
+    loadApprovals();
+  }, [loadApprovals]);
+
+  const handleRequestApproval = async () => {
+    if (!approverId.trim() || !reason.trim()) return;
+    try {
+      await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/approval`, {
+        user_id: "current-user",
+        approver_id: approverId.trim(),
+        reason: reason.trim(),
+      });
+      setShowRequest(false);
+      setApproverId("");
+      setReason("");
+      await loadApprovals();
+    } catch {
+      // Handle silently
+    }
+  };
+
+  const handleProcess = async (approvalId: string, decision: string) => {
+    try {
+      await axios.post(`${API_BASE}/api/investigate/approvals/${approvalId}/process`, {
+        user_id: "current-user",
+        decision,
+      });
+      await loadApprovals();
+    } catch {
+      // Handle silently
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+          Approvals
+          {approvals.length > 0 && (
+            <Badge variant="warning" className="ml-2">{approvals.length} pending</Badge>
+          )}
+        </h3>
+        <Button size="sm" variant="secondary" onClick={() => setShowRequest(!showRequest)}>
+          Request Approval
+        </Button>
+      </div>
+
+      {showRequest && (
+        <div className="bg-gray-50 rounded-lg p-3 space-y-2">
+          <input
+            type="text"
+            placeholder="Approver ID"
+            value={approverId}
+            onChange={(e) => setApproverId(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          />
+          <input
+            type="text"
+            placeholder="Reason for approval"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+          />
+          <Button size="sm" onClick={handleRequestApproval}>Submit Request</Button>
+        </div>
+      )}
+
+      {approvals.map((a) => (
+        <div key={a.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-gray-800">{a.reason}</p>
+              <p className="text-xs text-gray-500">
+                From {a.requester_id} to {a.approver_id}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => handleProcess(a.id, "approved")}>
+                Approve
+              </Button>
+              <Button size="sm" variant="secondary" onClick={() => handleProcess(a.id, "rejected")}>
+                Reject
+              </Button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReportTab({ caseId }: { caseId: string }) {
+  const [report, setReport] = useState<ReportData | null>(null);
+  const [exportContent, setExportContent] = useState<string | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [signing, setSigning] = useState(false);
+  const [signResult, setSignResult] = useState<{ hash: string; signed_at: string } | null>(null);
+
+  const generateReport = async () => {
+    setGenerating(true);
+    try {
+      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report`);
+      setReport(resp.data);
+      setExportContent(null);
+      setSignResult(null);
+    } catch {
+      // Handle silently
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleExport = async (format: string) => {
+    try {
+      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report/export`, {
+        format,
+      });
+      setExportContent(resp.data.content);
+    } catch {
+      // Handle silently
+    }
+  };
+
+  const handleSign = async () => {
+    if (!confirm("Are you sure you want to sign this report? This action creates a permanent audit record.")) return;
+    setSigning(true);
+    try {
+      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report/sign`, {
+        user_id: "current-user",
+      });
+      setSignResult(resp.data);
+    } catch {
+      // Handle silently
+    } finally {
+      setSigning(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+          Report
+        </h3>
+        <Button size="sm" onClick={generateReport} loading={generating}>
+          Generate Draft
+        </Button>
+      </div>
+
+      {report && (
+        <div className="space-y-3">
+          {/* Report preview */}
+          <div className="bg-white border border-gray-200 rounded-lg p-4 max-h-80 overflow-y-auto">
+            <h2 className="text-lg font-bold text-gray-900 mb-2">{report.title}</h2>
+            <p className="text-xs text-gray-400 mb-4">Generated: {report.generated_at}</p>
+            {report.sections.map((section, i) => (
+              <div key={i} className="mb-3">
+                <h4 className="text-sm font-semibold text-gray-800 mb-1">{section.heading}</h4>
+                <p className="text-sm text-gray-600 whitespace-pre-wrap">{section.content}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Export buttons */}
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={() => handleExport("markdown")}>
+              Export Markdown
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => handleExport("json")}>
+              Export JSON
+            </Button>
+            <Button size="sm" onClick={handleSign} loading={signing}>
+              Sign Report
+            </Button>
+          </div>
+
+          {/* Export content preview */}
+          {exportContent && (
+            <div className="bg-gray-50 rounded-lg p-3 max-h-48 overflow-y-auto">
+              <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono">
+                {exportContent}
+              </pre>
+            </div>
+          )}
+
+          {/* Signature result */}
+          {signResult && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+              <p className="text-sm text-green-800 font-medium">Report signed successfully</p>
+              <p className="text-xs text-green-600 mt-1">
+                Signed at: {signResult.signed_at}
+              </p>
+              <p className="text-xs text-green-600 font-mono">
+                Hash: {signResult.hash}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!report && (
+        <p className="text-xs text-gray-400">
+          Click &quot;Generate Draft&quot; to auto-generate a report from case data.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SyncedPlaybackPanel() {
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration] = useState(120);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+        Synced Playback
+      </h3>
+
+      {/* Video player placeholder */}
+      <div className="bg-black rounded-lg aspect-video flex items-center justify-center">
+        <span className="text-gray-400 text-sm">Video Player</span>
+      </div>
+
+      {/* Audio waveform placeholder */}
+      <div className="bg-gray-100 rounded-lg h-16 flex items-center justify-center">
+        <span className="text-gray-400 text-xs">Audio Waveform</span>
+      </div>
+
+      {/* Timeline scrubber */}
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-gray-500 w-10">{formatTime(currentTime)}</span>
+        <input
+          type="range"
+          min={0}
+          max={duration}
+          value={currentTime}
+          onChange={(e) => setCurrentTime(Number(e.target.value))}
+          className="flex-1"
+        />
+        <span className="text-xs text-gray-500 w-10">{formatTime(duration)}</span>
+      </div>
+
+      {/* Transcript scroll area */}
+      <div className="bg-gray-50 rounded-lg p-3 h-32 overflow-y-auto">
+        <h4 className="text-xs font-semibold text-gray-600 mb-2">Transcript</h4>
+        <p className="text-xs text-gray-400">
+          Transcript segments will appear here, synced to the current playback timestamp at {formatTime(currentTime)}.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+
+type TabKey = "evidence" | "comments" | "approvals" | "report" | "playback";
 
 export default function InvestigatePage() {
   // Case state
@@ -43,6 +469,9 @@ export default function InvestigatePage() {
   const [newCaseDesc, setNewCaseDesc] = useState("");
   const [creating, setCreating] = useState(false);
 
+  // Right panel tab
+  const [activeTab, setActiveTab] = useState<TabKey>("evidence");
+
   // Load cases
   const loadCases = useCallback(async () => {
     setCasesLoading(true);
@@ -52,7 +481,6 @@ export default function InvestigatePage() {
       });
       setCases(resp.data);
     } catch {
-      // Fallback: empty list on error
       setCases([]);
     } finally {
       setCasesLoading(false);
@@ -159,6 +587,7 @@ export default function InvestigatePage() {
   // Select event
   const handleSelectEvent = (event: TimelineEventData) => {
     setSelectedEvent(event);
+    setActiveTab("evidence");
   };
 
   // Filter notes for selected event
@@ -169,6 +598,17 @@ export default function InvestigatePage() {
           (selectedEvent.payload as Record<string, string>)?.case_id
       )
     : [];
+
+  // Filter checkpoint events for timeline markers
+  const checkpoints = events.filter((e) => e.type === "checkpoint");
+
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: "evidence", label: "Evidence" },
+    { key: "playback", label: "Playback" },
+    { key: "comments", label: "Comments" },
+    { key: "approvals", label: "Approvals" },
+    { key: "report", label: "Report" },
+  ];
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
@@ -188,6 +628,20 @@ export default function InvestigatePage() {
 
       {/* Center — Timeline */}
       <div className="flex-1 min-w-0 bg-gray-50">
+        {/* Checkpoint markers */}
+        {checkpoints.length > 0 && (
+          <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 overflow-x-auto">
+            <span className="text-xs font-semibold text-blue-700 flex-shrink-0">Checkpoints:</span>
+            {checkpoints.map((cp) => {
+              const cpPayload = cp.payload as Record<string, string>;
+              return (
+                <Badge key={cp.id} variant="info" className="flex-shrink-0">
+                  {cpPayload?.title || "Checkpoint"}
+                </Badge>
+              );
+            })}
+          </div>
+        )}
         <EventTimeline
           events={events}
           selectedEventId={selectedEvent?.id || null}
@@ -200,14 +654,65 @@ export default function InvestigatePage() {
         />
       </div>
 
-      {/* Right panel — Evidence detail */}
-      <div className="w-96 flex-shrink-0 border-l border-gray-200 bg-white">
-        <EvidencePanel
-          event={selectedEvent}
-          onAddNote={handleAddNote}
-          onPinToCase={handlePinToCase}
-          notes={eventNotes}
-        />
+      {/* Right panel — Tabbed detail area */}
+      <div className="w-96 flex-shrink-0 border-l border-gray-200 bg-white flex flex-col">
+        {/* Tab navigation */}
+        <div className="flex border-b border-gray-200">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              className={`flex-1 py-2 text-xs font-medium text-center transition-colors ${
+                activeTab === tab.key
+                  ? "text-brand-600 border-b-2 border-brand-500 bg-brand-50"
+                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Tab content */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {activeTab === "evidence" && (
+            <EvidencePanel
+              event={selectedEvent}
+              onAddNote={handleAddNote}
+              onPinToCase={handlePinToCase}
+              notes={eventNotes}
+            />
+          )}
+
+          {activeTab === "playback" && <SyncedPlaybackPanel />}
+
+          {activeTab === "comments" && selectedCase && (
+            <CommentsSection caseId={selectedCase.id} />
+          )}
+          {activeTab === "comments" && !selectedCase && (
+            <p className="text-sm text-gray-400 text-center mt-8">
+              Select a case to view comments.
+            </p>
+          )}
+
+          {activeTab === "approvals" && selectedCase && (
+            <ApprovalSection caseId={selectedCase.id} />
+          )}
+          {activeTab === "approvals" && !selectedCase && (
+            <p className="text-sm text-gray-400 text-center mt-8">
+              Select a case to manage approvals.
+            </p>
+          )}
+
+          {activeTab === "report" && selectedCase && (
+            <ReportTab caseId={selectedCase.id} />
+          )}
+          {activeTab === "report" && !selectedCase && (
+            <p className="text-sm text-gray-400 text-center mt-8">
+              Select a case to generate a report.
+            </p>
+          )}
+        </div>
       </div>
 
       {/* New Case Modal */}
