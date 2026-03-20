@@ -1,123 +1,140 @@
-"""Vision preprocessing API routes."""
+"""Vision API routes: optical flow and frame differencing."""
 
 from __future__ import annotations
 
-import json
+import base64
 import time
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Query, UploadFile
 from starlette.responses import JSONResponse
 
-from app.schemas.vision import ScreenAnalyzeResponse, VisionAnalyzeResponse
-from app.services.vision.preprocessing import ImagePreprocessor
-from app.services.vision.utils import (
-    calculate_image_stats,
-    image_to_base64,
-    validate_image,
+from app.schemas.vision import (
+    FrameDiffMethod,
+    FrameDiffResponse,
+    MotionStats,
+    OpticalFlowMethod,
+    OpticalFlowResponse,
+)
+from app.services.vision.motion import MotionAnalyzer
+from app.services.vision.visualization import (
+    create_flow_visualization,
+    draw_motion_mask_overlay,
+    draw_optical_flow_arrows,
 )
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
-_preprocessor = ImagePreprocessor()
+analyzer = MotionAnalyzer()
 
 
-@router.post("/analyze", response_model=VisionAnalyzeResponse)
-async def analyze(
-    file: UploadFile = File(...),
-    operations: str = Form("[]"),
+async def _read_upload_as_gray(upload: UploadFile) -> tuple[np.ndarray, np.ndarray]:
+    """Read an UploadFile and return (bgr_frame, gray_frame)."""
+    data = await upload.read()
+    arr = np.frombuffer(data, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return frame, gray
+
+
+def _encode_image(image: np.ndarray) -> str:
+    """Encode an image array to base64 PNG string."""
+    _, buf = cv2.imencode(".png", image)
+    return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+
+# -- Existing stubs (kept) -------------------------------------------------
+
+@router.post("/analyze")
+async def analyze():
+    return JSONResponse(
+        status_code=501,
+        content={"status": "not_implemented", "module": "vision"},
+    )
+
+
+@router.post("/screen-analyze")
+async def screen_analyze():
+    return JSONResponse(
+        status_code=501,
+        content={"status": "not_implemented", "module": "vision"},
+    )
+
+
+# -- Optical flow -----------------------------------------------------------
+
+@router.post("/optical-flow", response_model=OpticalFlowResponse)
+async def optical_flow(
+    frame1: UploadFile = File(...),
+    frame2: UploadFile = File(...),
+    method: OpticalFlowMethod = Query(default=OpticalFlowMethod.LUCAS_KANADE),
 ):
-    """Apply a sequence of preprocessing operations to an uploaded image.
+    """Compute optical flow between two uploaded frames."""
+    t0 = time.perf_counter()
 
-    ``operations`` is a JSON string, e.g.
-    ``[{"op": "normalize", "params": {"method": "min_max"}}]``
-    """
-    start = time.perf_counter()
+    bgr1, gray1 = await _read_upload_as_gray(frame1)
+    bgr2, gray2 = await _read_upload_as_gray(frame2)
 
-    # Read & validate
-    file_bytes = await file.read()
-    try:
-        image = validate_image(file_bytes)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    # Parse operations
-    try:
-        ops = json.loads(operations)
-    except json.JSONDecodeError as exc:
-        return JSONResponse(status_code=400, content={"detail": f"Invalid JSON: {exc}"})
-
-    # Apply pipeline
-    try:
-        result = _preprocessor.preprocess_pipeline(image, ops)
-    except (ValueError, KeyError) as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
-
-    elapsed_ms = (time.perf_counter() - start) * 1000
-
-    # If the result is float, scale to uint8 for encoding
-    if result.dtype in (np.float32, np.float64):
-        r_min, r_max = float(result.min()), float(result.max())
-        if r_min == r_max:
-            encode_img = np.zeros_like(result, dtype=np.uint8)
-        else:
-            encode_img = ((result - r_min) / (r_max - r_min) * 255).astype(np.uint8)
+    if method == OpticalFlowMethod.LUCAS_KANADE:
+        result = analyzer.lucas_kanade(gray1, gray2)
+        stats = analyzer.compute_motion_stats(result)
+        viz = draw_optical_flow_arrows(
+            bgr2,
+            result["tracked_points"]["old"],
+            result["tracked_points"]["new"],
+        )
     else:
-        encode_img = result
+        result = analyzer.farneback_dense(gray1, gray2)
+        stats = analyzer.compute_motion_stats(result)
+        viz = create_flow_visualization(result["flow"])
 
-    return VisionAnalyzeResponse(
-        image=image_to_base64(encode_img),
-        stats=calculate_image_stats(result),
-        operations_applied=[op.get("op", "") if isinstance(op, dict) else op for op in ops],
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    return OpticalFlowResponse(
+        method=method.value,
+        stats=MotionStats(**stats),
+        visualization=_encode_image(viz),
         processing_time_ms=round(elapsed_ms, 2),
     )
 
 
-@router.post("/screen-analyze", response_model=ScreenAnalyzeResponse)
-async def screen_analyze(file: UploadFile = File(...)):
-    """Analyze visual properties of a screenshot (no OCR)."""
-    file_bytes = await file.read()
-    try:
-        image = validate_image(file_bytes)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+# -- Frame differencing -----------------------------------------------------
 
-    h, w = image.shape[:2]
+@router.post("/frame-diff", response_model=FrameDiffResponse)
+async def frame_diff(
+    frame1: UploadFile = File(...),
+    frame2: UploadFile = File(...),
+    frame3: UploadFile | None = File(default=None),
+    method: FrameDiffMethod = Query(default=FrameDiffMethod.CONSECUTIVE),
+    threshold: int = Query(default=25, ge=0, le=255),
+):
+    """Compute frame differencing between uploaded frames."""
+    t0 = time.perf_counter()
 
-    # Brightness: mean of grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    brightness = float(gray.mean())
+    bgr1, gray1 = await _read_upload_as_gray(frame1)
+    _bgr2, gray2 = await _read_upload_as_gray(frame2)
 
-    # Edge density: fraction of edge pixels
-    edges = cv2.Canny(gray, 50, 150)
-    edge_density = float(np.count_nonzero(edges)) / (h * w)
+    if method == FrameDiffMethod.THREE_FRAME:
+        if frame3 is None:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "Three-frame method requires frame3 upload."},
+            )
+        _bgr3, gray3 = await _read_upload_as_gray(frame3)
+        result = analyzer.frame_diff_three_frame(gray1, gray2, gray3, threshold=threshold)
+    else:
+        result = analyzer.frame_diff_consecutive(gray1, gray2, threshold=threshold)
 
-    # Dominant colors via k-means (k=5)
-    pixels = image.reshape(-1, 3).astype(np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-    _, _, centers = cv2.kmeans(pixels, 5, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
-    dominant_colors = centers.astype(int).tolist()
+    stats = analyzer.compute_motion_stats(result)
+    mask_overlay = draw_motion_mask_overlay(bgr1, result["motion_mask"])
 
-    return ScreenAnalyzeResponse(
-        brightness=round(brightness, 2),
-        edge_density=round(edge_density, 4),
-        dominant_colors=dominant_colors,
-        resolution=[w, h],
-    )
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
-
-@router.post("/optical-flow")
-async def optical_flow():
-    return JSONResponse(
-        status_code=501,
-        content={"status": "not_implemented", "module": "vision"},
-    )
-
-
-@router.post("/frame-diff")
-async def frame_diff():
-    return JSONResponse(
-        status_code=501,
-        content={"status": "not_implemented", "module": "vision"},
+    return FrameDiffResponse(
+        method=method.value,
+        motion_percentage=round(result["motion_percentage"], 4),
+        motion_mask=_encode_image(result["motion_mask"]),
+        stats=MotionStats(**stats),
+        processing_time_ms=round(elapsed_ms, 2),
     )
