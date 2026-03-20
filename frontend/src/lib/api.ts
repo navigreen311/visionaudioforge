@@ -98,3 +98,140 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
   });
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Vision API
+// ---------------------------------------------------------------------------
+
+export interface VisionAnalyzeResult {
+  processed_image?: string;
+  stats?: {
+    shape: number[];
+    dtype: string;
+    mean: number[];
+    std: number[];
+  };
+  processing_time_ms: number;
+  status?: string;
+}
+
+export interface OpticalFlowResult {
+  visualization?: string;
+  stats?: {
+    mean_magnitude: number;
+    max_magnitude: number;
+    motion_area_pct: number;
+  };
+  processing_time_ms: number;
+  status?: string;
+}
+
+export interface Detection {
+  class_name: string;
+  class_id: number;
+  confidence: number;
+  bbox: [number, number, number, number];
+}
+
+export interface DetectResult {
+  detections: Detection[];
+  count: number;
+  visualization: string;
+  processing_time_ms: number;
+}
+
+export interface OCRBlock {
+  text: string;
+  bbox: [number, number, number, number];
+  confidence: number;
+}
+
+export interface OCRResult {
+  full_text: string;
+  blocks: OCRBlock[];
+  processing_time_ms: number;
+}
+
+export interface ErrorAnalysisResult {
+  confusion_matrix: number[][];
+  classes: string[];
+  per_class_metrics: {
+    class_name: string;
+    precision: number;
+    recall: number;
+    f1: number;
+    support: number;
+  }[];
+  top_confusions: {
+    true_label: string;
+    predicted_label: string;
+    count: number;
+  }[];
+  overall_accuracy: number;
+}
+
+export async function analyzeImage(
+  file: File,
+  operations: Record<string, unknown>,
+): Promise<VisionAnalyzeResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("operations", JSON.stringify(operations));
+  const { data } = await api.post("/api/vision/analyze", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function computeOpticalFlow(
+  frame1: File,
+  frame2: File,
+  method: "lucas_kanade" | "farneback",
+): Promise<OpticalFlowResult> {
+  const form = new FormData();
+  form.append("frame1", frame1);
+  form.append("frame2", frame2);
+  form.append("method", method);
+  const { data } = await api.post("/api/vision/optical-flow", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function detectObjects(
+  file: File,
+  confidence: number,
+  classes?: string,
+): Promise<DetectResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const params: Record<string, string | number> = { confidence };
+  if (classes) params.classes = classes;
+  const { data } = await api.post("/api/vision/detect", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+    params,
+  });
+  return data;
+}
+
+export async function extractText(file: File): Promise<OCRResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await api.post("/api/vision/ocr", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function analyzeErrors(
+  predictions: string[],
+  groundTruth: string[],
+  classes: string[],
+): Promise<ErrorAnalysisResult> {
+  const { data } = await api.post("/api/vision/error-analysis", {
+    predictions,
+    ground_truth: groundTruth,
+    classes,
+  });
+  return data;
+}
