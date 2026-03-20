@@ -1,4 +1,4 @@
-"""Tests for the Pipeline Builder feature (M16)."""
+"""Tests for the Pipeline Builder feature (M16) and NL generation / templates (P2-17)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,9 @@ import pytest
 import pytest_asyncio
 
 from app.services.pipeline.engine import PipelineEngine
+from app.services.pipeline.nl_generator import NLPipelineGenerator
 from app.services.pipeline.nodes import NODE_REGISTRY, get_node
+from app.services.pipeline.templates import PIPELINE_TEMPLATES, list_templates
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +111,9 @@ async def test_execute_simple_pipeline(engine, tmp_path):
 # Registry tests
 # ---------------------------------------------------------------------------
 
-def test_node_registry_has_20_nodes():
-    # We defined 21 nodes (extra merge), but spec says 20 minimum
-    assert len(NODE_REGISTRY) >= 20
+def test_node_registry_has_26_nodes():
+    # 21 original + 5 new (conditional, loop, delay, log, http_request) = 26
+    assert len(NODE_REGISTRY) >= 26
 
 
 def test_get_node_returns_instance():
@@ -164,3 +166,183 @@ async def test_api_validate_detects_bad_pipeline(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["valid"] is False
+
+
+# ---------------------------------------------------------------------------
+# NL Pipeline Generator tests (P2-17)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def nl_generator():
+    return NLPipelineGenerator()
+
+
+@pytest.mark.asyncio
+async def test_nl_generator_parses_description(nl_generator):
+    """Generate a pipeline from 'detect objects in images'."""
+    result = await nl_generator.generate_from_description("detect objects in images")
+    assert "nodes" in result
+    assert "edges" in result
+    assert len(result["nodes"]) >= 2
+    node_types = [n["type"] for n in result["nodes"]]
+    assert "input_image" in node_types
+    assert "detect_objects" in node_types
+
+
+@pytest.mark.asyncio
+async def test_nl_generator_detects_keywords(nl_generator):
+    """Audio-related description should produce audio pipeline nodes."""
+    result = await nl_generator.generate_from_description("analyze audio for speech recognition")
+    node_types = [n["type"] for n in result["nodes"]]
+    assert "input_audio" in node_types
+    assert "stft" in node_types or "mfcc" in node_types
+
+
+@pytest.mark.asyncio
+async def test_nl_generator_similar_images(nl_generator):
+    """'find similar images' should produce CLIP + FAISS pipeline."""
+    result = await nl_generator.generate_from_description("find similar images")
+    node_types = [n["type"] for n in result["nodes"]]
+    assert "embed_clip" in node_types
+    assert "faiss_search" in node_types
+
+
+@pytest.mark.asyncio
+async def test_suggest_next_nodes(nl_generator):
+    """Suggest next nodes after input_image should include vision nodes."""
+    suggestions = await nl_generator.suggest_next_nodes(["input_image"])
+    assert isinstance(suggestions, list)
+    assert len(suggestions) > 0
+    # Should suggest image processing nodes
+    assert any(s in suggestions for s in ["normalize", "resize", "detect_objects", "embed_clip"])
+
+
+@pytest.mark.asyncio
+async def test_suggest_next_nodes_empty(nl_generator):
+    """Empty pipeline should suggest input nodes."""
+    suggestions = await nl_generator.suggest_next_nodes([])
+    assert "input_image" in suggestions
+    assert "input_audio" in suggestions
+
+
+# ---------------------------------------------------------------------------
+# Template tests (P2-17)
+# ---------------------------------------------------------------------------
+
+def test_templates_all_valid_pipelines(engine):
+    """Every template should produce a valid pipeline definition."""
+    assert len(PIPELINE_TEMPLATES) >= 10
+    for key, template in PIPELINE_TEMPLATES.items():
+        assert "name" in template, f"Template '{key}' missing name"
+        assert "description" in template, f"Template '{key}' missing description"
+        assert "category" in template, f"Template '{key}' missing category"
+        assert "definition" in template, f"Template '{key}' missing definition"
+        defn = template["definition"]
+        assert "nodes" in defn, f"Template '{key}' definition missing nodes"
+        assert "edges" in defn, f"Template '{key}' definition missing edges"
+        # Validate with the engine (nodes must be valid types, no cycles)
+        result = engine.validate_pipeline(defn)
+        assert result["valid"] is True, f"Template '{key}' invalid: {result['errors']}"
+
+
+def test_list_templates_returns_all():
+    """list_templates() should return all 10 templates."""
+    result = list_templates()
+    assert len(result) >= 10
+    keys = {t["key"] for t in result}
+    assert "image-preprocessing" in keys
+    assert "object-detection" in keys
+    assert "audio-analysis" in keys
+
+
+# ---------------------------------------------------------------------------
+# Conditional node test (P2-17)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_conditional_node():
+    """ConditionalNode should route based on condition key."""
+    node = get_node("conditional")
+    # True branch
+    result = await node.execute({"data": {"active": True}, "condition": "active"})
+    assert result["branch"] == "true"
+    assert result["output_true"] is not None
+    assert result["output_false"] is None
+
+    # False branch
+    result = await node.execute({"data": {"active": False}, "condition": "active"})
+    assert result["branch"] == "false"
+    assert result["output_true"] is None
+    assert result["output_false"] is not None
+
+
+@pytest.mark.asyncio
+async def test_loop_node():
+    """LoopNode should iterate the specified number of times."""
+    node = get_node("loop")
+    result = await node.execute({"data": {"value": 42}, "iterations": 5})
+    assert result["iteration_count"] == 5
+    assert result["output"]["value"] == 42
+
+
+@pytest.mark.asyncio
+async def test_log_node():
+    """LogNode should pass data through unchanged."""
+    node = get_node("log")
+    result = await node.execute({"data": {"key": "value"}, "label": "test"})
+    assert result["data"] == {"key": "value"}
+
+
+# ---------------------------------------------------------------------------
+# API tests for new endpoints (P2-17)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_api_generate(client):
+    """POST /api/pipeline/generate should return a pipeline definition."""
+    resp = await client.post(
+        "/api/pipeline/generate",
+        json={"description": "detect objects in images"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "definition" in data
+    assert "nodes" in data["definition"]
+    assert "edges" in data["definition"]
+
+
+@pytest.mark.asyncio
+async def test_api_templates_list(client):
+    """GET /api/pipeline/templates should return the template catalog."""
+    resp = await client.get("/api/pipeline/templates")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) >= 10
+    # Each template should have name, description, category, definition
+    for t in data:
+        assert "name" in t
+        assert "definition" in t
+
+
+@pytest.mark.asyncio
+async def test_api_template_by_name(client):
+    """GET /api/pipeline/templates/{name} should return a specific template."""
+    resp = await client.get("/api/pipeline/templates/image-preprocessing")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "Image Preprocessing"
+    assert "definition" in data
+
+
+@pytest.mark.asyncio
+async def test_api_suggest_next(client):
+    """POST /api/pipeline/suggest-next should return suggestions."""
+    resp = await client.post(
+        "/api/pipeline/suggest-next",
+        json={"current_nodes": ["input_image", "normalize"]},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "suggestions" in data
+    assert isinstance(data["suggestions"], list)
