@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.config import settings
 from app.middleware.audit import AuditMiddleware
+from app.middleware.compression import GZIP_MINIMUM_SIZE, GZipMiddleware
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.timing import TimingMiddleware
 from app.ws.capture import CaptureWebSocket
@@ -34,6 +35,10 @@ app.add_middleware(
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(TimingMiddleware)
 app.add_middleware(AuditMiddleware)
+app.add_middleware(
+    GZipMiddleware,
+    minimum_size=GZIP_MINIMUM_SIZE,
+)
 
 # ---------------------------------------------------------------------------
 # REST API
