@@ -1,0 +1,357 @@
+"""Tests for the Integration Hub — Slack, Teams, email, webhooks, storage, event bus."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import os
+import tempfile
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.services.integrations.email import EmailIntegration
+from app.services.integrations.event_bus import EventBus
+from app.services.integrations.slack import SlackIntegration
+from app.services.integrations.storage_connectors import (
+    LocalConnector,
+    S3Connector,
+    StorageConnectorFactory,
+)
+from app.services.integrations.teams import TeamsIntegration
+from app.services.integrations.webhooks import WebhookManager
+
+
+# =====================================================================
+# Slack
+# =====================================================================
+
+
+class TestSlackMessageFormat:
+    def test_format_alert_message(self):
+        alert = {
+            "id": "a1",
+            "severity": "critical",
+            "title": "CPU overload",
+            "message": "CPU usage exceeded 95%",
+            "timestamp": "2026-03-20T12:00:00Z",
+            "source": "monitor",
+        }
+        blocks = SlackIntegration.format_alert_message(alert)
+        assert len(blocks) == 4
+        assert blocks[0]["type"] == "header"
+        assert "CRITICAL" in blocks[0]["text"]["text"]
+        assert blocks[1]["type"] == "section"
+        assert blocks[2]["type"] == "context"
+        assert blocks[3]["type"] == "actions"
+
+    def test_format_event_notification(self):
+        event = {
+            "event_type": "pipeline.completed",
+            "summary": "Pipeline X finished successfully",
+        }
+        blocks = SlackIntegration.format_event_notification(event)
+        assert blocks[0]["type"] == "header"
+        assert "pipeline.completed" in blocks[0]["text"]["text"]
+
+
+# =====================================================================
+# Teams
+# =====================================================================
+
+
+class TestTeamsCardFormat:
+    def test_format_alert_card(self):
+        alert = {
+            "severity": "high",
+            "title": "Disk full",
+            "message": "Volume /data is at 98%",
+            "timestamp": "2026-03-20T12:00:00Z",
+            "source": "disk-monitor",
+        }
+        card = TeamsIntegration.format_alert_card(alert)
+        assert card["type"] == "AdaptiveCard"
+        assert any(b.get("type") == "FactSet" for b in card["body"])
+        header = card["body"][0]
+        assert "HIGH" in header["text"]
+
+    def test_format_summary_card(self):
+        card = TeamsIntegration.format_summary_card(
+            "Daily Stats", {"alerts": 42, "pipelines_run": 7}
+        )
+        facts = card["body"][1]["facts"]
+        assert len(facts) == 2
+        assert facts[0]["title"] == "alerts"
+
+
+# =====================================================================
+# Email
+# =====================================================================
+
+
+class TestEmailFormatAlert:
+    def test_format_alert_email(self):
+        alert = {
+            "severity": "critical",
+            "title": "Service Down",
+            "message": "The API gateway is unreachable.",
+            "timestamp": "2026-03-20T12:00:00Z",
+            "source": "health-check",
+            "id": "abc",
+        }
+        result = EmailIntegration.format_alert_email(alert)
+        assert "[CRITICAL]" in result["subject"]
+        assert "Service Down" in result["subject"]
+        assert "<html>" in result["html"]
+        assert "CRITICAL" in result["text"]
+
+
+class TestEmailStubWithoutSmtp:
+    @pytest.mark.asyncio
+    async def test_stub_fallback(self, monkeypatch):
+        monkeypatch.delenv("SMTP_HOST", raising=False)
+        monkeypatch.delenv("SENDGRID_API_KEY", raising=False)
+
+        result = await EmailIntegration.send_email(
+            to="user@example.com",
+            subject="Test",
+            body_html="<p>Hello</p>",
+        )
+        assert result["sent"] is False
+        assert result["method"] == "stub"
+
+
+# =====================================================================
+# Webhooks
+# =====================================================================
+
+
+class TestWebhookRegisterAndList:
+    @pytest.mark.asyncio
+    async def test_register_and_list(self):
+        WebhookManager._reset()
+        reg = await WebhookManager.register_webhook(
+            db=None,
+            workspace_id="ws-1",
+            name="My Hook",
+            url="https://example.com/hook",
+            events=["alert.*"],
+            secret="s3cr3t",
+        )
+        assert "webhook_id" in reg
+        assert reg["events"] == ["alert.*"]
+
+        hooks = await WebhookManager.list_webhooks(db=None, workspace_id="ws-1")
+        assert len(hooks) == 1
+        assert hooks[0]["name"] == "My Hook"
+        # Secret should NOT be exposed in list
+        assert "secret" not in hooks[0]
+
+        WebhookManager._reset()
+
+
+class TestWebhookSignature:
+    def test_compute_signature(self):
+        payload = '{"event":"test"}'
+        secret = "mysecret"
+        sig = WebhookManager.compute_signature(payload, secret)
+        expected = hmac.new(
+            secret.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+        assert sig == expected
+
+
+class TestWebhookTrigger:
+    @pytest.mark.asyncio
+    async def test_trigger_matching(self):
+        WebhookManager._reset()
+        await WebhookManager.register_webhook(
+            db=None,
+            workspace_id="ws-2",
+            name="Alert Hook",
+            url="https://example.com/hook",
+            events=["alert.*"],
+        )
+
+        with patch("app.services.integrations.webhooks.httpx.AsyncClient") as MockClient:
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_instance = AsyncMock()
+            mock_instance.post = AsyncMock(return_value=mock_resp)
+            mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+            mock_instance.__aexit__ = AsyncMock(return_value=False)
+            MockClient.return_value = mock_instance
+
+            results = await WebhookManager.trigger_webhooks(
+                db=None,
+                workspace_id="ws-2",
+                event_type="alert.created",
+                payload={"id": "a1"},
+            )
+            assert len(results) == 1
+            assert results[0]["status"] == "sent"
+
+        WebhookManager._reset()
+
+
+# =====================================================================
+# Event Bus
+# =====================================================================
+
+
+class TestEventBusPublishSubscribe:
+    @pytest.mark.asyncio
+    async def test_in_memory_pub_sub(self):
+        bus = EventBus(redis_url=None)
+        received: list[dict] = []
+
+        async def handler(msg: dict):
+            received.append(msg)
+
+        await bus.subscribe("test-channel", handler)
+        await bus.publish("test-channel", "test.event", {"key": "value"})
+
+        assert len(received) == 1
+        assert received[0]["event_type"] == "test.event"
+
+    @pytest.mark.asyncio
+    async def test_emit_logs_event(self):
+        bus = EventBus(redis_url=None)
+        WebhookManager._reset()
+
+        await bus.emit("ws-1", "alert.created", {"id": "a1"})
+
+        events = bus.recent_events()
+        assert len(events) == 1
+        assert events[0]["event_type"] == "alert.created"
+
+
+# =====================================================================
+# Storage connectors
+# =====================================================================
+
+
+class TestS3ConnectorInit:
+    def test_init_without_boto3(self):
+        connector = S3Connector(
+            {"bucket": "test-bucket", "region": "us-west-2"}
+        )
+        assert connector.bucket == "test-bucket"
+        assert connector.region == "us-west-2"
+        # _client may be None if boto3 not installed — that's fine
+
+
+class TestLocalConnectorUploadDownload:
+    @pytest.mark.asyncio
+    async def test_upload_download_delete(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            connector = LocalConnector({"root": tmpdir})
+
+            result = await connector.upload("test/file.txt", b"hello world")
+            assert result["ok"] is True
+
+            data = await connector.download("test/file.txt")
+            assert data == b"hello world"
+
+            keys = await connector.list()
+            # Normalize path separators for cross-platform compatibility
+            normalized_keys = [k.replace("\\", "/") for k in keys]
+            assert "test/file.txt" in normalized_keys
+
+            deleted = await connector.delete("test/file.txt")
+            assert deleted is True
+
+            deleted_again = await connector.delete("test/file.txt")
+            assert deleted_again is False
+
+    @pytest.mark.asyncio
+    async def test_download_missing_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            connector = LocalConnector({"root": tmpdir})
+            with pytest.raises(FileNotFoundError):
+                await connector.download("nonexistent")
+
+
+class TestStorageFactory:
+    def test_get_local_connector(self):
+        c = StorageConnectorFactory.get_connector("local", {"root": "/tmp/test-vaf"})
+        assert isinstance(c, LocalConnector)
+
+    def test_unknown_type(self):
+        with pytest.raises(ValueError, match="Unknown storage connector"):
+            StorageConnectorFactory.get_connector("azure_blob", {})
+
+
+# =====================================================================
+# API route tests
+# =====================================================================
+
+
+@pytest.fixture
+async def integration_client():
+    from app.main import app as main_app
+
+    transport = ASGITransport(app=main_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+
+
+class TestApiWebhookCrud:
+    @pytest.mark.asyncio
+    async def test_register_list_delete(self, integration_client):
+        WebhookManager._reset()
+        client = integration_client
+
+        # Register
+        resp = await client.post(
+            "/api/integrations/webhooks",
+            json={
+                "workspace_id": "ws-api",
+                "name": "API Hook",
+                "url": "https://example.com/wh",
+                "events": ["alert.*"],
+            },
+        )
+        assert resp.status_code == 200
+        wh_id = resp.json()["webhook_id"]
+
+        # List
+        resp = await client.get(
+            "/api/integrations/webhooks", params={"workspace_id": "ws-api"}
+        )
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+        # Delete
+        resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] is True
+
+        # Delete again → 404
+        resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
+        assert resp.status_code == 404
+
+        WebhookManager._reset()
+
+
+class TestApiSlackSend:
+    @pytest.mark.asyncio
+    async def test_slack_send_endpoint(self, integration_client):
+        client = integration_client
+        with patch.object(
+            SlackIntegration, "send_message", new_callable=AsyncMock
+        ) as mock_send:
+            mock_send.return_value = {"ok": True, "status_code": 200}
+            resp = await client.post(
+                "/api/integrations/slack/send",
+                json={
+                    "webhook_url": "https://hooks.slack.com/test",
+                    "message": "Hello from test",
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json()["ok"] is True
+            mock_send.assert_called_once()
