@@ -1,14 +1,19 @@
-"""Copilot service — Claude API streaming chat with memory and tool use."""
+"""Copilot service — Claude API streaming chat with memory, tools, and context enrichment."""
 
 import json
 import logging
 from collections.abc import AsyncGenerator
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.config import settings
+from app.services.agents.conversation import ConversationManager
 from app.services.agents.skill_packs import SKILL_PACKS
 from app.services.agents.tools import COPILOT_TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
+
+conversation_manager = ConversationManager()
 
 
 class CopilotService:
@@ -44,16 +49,37 @@ class CopilotService:
         context: dict | None = None,
         skill_pack: str = "general",
         memories: list[str] | None = None,
+        db: AsyncSession | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Stream a chat response from Claude.
 
-        Yields dicts with type: "token", "tool_use", or "done".
+        Yields dicts with type: "token", "tool_use", "tool_result", or "done".
         """
-        system_prompt = self._build_system_prompt(
-            workspace_id, agent_id, skill_pack=skill_pack, memories=memories
+        # Store user message in conversation history
+        if db is not None:
+            try:
+                await conversation_manager.store_message(db, agent_id, "user", message)
+            except Exception as exc:
+                logger.warning("Failed to store user message: %s", exc)
+
+        # Build system prompt with enrichment
+        system_prompt = await self._build_system_prompt(
+            workspace_id, agent_id, skill_pack=skill_pack, memories=memories, db=db
         )
 
+        # Build messages list with conversation history
         messages = []
+        if db is not None:
+            try:
+                history = await conversation_manager.get_context_window(db, agent_id, max_tokens_approx=3000)
+                for msg in history:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role in ("user", "assistant") and content:
+                        messages.append({"role": role, "content": content})
+            except Exception as exc:
+                logger.warning("Failed to load conversation history: %s", exc)
+
         if context and context.get("history"):
             messages.extend(context["history"])
         messages.append({"role": "user", "content": message})
@@ -68,6 +94,14 @@ class CopilotService:
             )
             for word in mock_response.split(" "):
                 yield {"type": "token", "content": word + " "}
+
+            # Store assistant response
+            if db is not None:
+                try:
+                    await conversation_manager.store_message(db, agent_id, "assistant", mock_response)
+                except Exception:
+                    pass
+
             yield {"type": "done"}
             return
 
@@ -106,8 +140,12 @@ class CopilotService:
 
         # Check if the final message has tool use blocks that need execution
         final_message = await stream.get_final_message()
+        full_response_parts = []
+
         for block in final_message.content:
-            if block.type == "tool_use":
+            if block.type == "text":
+                full_response_parts.append(block.text)
+            elif block.type == "tool_use":
                 tool_result = await self._execute_tool(block.name, block.input)
                 yield {
                     "type": "tool_result",
@@ -116,16 +154,26 @@ class CopilotService:
                     "result": tool_result,
                 }
 
+        # Store assistant response in conversation history
+        response_text = "".join(full_response_parts)
+        if db is not None and response_text:
+            try:
+                await conversation_manager.store_message(db, agent_id, "assistant", response_text)
+                await self._auto_store_memory(db, agent_id, response_text, context)
+            except Exception as exc:
+                logger.warning("Failed to store assistant message: %s", exc)
+
         yield {"type": "done"}
 
-    def _build_system_prompt(
+    async def _build_system_prompt(
         self,
         workspace_id: str,
         agent_id: str,
         skill_pack: str = "general",
         memories: list[str] | None = None,
+        db: AsyncSession | None = None,
     ) -> str:
-        """Build a system prompt with role, tools, and context."""
+        """Build a system prompt with role, tools, context enrichment."""
         persona = SKILL_PACKS.get(skill_pack, SKILL_PACKS["general"])
 
         tool_names = [t["name"] for t in COPILOT_TOOLS]
@@ -154,7 +202,132 @@ class CopilotService:
             for mem in memories:
                 sections.append(f"- {mem}")
 
+        # Context enrichment: patrol findings and workspace stats
+        if db is not None:
+            try:
+                patrol_section = await self._get_patrol_context(agent_id, db)
+                if patrol_section:
+                    sections.append("")
+                    sections.append(patrol_section)
+            except Exception:
+                pass
+
+            try:
+                stats_section = await self._get_workspace_stats(db)
+                if stats_section:
+                    sections.append("")
+                    sections.append(stats_section)
+            except Exception:
+                pass
+
+            try:
+                memory_summary = await self._get_memory_summary(agent_id, db)
+                if memory_summary:
+                    sections.append("")
+                    sections.append(memory_summary)
+            except Exception:
+                pass
+
         return "\n".join(sections)
+
+    async def _get_patrol_context(self, agent_id: str, db: AsyncSession) -> str | None:
+        """Get recent patrol findings for context."""
+        try:
+            from app.services.agents.patrol import get_patrol_agent
+
+            patrol = get_patrol_agent(agent_id)
+            report = await patrol.get_patrol_report(db, hours=24)
+            findings = report.get("findings", [])[:5]
+            if not findings:
+                return None
+
+            lines = ["## Recent Patrol Findings"]
+            for f in findings:
+                lines.append(f"- [{f['status'].upper()}] {f['check']}: {f['message']}")
+            return "\n".join(lines)
+        except Exception:
+            return None
+
+    async def _get_workspace_stats(self, db: AsyncSession) -> str | None:
+        """Get workspace statistics for context enrichment."""
+        try:
+            from sqlalchemy import func, select
+
+            from app.models.alert import Alert, AlertStatus
+            from app.models.asset import Asset
+            from app.models.model_registry import ModelRecord
+
+            asset_count = (await db.execute(select(func.count()).select_from(Asset))).scalar() or 0
+            model_count = (await db.execute(select(func.count()).select_from(ModelRecord))).scalar() or 0
+            alert_count = (
+                await db.execute(
+                    select(func.count()).select_from(Alert).where(Alert.status == AlertStatus.new)
+                )
+            ).scalar() or 0
+
+            return (
+                "## Workspace Statistics\n"
+                f"- Total assets: {asset_count}\n"
+                f"- Registered models: {model_count}\n"
+                f"- Active alerts: {alert_count}"
+            )
+        except Exception:
+            return None
+
+    async def _get_memory_summary(self, agent_id: str, db: AsyncSession) -> str | None:
+        """Get a conversation summary from memory service."""
+        try:
+            from app.services.agents.memory import AgentMemoryService
+
+            mem_svc = AgentMemoryService()
+            summary = await mem_svc.get_memory_summary(db, agent_id)
+            if summary["total_memories"] == 0:
+                return None
+
+            lines = [
+                "## Memory Summary",
+                f"- Total memories: {summary['total_memories']}",
+                f"- Avg importance: {summary['avg_importance']}",
+                f"- Recent (24h): {summary['recent_count']}",
+            ]
+            if summary["top_memories"]:
+                lines.append("- Top memories:")
+                for m in summary["top_memories"][:3]:
+                    lines.append(f"  - {m[:100]}")
+            return "\n".join(lines)
+        except Exception:
+            return None
+
+    async def _auto_store_memory(
+        self,
+        db: AsyncSession,
+        agent_id: str,
+        response_text: str,
+        context: dict | None,
+    ) -> None:
+        """Analyze response for important facts and auto-store high-importance memories."""
+        # Heuristic: store memories for responses that contain key events/decisions
+        important_keywords = [
+            "alert", "critical", "warning", "error", "created", "deployed",
+            "promoted", "detected", "anomaly", "incident", "resolved",
+            "decision", "recommend", "action required",
+        ]
+
+        response_lower = response_text.lower()
+        keyword_hits = sum(1 for kw in important_keywords if kw in response_lower)
+
+        if keyword_hits >= 2 and len(response_text) > 50:
+            importance = min(0.5 + (keyword_hits * 0.1), 0.9)
+            try:
+                from app.services.agents.memory import AgentMemoryService
+
+                mem_svc = AgentMemoryService()
+                # Store a condensed version
+                summary = response_text[:300]
+                await mem_svc.store_memory(db, agent_id, summary, importance_score=importance)
+                logger.debug("Auto-stored memory (importance=%.2f) for agent %s", importance, agent_id)
+            except Exception as exc:
+                logger.warning("Failed to auto-store memory: %s", exc)
 
     def _get_tools(self) -> list[dict]:
         """Return tool definitions in Claude tool_use format."""
