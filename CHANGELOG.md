@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0] - 2026-03-20
+
+### Added
+- Audio spectral analysis service (STFT, Mel spectrogram, MFCC, power spectrogram)
+- Audio I/O utilities (load, save, base64 encode, validate with size/duration limits)
+- Visualization module generating base64 PNG plots (spectrogram, Mel, MFCC, waveform)
+- POST /api/audio/analyze endpoint with selectable operations
+- Pydantic schemas for audio analysis request/response
+- Comprehensive test suite for spectral analysis, I/O, visualization, and API
+- Documentation for audio spectral analysis feature
+- matplotlib dependency for headless plot rendering
+
 ## [0.1.0] - 2026-03-20
 
 ### Added
