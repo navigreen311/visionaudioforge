@@ -14,6 +14,7 @@ from app.api.routes import (
     safety,
     search,
     transfer,
+    transform,
     vision,
     workspaces,
 )
@@ -34,4 +35,5 @@ api_router.include_router(agents.router)
 api_router.include_router(assets.router)
 api_router.include_router(datasets.router)
 api_router.include_router(safety.router)
+api_router.include_router(transform.router)
 api_router.include_router(workspaces.router)

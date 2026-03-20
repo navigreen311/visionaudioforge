@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.0] - 2026-03-20
+
+### Added
+- Audio Transform Studio (M4) with full transform chain pipeline
+- AudioTransformService: denoise (spectral gating), remove silence, pitch shift, time stretch, loudness normalization, EQ presets (flat/voice/music/podcast), speech enhance chain
+- POST /api/transform/audio endpoint accepting file upload + JSON operations list
+- Transform page with waveform visualization, preset buttons, custom chain builder, before/after comparison, audio playback, and download
+- Comprehensive test suite for all transform operations and API endpoint
+
 ## [0.1.0] - 2026-03-20
 
 ### Added
