@@ -20,6 +20,7 @@ from app.api.routes import (
     transfer,
     transform,
     validation,
+    verticals,
     vision,
     workspaces,
 )
@@ -47,3 +48,4 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
+api_router.include_router(verticals.router)

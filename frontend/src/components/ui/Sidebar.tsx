@@ -23,6 +23,7 @@ const navItems = [
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
   { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
+  { href: "/verticals", label: "Verticals", icon: "\uD83D\uDEE1\uFE0F" },
   { href: "/settings", label: "Settings", icon: "\u2699" },
 ];
 
