@@ -9,7 +9,7 @@ class ModelRecord(TimestampMixin, Base):
 
     name = Column(String(255), nullable=False)
     version = Column(String(50), nullable=False)
-    status = Column(String(50), nullable=False, default="draft")
+    status = Column(String(50), nullable=False, default="registered")
     backbone = Column(String(255), nullable=True)
     metrics = Column(JSON, nullable=True, default=dict)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
