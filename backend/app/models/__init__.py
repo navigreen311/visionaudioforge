@@ -16,6 +16,14 @@ from app.models.api_key import APIKey
 from app.models.graph_node import GraphNode
 from app.models.graph_edge import GraphEdge
 from app.models.semantic_memory import SemanticMemory
+from app.models.command_center import (
+    CommandStream,
+    CommandLayout,
+    OperatorShift,
+    Incident,
+    OperatorActionLog,
+)
+from app.models.review import ReviewTask, Review, ReviewShift
 
 __all__ = [
     "Base",
@@ -42,4 +50,12 @@ __all__ = [
     "GraphNode",
     "GraphEdge",
     "SemanticMemory",
+    "CommandStream",
+    "CommandLayout",
+    "OperatorShift",
+    "Incident",
+    "OperatorActionLog",
+    "ReviewTask",
+    "Review",
+    "ReviewShift",
 ]
