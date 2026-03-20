@@ -3,19 +3,17 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Live capture engine (M1) with WebSocket streaming
-- CaptureWebSocket handler with per-frame analysis (brightness, motion detection, resolution)
-- Channel-based ConnectionManager replacing the previous stub
-- CaptureSessionManager for in-memory session lifecycle tracking
-- WebSocket route at `/ws/live/stream/{session_id}`
-- Full capture UI with Camera, Screen, and Microphone source tabs
-- LiveFeedPanel component with video display and AI overlay canvas
-- AudioMeter component with real-time frequency visualization
-- SourceSwitcher and CaptureControls components
-- Status bar showing connection status, FPS, frame count, and session duration
-- Frame streaming to backend at 5 FPS via WebSocket
-- Snapshot download functionality
-- Backend tests for ConnectionManager, CaptureSessionManager, and WebSocket frame processing
+- Model Registry service (`ModelRegistryService`) with full lifecycle management
+- API routes: register, list, get, update status, compare, rollback models
+- Model lifecycle transitions: registered -> staging -> production -> archived
+- Side-by-side model metric comparison endpoint
+- Model rollback with automatic production demotion
+- Pydantic schemas for registry API (ModelCreate, ModelRead, StatusUpdate, CompareRequest, RollbackRequest)
+- Frontend Train page with Models / Experiments / Datasets tabs
+- Models tab: sortable table, status badges, register modal, detail panel, compare view
+- React Query integration for model data fetching and mutations
+- Frontend API functions: listModels, registerModel, updateModelStatus, compareModels, rollbackModel
+- 10 unit/integration tests for model registry service and API endpoints
 
 ## [0.1.0] - 2026-03-20
 
