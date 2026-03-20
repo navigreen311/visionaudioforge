@@ -19,8 +19,12 @@ from app.schemas.dataset import (
     SplitResponse,
     UploadSummary,
 )
+from app.services.data.active_learning import ActiveLearningService
+from app.services.data.auto_labeling import AutoLabelingService
 from app.services.data.dataset_manager import DatasetService
+from app.services.data.quality_control import DatasetQualityService
 from app.services.data.storage import MinIOStorageService
+from app.services.data.synthetic import SyntheticDataGenerator
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -169,3 +173,136 @@ async def export_dataset(
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename=dataset-{dataset_id}.json"},
     )
+
+
+# ------------------------------------------------------------------
+# POST /api/datasets/{id}/auto-label
+# ------------------------------------------------------------------
+@router.post("/{dataset_id}/auto-label")
+async def auto_label_dataset(
+    dataset_id: uuid.UUID,
+    body: dict[str, Any] | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Run auto-labeling on unlabeled assets in the dataset."""
+    body = body or {}
+    model_name = body.get("model_name", "yolov8n")
+    confidence_threshold = body.get("confidence_threshold", 0.7)
+    result = await AutoLabelingService.auto_label_images(
+        db, dataset_id, model_name=model_name, confidence_threshold=confidence_threshold
+    )
+    return result
+
+
+# ------------------------------------------------------------------
+# GET /api/datasets/{id}/quality
+# ------------------------------------------------------------------
+@router.get("/{dataset_id}/quality")
+async def quality_report(
+    dataset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Generate a dataset health / quality report."""
+    return await DatasetQualityService.generate_health_report(db, dataset_id)
+
+
+# ------------------------------------------------------------------
+# POST /api/datasets/{id}/duplicates
+# ------------------------------------------------------------------
+@router.post("/{dataset_id}/duplicates")
+async def find_duplicates(
+    dataset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    storage: MinIOStorageService = Depends(_get_storage),
+) -> list[dict[str, Any]]:
+    """Find near-duplicate samples in the dataset."""
+    return await DatasetQualityService.find_near_duplicates(db, storage, dataset_id)
+
+
+# ------------------------------------------------------------------
+# POST /api/datasets/{id}/dedup
+# ------------------------------------------------------------------
+@router.post("/{dataset_id}/dedup")
+async def deduplicate_dataset(
+    dataset_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, int]:
+    """Remove duplicate samples from the dataset."""
+    return await DatasetQualityService.deduplicate(db, dataset_id)
+
+
+# ------------------------------------------------------------------
+# POST /api/datasets/{id}/active-learning
+# ------------------------------------------------------------------
+@router.post("/{dataset_id}/active-learning")
+async def active_learning_queue(
+    dataset_id: uuid.UUID,
+    body: dict[str, Any] | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Create an active-learning review queue."""
+    body = body or {}
+    strategy = body.get("strategy", "combined")
+    k = body.get("k", 50)
+    return await ActiveLearningService.create_review_queue(
+        db, dataset_id, strategy=strategy, k=k
+    )
+
+
+# ------------------------------------------------------------------
+# POST /api/datasets/{id}/synthetic
+# ------------------------------------------------------------------
+@router.post("/{dataset_id}/synthetic")
+async def generate_synthetic(
+    dataset_id: uuid.UUID,
+    body: dict[str, Any] | None = None,
+    db: AsyncSession = Depends(get_db),
+    storage: MinIOStorageService = Depends(_get_storage),
+) -> dict[str, Any]:
+    """Generate synthetic samples and add them to the dataset."""
+    body = body or {}
+    num = body.get("num", 10)
+    pattern = body.get("pattern", "shapes")
+
+    images = SyntheticDataGenerator.generate_synthetic_images(
+        num=num, pattern=pattern
+    )
+
+    dataset = await DatasetService.get_dataset(db, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    added = 0
+    for i, img in enumerate(images):
+        import cv2
+        import numpy as np
+
+        success, encoded = cv2.imencode(".png", img)
+        if not success:
+            continue
+        file_data = encoded.tobytes()
+        key = f"{dataset_id}/synthetic_{pattern}_{i}.png"
+        await storage.upload_file(
+            bucket="vaf-datasets", key=key, file_data=file_data, content_type="image/png"
+        )
+
+        from app.models.asset import Asset as AssetModel
+
+        asset = AssetModel(
+            filename=f"synthetic_{pattern}_{i}.png",
+            media_type=dataset.format,
+            mime_type="image/png",
+            size_bytes=len(file_data),
+            storage_path=f"vaf-datasets/{key}",
+            metadata_={
+                "dataset_id": str(dataset_id),
+                "synthetic": True,
+                "pattern": pattern,
+            },
+            workspace_id=dataset.workspace_id,
+        )
+        db.add(asset)
+        added += 1
+
+    await db.commit()
+    return {"generated": added, "pattern": pattern}
