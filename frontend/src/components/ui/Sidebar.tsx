@@ -20,6 +20,7 @@ const navItems = [
   { href: "/investigate", label: "Investigate", icon: "\uD83D\uDD2C" },
   { href: "/knowledge-graph", label: "Knowledge Graph", icon: "\uD83D\uDD78\uFE0F" },
   { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
+  { href: "/memory", label: "Memory", icon: "\uD83E\uDDE0" },
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
