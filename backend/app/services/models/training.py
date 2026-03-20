@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, TensorDataset
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,11 @@ class FinetuneConfig:
     gradient_clip_value: float | None = None
     early_stopping_patience: int | None = None
     num_classes: int = 10  # default for synthetic data
+    gradient_accumulation_steps: int = 1
+    lr_scheduler_patience: int = 3
+    lr_scheduler_factor: float = 0.5
+    lora_config: dict | None = None
+    quantize_after: bool = False
 
 
 class TransferLearningService:
@@ -97,16 +103,37 @@ class TransferLearningService:
         model = self._build_model(config)
         model = model.to(device)
 
+        # Apply LoRA if configured
+        if config.lora_config is not None:
+            from app.services.models.peft_training import PEFTTrainer
+
+            peft = PEFTTrainer()
+            lora_cfg = peft.create_lora_config(**config.lora_config)
+            model = peft.apply_lora(model, lora_cfg)
+            logger.info(
+                "LoRA applied: %s", peft.count_trainable_params(model)
+            )
+
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(
             filter(lambda p: p.requires_grad, model.parameters()),
             lr=config.learning_rate,
         )
 
+        # Learning-rate scheduler: reduce on plateau
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            patience=config.lr_scheduler_patience,
+            factor=config.lr_scheduler_factor,
+        )
+
         train_loader, val_loader = self._create_synthetic_data(config)
 
         best_val_loss = float("inf")
+        best_model_state = None
         patience_counter = 0
+        accum_steps = max(1, config.gradient_accumulation_steps)
 
         try:
             for epoch in range(1, config.num_epochs + 1):
@@ -116,19 +143,23 @@ class TransferLearningService:
                 correct = 0
                 total = 0
 
-                for batch_x, batch_y in train_loader:
+                optimizer.zero_grad()
+                for step, (batch_x, batch_y) in enumerate(train_loader, 1):
                     batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                    optimizer.zero_grad()
                     outputs = model(batch_x)
                     loss = criterion(outputs, batch_y)
-                    loss.backward()
+                    # Scale loss for gradient accumulation
+                    (loss / accum_steps).backward()
 
-                    if config.gradient_clip_value is not None:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), config.gradient_clip_value
-                        )
+                    if step % accum_steps == 0 or step == len(train_loader):
+                        # Gradient clipping
+                        if config.gradient_clip_value is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), config.gradient_clip_value
+                            )
 
-                    optimizer.step()
+                        optimizer.step()
+                        optimizer.zero_grad()
 
                     running_loss += loss.item() * batch_x.size(0)
                     _, predicted = outputs.max(1)
@@ -158,35 +189,53 @@ class TransferLearningService:
                 val_loss = val_running_loss / val_total
                 val_accuracy = val_correct / val_total
 
+                # Step the LR scheduler
+                scheduler.step(val_loss)
+
                 # Log epoch to experiment service
+                current_lr = optimizer.param_groups[0]["lr"]
                 metrics = {
                     "loss": round(train_loss, 6),
                     "val_loss": round(val_loss, 6),
                     "accuracy": round(train_accuracy, 6),
                     "val_accuracy": round(val_accuracy, 6),
+                    "learning_rate": current_lr,
                 }
 
                 async with async_session_factory() as db:
                     await ExperimentService.log_epoch(db, experiment_id, epoch, metrics)
 
                 logger.info(
-                    "Epoch %d/%d — loss=%.4f val_loss=%.4f acc=%.4f val_acc=%.4f",
+                    "Epoch %d/%d — loss=%.4f val_loss=%.4f acc=%.4f val_acc=%.4f lr=%.2e",
                     epoch, config.num_epochs,
-                    train_loss, val_loss, train_accuracy, val_accuracy,
+                    train_loss, val_loss, train_accuracy, val_accuracy, current_lr,
                 )
 
-                # Early stopping check
+                # Early stopping check with best-checkpoint restore
                 if config.early_stopping_patience is not None:
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
                         patience_counter = 0
+                        import copy
+                        best_model_state = copy.deepcopy(model.state_dict())
                     else:
                         patience_counter += 1
                         if patience_counter >= config.early_stopping_patience:
                             logger.info(
                                 "Early stopping triggered at epoch %d", epoch
                             )
+                            if best_model_state is not None:
+                                model.load_state_dict(best_model_state)
+                                logger.info("Restored best checkpoint")
                             break
+
+            # Post-training quantization
+            if config.quantize_after:
+                from app.services.models.quantization import ModelQuantizer
+
+                quantizer = ModelQuantizer()
+                model = quantizer.quantize_dynamic(model, dtype="int8")
+                logger.info("Post-training quantization applied")
 
             # Mark experiment as completed
             async with async_session_factory() as db:
