@@ -7,10 +7,8 @@ from app.api.routes import (
     audio,
     auth,
     datasets,
-    evaluation,
     experiments,
     health,
-    investigation,
     metrics,
     pipeline,
     registry,
@@ -18,6 +16,7 @@ from app.api.routes import (
     search,
     transfer,
     transform,
+    validation,
     vision,
     workspaces,
 )
@@ -31,7 +30,6 @@ api_router.include_router(vision.router)
 api_router.include_router(audio.router)
 api_router.include_router(transform.router)
 api_router.include_router(transfer.router)
-api_router.include_router(evaluation.router)
 api_router.include_router(experiments.router)
 api_router.include_router(registry.router)
 api_router.include_router(search.router)
@@ -41,5 +39,5 @@ api_router.include_router(agents.router)
 api_router.include_router(assets.router)
 api_router.include_router(datasets.router)
 api_router.include_router(safety.router)
-api_router.include_router(investigation.router)
+api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
