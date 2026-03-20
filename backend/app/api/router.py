@@ -8,6 +8,7 @@ from app.api.routes import (
     auth,
     capture,
     datasets,
+    edge,
     evaluation,
     experiments,
     health,
@@ -46,6 +47,7 @@ api_router.include_router(safety.router)
 api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
+api_router.include_router(edge.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
 api_router.include_router(reviewops.router)
