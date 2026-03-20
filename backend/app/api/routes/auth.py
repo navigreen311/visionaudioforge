@@ -1,19 +1,86 @@
-from fastapi import APIRouter
-from starlette.responses import JSONResponse
+"""Auth routes: register, login, refresh, me, logout."""
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_current_user, get_db
+from app.core.security import hash_password
+from app.models.user import User
+from app.schemas.auth import (
+    AuthResponse,
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    TokenResponse,
+    UpdateProfileRequest,
+    UserResponse,
+)
+from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post("/login")
-async def login():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "auth"})
+@router.post("/register", response_model=AuthResponse, status_code=201)
+async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    """Create a new user and workspace, return tokens + user."""
+    svc = AuthService(db)
+    result = await svc.register(
+        email=body.email, password=body.password, workspace_name=body.workspace_name
+    )
+    return AuthResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        user=UserResponse.model_validate(result["user"]),
+    )
 
 
-@router.post("/register")
-async def register():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "auth"})
+@router.post("/login", response_model=AuthResponse)
+async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Authenticate with email + password, return tokens + user."""
+    svc = AuthService(db)
+    result = await svc.login(email=body.email, password=body.password)
+    return AuthResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        user=UserResponse.model_validate(result["user"]),
+    )
 
 
-@router.get("/me")
-async def get_current_user():
-    return JSONResponse(status_code=501, content={"status": "not_implemented", "module": "auth"})
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh(body: RefreshRequest, db: AsyncSession = Depends(get_db)):
+    """Exchange a refresh token for a new access token."""
+    svc = AuthService(db)
+    result = await svc.refresh(refresh_token=body.refresh_token)
+    # Return a full TokenResponse; refresh_token stays the same
+    return TokenResponse(
+        access_token=result["access_token"],
+        refresh_token=body.refresh_token,
+    )
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_user)):
+    """Return the currently authenticated user."""
+    return UserResponse.model_validate(current_user)
+
+
+@router.put("/me", response_model=UserResponse)
+async def update_me(
+    body: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update the current user's email and/or password."""
+    if body.email is not None:
+        current_user.email = body.email
+    if body.password is not None:
+        current_user.hashed_password = hash_password(body.password)
+    await db.commit()
+    await db.refresh(current_user)
+    return UserResponse.model_validate(current_user)
+
+
+@router.post("/logout")
+async def logout():
+    """Logout placeholder — token blacklisting is V2."""
+    return {"message": "Successfully logged out"}
