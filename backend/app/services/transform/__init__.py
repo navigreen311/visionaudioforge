@@ -1,15 +1,19 @@
 from .audio_advanced import AdvancedAudioTransform
 from .audio_transform import AudioTransformService
-from .batch import BatchTransformService
-from .presets import AUDIO_PRESETS, VIDEO_PRESETS, list_all_presets
+from .compressor import DynamicCompressor
+from .dereverb import Dereverberation
+from .dubbing import AutoDubber
+from .tts import TTSService
 from .video_advanced import AdvancedVideoTransform
+from .voice_clone import VoiceCloneService
 
 __all__ = [
     "AudioTransformService",
     "AdvancedAudioTransform",
     "AdvancedVideoTransform",
-    "BatchTransformService",
-    "AUDIO_PRESETS",
-    "VIDEO_PRESETS",
-    "list_all_presets",
+    "TTSService",
+    "VoiceCloneService",
+    "AutoDubber",
+    "Dereverberation",
+    "DynamicCompressor",
 ]

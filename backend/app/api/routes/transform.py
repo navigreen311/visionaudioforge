@@ -16,12 +16,12 @@ import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from starlette.responses import JSONResponse
 
-from pydantic import BaseModel
-
 from app.services.transform.audio_advanced import AdvancedAudioTransform
 from app.services.transform.audio_transform import AudioTransformService
-from app.services.transform.batch import BatchTransformService
-from app.services.transform.presets import list_all_presets
+from app.services.transform.compressor import DynamicCompressor
+from app.services.transform.dereverb import Dereverberation
+from app.services.transform.dubbing import AutoDubber
+from app.services.transform.tts import TTSService
 from app.services.transform.video_advanced import AdvancedVideoTransform
 from app.services.transform.video_transform import VideoTransformService
 
@@ -31,12 +31,10 @@ _audio_svc = AudioTransformService()
 _video_svc = VideoTransformService()
 _adv_audio = AdvancedAudioTransform()
 _adv_video = AdvancedVideoTransform()
-_batch_svc = BatchTransformService()
-
-
-class TTSRequest(BaseModel):
-    text: str
-    voice: str = "default"
+_tts_svc = TTSService()
+_dubber = AutoDubber()
+_dereverb = Dereverberation()
+_compressor = DynamicCompressor()
 
 
 # ===================================================================
@@ -484,18 +482,33 @@ async def video_interpolate(
 
 
 # ===================================================================
-# MISSING ADVANCED AUDIO ENDPOINT: TTS
+# TTS, DUBBING, DEREVERBERATION, COMPRESSION ENDPOINTS
 # ===================================================================
 
 
+@router.get("/audio/voices")
+async def audio_voices():
+    """List available TTS voices."""
+    return {"voices": _tts_svc.available_voices()}
+
+
+@router.get("/audio/compressor-presets")
+async def compressor_presets():
+    """List available compressor presets."""
+    return {"presets": _compressor.presets()}
+
+
 @router.post("/audio/tts")
-async def audio_tts(body: TTSRequest):
-    """Generate placeholder TTS audio from text."""
-    start = time.perf_counter()
-
-    audio, sr = await _adv_audio.tts_stub(body.text, voice=body.voice)
-
+async def audio_tts(
+    text: str = Form(...),
+    voice: str = Form("default"),
+    speed: float = Form(1.0),
+):
+    """Synthesize speech from text."""
     import soundfile as sf
+
+    start = time.perf_counter()
+    audio, sr = _tts_svc.synthesize(text, voice=voice, speed=speed)
 
     buf = io.BytesIO()
     sf.write(buf, audio, sr, format="WAV")
@@ -504,158 +517,115 @@ async def audio_tts(body: TTSRequest):
     return {
         "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
         "sample_rate": sr,
-        "text_length": len(body.text),
-        "voice": body.voice,
+        "duration_s": round(len(audio) / sr, 4),
+        "voice": voice,
+        "speed": speed,
         "processing_time_ms": round(elapsed, 2),
+        "note": "Placeholder TTS. Real TTS requires gTTS, Coqui TTS, or ElevenLabs API.",
     }
 
 
-# ===================================================================
-# MISSING ADVANCED VIDEO ENDPOINTS: smart-crop, highlight
-# ===================================================================
-
-
-@router.post("/video/smart-crop")
-async def video_smart_crop(
+@router.post("/audio/dub")
+async def audio_dub(
     file: UploadFile = File(...),
-    target_size: str = Form("200x200"),
-    method: str = Form("center_of_mass"),
+    source_lang: str = Form("en"),
+    target_lang: str = Form("es"),
+    voice: str = Form("default"),
 ):
-    """Intelligently crop an image to a target size using the specified method."""
-    start = time.perf_counter()
-    image = await _read_image(file)
-
-    # Parse target_size as "WxH"
-    try:
-        parts = target_size.lower().split("x")
-        tw, th = int(parts[0]), int(parts[1])
-    except (ValueError, IndexError):
-        raise HTTPException(status_code=400, detail="target_size must be in WxH format, e.g., '200x200'")
-
-    result = await _adv_video.smart_crop(image, (tw, th), method=method)
-    elapsed = (time.perf_counter() - start) * 1000
-
-    return {
-        "image": _encode_png(result),
-        "target_size": [tw, th],
-        "method": method,
-        "processing_time_ms": round(elapsed, 2),
-    }
-
-
-@router.post("/video/highlight")
-async def video_highlight(
-    files: list[UploadFile] = File(...),
-    scores: str = Form(...),
-    top_k: int = Form(5),
-):
-    """Select the top-k highest-scoring frames from a set of uploaded frames."""
-    start = time.perf_counter()
-
-    frames: list[np.ndarray] = []
-    for f in files:
-        frames.append(await _read_image(f))
-
-    try:
-        score_list = json.loads(scores)
-        if not isinstance(score_list, list):
-            raise ValueError("scores must be a JSON array of numbers")
-        score_list = [float(s) for s in score_list]
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    if len(score_list) != len(frames):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Number of scores ({len(score_list)}) must match number of files ({len(frames)})",
-        )
-
-    indices = await _adv_video.create_highlight_clip(frames, score_list, top_k=top_k)
-    elapsed = (time.perf_counter() - start) * 1000
-
-    return {
-        "top_indices": indices,
-        "top_k": len(indices),
-        "total_frames": len(frames),
-        "processing_time_ms": round(elapsed, 2),
-    }
-
-
-# ===================================================================
-# PRESETS ENDPOINT
-# ===================================================================
-
-
-@router.get("/presets")
-async def get_presets():
-    """List all available transform presets with descriptions."""
-    return list_all_presets()
-
-
-# ===================================================================
-# BATCH TRANSFORM ENDPOINTS
-# ===================================================================
-
-
-@router.post("/audio/batch")
-async def batch_audio(
-    files: list[UploadFile] = File(...),
-    operations: str = Form(...),
-):
-    """Apply a chain of operations to multiple audio files in parallel."""
+    """Auto-dub audio from source language to target language."""
     import librosa
+    import soundfile as sf
 
     start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
 
-    try:
-        ops = json.loads(operations)
-        if not isinstance(ops, list):
-            raise ValueError("operations must be a JSON array")
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    result = _dubber.dub_audio(audio, sr, source_lang=source_lang, target_lang=target_lang, voice=voice)
 
-    audio_files: list[tuple[np.ndarray, int]] = []
-    for f in files:
-        data = await f.read()
-        audio, sr = librosa.load(io.BytesIO(data), sr=None)
-        audio_files.append((audio, sr))
-
-    results = await _batch_svc.batch_audio_transform(audio_files, ops)
+    buf = io.BytesIO()
+    sf.write(buf, result["dubbed_audio"], sr, format="WAV")
     elapsed = (time.perf_counter() - start) * 1000
 
     return {
-        "results": results,
-        "total_files": len(files),
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "original_transcript": result["original_transcript"],
+        "translated_text": result["translated_text"],
+        "source_lang": result["source_lang"],
+        "target_lang": result["target_lang"],
+        "processing_time_ms": round(elapsed, 2),
+        "note": result["note"],
+    }
+
+
+@router.post("/audio/dereverb")
+async def audio_dereverb(
+    file: UploadFile = File(...),
+    strength: float = Form(0.5),
+):
+    """Remove reverberation from audio."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    result = _dereverb.remove_reverb(audio, sr, strength=strength)
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "strength": strength,
+        "duration_s": round(len(audio) / sr, 4),
         "processing_time_ms": round(elapsed, 2),
     }
 
 
-@router.post("/video/batch")
-async def batch_video(
-    files: list[UploadFile] = File(...),
-    operation: str = Form(...),
-    params: str = Form("{}"),
+@router.post("/audio/compress")
+async def audio_compress(
+    file: UploadFile = File(...),
+    threshold: float = Form(-20.0),
+    ratio: float = Form(4.0),
+    preset: str = Form(""),
 ):
-    """Apply a single operation to multiple image files in parallel."""
+    """Apply dynamic range compression to audio."""
+    import librosa
+    import soundfile as sf
+
     start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
 
-    try:
-        parsed_params = json.loads(params)
-        if not isinstance(parsed_params, dict):
-            raise ValueError("params must be a JSON object")
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    # Use preset if specified
+    presets = _compressor.presets()
+    if preset and preset in presets:
+        p = presets[preset]
+        result = _compressor.compress(
+            audio, sr,
+            threshold_db=p["threshold_db"],
+            ratio=p["ratio"],
+            attack_ms=p.get("attack_ms", 5),
+            release_ms=p.get("release_ms", 50),
+            makeup_gain_db=p.get("makeup_gain_db", 0),
+        )
+    else:
+        result = _compressor.compress(audio, sr, threshold_db=threshold, ratio=ratio)
 
-    images: list[np.ndarray] = []
-    for f in files:
-        images.append(await _read_image(f))
-
-    results = await _batch_svc.batch_video_transform(images, operation, parsed_params)
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
     elapsed = (time.perf_counter() - start) * 1000
 
     return {
-        "results": results,
-        "total_files": len(files),
-        "operation": operation,
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "preset": preset if preset else None,
+        "threshold_db": threshold,
+        "ratio": ratio,
+        "duration_s": round(len(audio) / sr, 4),
         "processing_time_ms": round(elapsed, 2),
     }
