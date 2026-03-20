@@ -1,15 +1,30 @@
-from sqlalchemy import Column, ForeignKey, String
+import enum
+
+from sqlalchemy import Column, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.orm import relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
-class ModelRecord(TimestampMixin, Base):
+class ModelStatus(str, enum.Enum):
+    registered = "registered"
+    staging = "staging"
+    production = "production"
+    shadow = "shadow"
+    archived = "archived"
+
+
+class ModelRecord(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "model_registry"
 
-    name = Column(String(255), nullable=False)
+    name = Column(String(200), nullable=False)
     version = Column(String(50), nullable=False)
-    status = Column(String(50), nullable=False, default="draft")
-    backbone = Column(String(255), nullable=True)
-    metrics = Column(JSON, nullable=True, default=dict)
+    status = Column(Enum(ModelStatus), nullable=False, default=ModelStatus.registered)
+    backbone = Column(String(100), nullable=True)
+    metrics = Column(JSON, nullable=False, default=dict)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+
+    # Relationships
+    experiments = relationship("Experiment", back_populates="model")
+    workspace = relationship("Workspace", back_populates="models")

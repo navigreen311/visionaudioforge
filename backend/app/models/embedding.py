@@ -1,16 +1,14 @@
-from sqlalchemy import Column, ForeignKey, String
-from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy import Column, DateTime, ForeignKey, LargeBinary, String, func
+from sqlalchemy.dialects.postgresql import UUID
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, UUIDMixin
 
 
-class Embedding(TimestampMixin, Base):
+class Embedding(UUIDMixin, Base):
     __tablename__ = "embeddings"
 
-    source_type = Column(String(50), nullable=False)  # image, audio, text
-    source_id = Column(UUID(as_uuid=True), nullable=False)
-    model_name = Column(String(255), nullable=False)
-    # vector field placeholder — will use pgvector Column(Vector(dim)) when pgvector extension is configured
-    vector_data = Column(JSON, nullable=True)  # temporary JSON storage until pgvector is set up
-    metadata_ = Column("metadata", JSON, nullable=True, default=dict)
-    workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
+    asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id"), nullable=False)
+    modality = Column(String(50), nullable=False)
+    vector_data = Column(LargeBinary, nullable=True)  # pgvector can be added later
+    model_name = Column(String(100), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -1,22 +1,41 @@
-from sqlalchemy import Column, ForeignKey, String, Text
+import enum
+
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
+from sqlalchemy.orm import relationship
 
-from app.models.base import Base, TimestampMixin
+from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
-class Pipeline(TimestampMixin, Base):
+class PipelineRunStatus(str, enum.Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+
+
+class Pipeline(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "pipelines"
 
-    name = Column(String(255), nullable=False)
-    description = Column(Text, nullable=True)
+    name = Column(String(200), nullable=False)
+    version = Column(String(50), nullable=False, default="1.0")
     definition = Column(JSON, nullable=False, default=dict)
+    status = Column(String(50), nullable=False, default="draft")
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
 
+    # Relationships
+    runs = relationship("PipelineRun", back_populates="pipeline")
+    workspace = relationship("Workspace", back_populates="pipelines")
 
-class PipelineRun(TimestampMixin, Base):
+
+class PipelineRun(UUIDMixin, Base):
     __tablename__ = "pipeline_runs"
 
     pipeline_id = Column(UUID(as_uuid=True), ForeignKey("pipelines.id"), nullable=False)
-    status = Column(String(50), nullable=False, default="pending")
-    result = Column(JSON, nullable=True)
-    error = Column(Text, nullable=True)
+    status = Column(Enum(PipelineRunStatus), nullable=False, default=PipelineRunStatus.pending)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+    results = Column(JSON, nullable=True)
+
+    # Relationships
+    pipeline = relationship("Pipeline", back_populates="runs")
