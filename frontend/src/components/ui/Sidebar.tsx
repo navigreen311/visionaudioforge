@@ -6,25 +6,73 @@ import { useState } from "react";
 import Badge from "./Badge";
 import { useAuthStore } from "@/stores/auth";
 
-const navItems = [
-  { href: "/", label: "Dashboard", icon: "\uD83D\uDCCA" },
-  { href: "/capture", label: "Capture", icon: "\uD83D\uDCF9" },
-  { href: "/vision", label: "Vision", icon: "\uD83D\uDC41" },
-  { href: "/audio", label: "Audio", icon: "\uD83C\uDFA7" },
-  { href: "/transform", label: "Transform", icon: "\uD83D\uDD04" },
-  { href: "/train", label: "Train", icon: "\uD83E\uDDE0" },
-  { href: "/validate", label: "Validate", icon: "\u2705" },
-  { href: "/search", label: "Search", icon: "\uD83D\uDD0D" },
-  { href: "/alerts", label: "Alerts", icon: "\uD83D\uDD14" },
-  { href: "/pipeline", label: "Pipeline", icon: "\u2699\uFE0F" },
-  { href: "/investigate", label: "Investigate", icon: "\uD83D\uDD2C" },
-  { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
-  { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
-  { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
-  { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
-  { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
-  { href: "/marketplace", label: "Marketplace", icon: "\uD83E\uDDE9" },
-  { href: "/settings", label: "Settings", icon: "\u2699" },
+interface NavGroup {
+  label: string;
+  items: { href: string; label: string; icon: string }[];
+}
+
+const navGroups: NavGroup[] = [
+  {
+    label: "Core",
+    items: [
+      { href: "/", label: "Dashboard", icon: "\uD83D\uDCCA" },
+      { href: "/capture", label: "Capture", icon: "\uD83D\uDCF9" },
+      { href: "/vision", label: "Vision", icon: "\uD83D\uDC41" },
+      { href: "/audio", label: "Audio", icon: "\uD83C\uDFA7" },
+    ],
+  },
+  {
+    label: "Transform",
+    items: [
+      { href: "/transform", label: "Transform", icon: "\uD83D\uDD04" },
+      { href: "/train", label: "Train", icon: "\uD83E\uDDE0" },
+    ],
+  },
+  {
+    label: "Analysis",
+    items: [
+      { href: "/validate", label: "Validate", icon: "\u2705" },
+      { href: "/search", label: "Search", icon: "\uD83D\uDD0D" },
+      { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
+    ],
+  },
+  {
+    label: "Operations",
+    items: [
+      { href: "/alerts", label: "Alerts", icon: "\uD83D\uDD14" },
+      { href: "/pipeline", label: "Pipeline", icon: "\u2699\uFE0F" },
+      { href: "/investigate", label: "Investigate", icon: "\uD83D\uDD2C" },
+      { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
+    ],
+  },
+  {
+    label: "Management",
+    items: [
+      { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
+      { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
+      { href: "/memory", label: "Memory", icon: "\uD83D\uDCBE" },
+      { href: "/knowledge-graph", label: "Knowledge Graph", icon: "\uD83D\uDD78\uFE0F" },
+    ],
+  },
+  {
+    label: "Platform",
+    items: [
+      { href: "/command-center", label: "Command Center", icon: "\uD83C\uDFDB\uFE0F" },
+      { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
+      { href: "/simulation", label: "Simulation", icon: "\uD83C\uDFAE" },
+      { href: "/reviewops", label: "ReviewOps", icon: "\uD83D\uDD0E" },
+    ],
+  },
+  {
+    label: "Admin",
+    items: [
+      { href: "/edge", label: "Edge", icon: "\uD83C\uDF10" },
+      { href: "/verticals", label: "Verticals", icon: "\uD83C\uDFE2" },
+      { href: "/federated", label: "Federated", icon: "\uD83D\uDD17" },
+      { href: "/marketplace", label: "Marketplace", icon: "\uD83E\uDDE9" },
+      { href: "/settings", label: "Settings", icon: "\u2699" },
+    ],
+  },
 ];
 
 interface SidebarProps {
@@ -68,31 +116,45 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-        {navItems.map((item) => {
-          const isActive =
-            item.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onMobileClose}
-              className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
-                isActive
-                  ? "bg-brand-600 text-white border-l-2 border-white"
-                  : "text-brand-100 hover:bg-brand-700 hover:text-white"
-              }`}
-              title={collapsed ? item.label : undefined}
-            >
-              <span className="text-lg flex-shrink-0 w-6 text-center">
-                {item.icon}
-              </span>
-              {!collapsed && <span>{item.label}</span>}
-            </Link>
-          );
-        })}
+      <nav className="flex-1 p-2 space-y-3 overflow-y-auto">
+        {navGroups.map((group) => (
+          <div key={group.label}>
+            {!collapsed && (
+              <p className="px-3 pt-2 pb-1 text-xs font-semibold uppercase tracking-wider text-brand-400">
+                {group.label}
+              </p>
+            )}
+            {collapsed && (
+              <div className="border-t border-brand-700 my-1" />
+            )}
+            <div className="space-y-0.5">
+              {group.items.map((item) => {
+                const isActive =
+                  item.href === "/"
+                    ? pathname === "/"
+                    : pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onMobileClose}
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors ${
+                      isActive
+                        ? "bg-brand-600 text-white border-l-2 border-white"
+                        : "text-brand-100 hover:bg-brand-700 hover:text-white"
+                    }`}
+                    title={collapsed ? item.label : undefined}
+                  >
+                    <span className="text-lg flex-shrink-0 w-6 text-center">
+                      {item.icon}
+                    </span>
+                    {!collapsed && <span>{item.label}</span>}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </nav>
 
       {/* User section */}
