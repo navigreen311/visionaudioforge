@@ -98,3 +98,119 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
   });
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Alerts API
+// ---------------------------------------------------------------------------
+
+export type AlertSeverity = "critical" | "high" | "medium" | "low";
+export type AlertStatus = "new" | "acknowledged" | "resolved" | "dismissed";
+
+export interface Alert {
+  id: string;
+  severity: AlertSeverity;
+  status: AlertStatus;
+  message: string;
+  source: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertFilters {
+  severity?: AlertSeverity;
+  status?: AlertStatus;
+  start_date?: string;
+  end_date?: string;
+  skip?: number;
+  limit?: number;
+}
+
+export interface AlertStats {
+  total: number;
+  critical_24h: number;
+  acknowledged: number;
+  unresolved: number;
+  by_severity: Record<AlertSeverity, number>;
+  by_status: Record<AlertStatus, number>;
+  recent: Alert[];
+}
+
+export interface AlertRuleCondition {
+  metric: string;
+  operator: ">" | "<" | "==" | "!=";
+  threshold: number;
+  window_seconds: number;
+}
+
+export interface AlertRuleAction {
+  type: "webhook" | "email" | "slack" | "log";
+  target: string;
+}
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  conditions: AlertRuleCondition[];
+  actions: AlertRuleAction[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AlertRuleCreatePayload {
+  name: string;
+  conditions: AlertRuleCondition[];
+  actions: AlertRuleAction[];
+  enabled: boolean;
+}
+
+export async function listAlerts(filters?: AlertFilters): Promise<Alert[]> {
+  const params: Record<string, string | number> = {};
+  if (filters?.severity) params.severity = filters.severity;
+  if (filters?.status) params.status = filters.status;
+  if (filters?.start_date) params.start_date = filters.start_date;
+  if (filters?.end_date) params.end_date = filters.end_date;
+  if (filters?.skip !== undefined) params.skip = filters.skip;
+  if (filters?.limit !== undefined) params.limit = filters.limit;
+  const { data } = await api.get("/api/alerts", { params });
+  return data;
+}
+
+export async function getAlertStats(): Promise<AlertStats> {
+  const { data } = await api.get("/api/alerts/stats");
+  return data;
+}
+
+export async function acknowledgeAlert(id: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${id}/acknowledge`);
+  return data;
+}
+
+export async function resolveAlert(id: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${id}/resolve`);
+  return data;
+}
+
+export async function dismissAlert(id: string): Promise<Alert> {
+  const { data } = await api.post(`/api/alerts/${id}/dismiss`);
+  return data;
+}
+
+export async function listRules(): Promise<AlertRule[]> {
+  const { data } = await api.get("/api/alerts/rules");
+  return data;
+}
+
+export async function createRule(payload: AlertRuleCreatePayload): Promise<AlertRule> {
+  const { data } = await api.post("/api/alerts/rules", payload);
+  return data;
+}
+
+export async function updateRule(id: string, payload: Partial<AlertRuleCreatePayload>): Promise<AlertRule> {
+  const { data } = await api.put(`/api/alerts/rules/${id}`, payload);
+  return data;
+}
+
+export async function deleteRule(id: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/${id}`);
+}
