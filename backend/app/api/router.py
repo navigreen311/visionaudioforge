@@ -3,23 +3,40 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
+    annotations,
     assets,
     audio,
     auth,
     capture,
+    command_center,
     datasets,
+    developer,
+    edge,
+    edge_fleet,
     evaluation,
     experiments,
+    federated,
+    governance,
     health,
+    integrations,
     investigation,
+    knowledge_graph,
     metrics,
+    mobile,
+    observability,
     pipeline,
+    plugins,
     registry,
+    reviewops,
+    runtime,
     safety,
     search,
+    semantic_memory,
+    simulation,
     transfer,
     transform,
     validation,
+    verticals,
     vision,
     workspaces,
 )
@@ -47,3 +64,20 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
+api_router.include_router(annotations.router)
+api_router.include_router(governance.router)
+api_router.include_router(integrations.router)
+api_router.include_router(observability.router)
+api_router.include_router(runtime.router)
+api_router.include_router(knowledge_graph.router)
+api_router.include_router(semantic_memory.router)
+api_router.include_router(command_center.router)
+api_router.include_router(simulation.router)
+api_router.include_router(reviewops.router)
+api_router.include_router(edge.router)
+api_router.include_router(edge_fleet.router)
+api_router.include_router(verticals.router)
+api_router.include_router(federated.router)
+api_router.include_router(mobile.router)
+api_router.include_router(plugins.router)
+api_router.include_router(developer.router)

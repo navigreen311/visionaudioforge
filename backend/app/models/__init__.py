@@ -12,6 +12,10 @@ from app.models.event import Event
 from app.models.audit_log import AuditLog
 from app.models.agent import Agent, AgentMemory
 from app.models.annotation import Annotation
+from app.models.api_key import APIKey
+from app.models.graph_node import GraphNode
+from app.models.graph_edge import GraphEdge
+from app.models.semantic_memory import SemanticMemory
 
 __all__ = [
     "Base",
@@ -34,4 +38,8 @@ __all__ = [
     "Agent",
     "AgentMemory",
     "Annotation",
+    "APIKey",
+    "GraphNode",
+    "GraphEdge",
+    "SemanticMemory",
 ]

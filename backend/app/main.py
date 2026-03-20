@@ -12,8 +12,8 @@ from app.ws.manager import manager  # noqa: F401 — re-export for convenience
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="0.3.0",
-    description="VisionAudioForge — AI-powered vision & audio analysis platform",
+    version="1.0.0",
+    description="VisionAudioForge — Elite Multimodal AI Platform (28 modules, 100+ endpoints)",
 )
 
 # ---------------------------------------------------------------------------
