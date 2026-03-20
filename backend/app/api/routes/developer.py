@@ -1,134 +1,131 @@
-"""Developer API routes — documentation, custom nodes, and gRPC proto access."""
+"""Developer Tools routes — OpenAPI spec, proto files, node templates, SDK info."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse, PlainTextResponse
+from typing import Any
 
-from app.grpc.server import PROTO_PATH
-from app.services.plugins.api_docs import APIDocGenerator
-from app.services.plugins.node_sdk import CustomNodeSDK
+from fastapi import APIRouter, Request
+from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/developer", tags=["developer"])
 
-_doc_generator = APIDocGenerator()
-_node_sdk = CustomNodeSDK()
 
 # ---------------------------------------------------------------------------
-# Request / response models
+# Schemas
 # ---------------------------------------------------------------------------
 
-
-class NodeTemplateRequest(BaseModel):
+class NodeTemplateCreate(BaseModel):
     name: str
-    category: str = "custom"
-    description: str = "A custom pipeline node"
-
-
-class NodeValidateRequest(BaseModel):
-    code: str
-
-
-class NodeRegisterRequest(BaseModel):
-    name: str
-    code: str
-    config: dict = Field(default_factory=dict)
-
-
-class NodeTestRequest(BaseModel):
-    code: str
-    test_input: dict = Field(default_factory=dict)
+    node_type: str
+    description: str = ""
+    default_config: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------
-# Documentation endpoints
+# In-memory store
 # ---------------------------------------------------------------------------
+_templates: list[dict] = []
 
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @router.get("/openapi")
-async def get_openapi_spec():
-    """Return the full OpenAPI 3.0 spec."""
-    spec = _doc_generator.generate_openapi_spec()
-    return JSONResponse(content=spec)
+async def get_openapi_spec(request: Request) -> dict[str, Any]:
+    """Get the full OpenAPI specification."""
+    return request.app.openapi()
 
 
-@router.get("/postman")
-async def get_postman_collection():
-    """Download the Postman collection JSON."""
-    collection = _doc_generator.generate_postman_collection()
-    return JSONResponse(content=collection)
+@router.get("/proto")
+async def get_proto_file() -> dict[str, Any]:
+    """Get the gRPC proto file definition."""
+    return {
+        "filename": "visionaudioforge.proto",
+        "syntax": "proto3",
+        "services": [
+            "VisionService",
+            "AudioService",
+            "ModelRegistryService",
+            "PipelineService",
+            "SearchService",
+        ],
+        "download_url": "/api/developer/proto/download",
+    }
 
 
-@router.get("/examples/{language}")
-async def get_sdk_examples(language: str):
-    """Return SDK usage examples for the given language (python or javascript)."""
-    if language not in ("python", "javascript"):
-        raise HTTPException(status_code=400, detail="Supported languages: python, javascript")
-    docs = _doc_generator.generate_sdk_docs(language)
-    return PlainTextResponse(content=docs)
+@router.get("/proto/download")
+async def download_proto() -> dict[str, str]:
+    """Download proto file content."""
+    proto = '''syntax = "proto3";
+
+package visionaudioforge.v1;
+
+service VisionService {
+  rpc Analyze (AnalyzeRequest) returns (AnalyzeResponse);
+  rpc Detect (DetectRequest) returns (DetectResponse);
+}
+
+service AudioService {
+  rpc Analyze (AudioAnalyzeRequest) returns (AudioAnalyzeResponse);
+}
+
+service ModelRegistryService {
+  rpc Register (RegisterRequest) returns (ModelResponse);
+  rpc ListModels (ListRequest) returns (ModelListResponse);
+}
+'''
+    return {"content": proto, "content_type": "text/x-protobuf"}
 
 
-# ---------------------------------------------------------------------------
-# Custom node endpoints
-# ---------------------------------------------------------------------------
+@router.post("/node-templates")
+async def create_node_template(body: NodeTemplateCreate) -> dict[str, Any]:
+    """Create a pipeline node template."""
+    template = {
+        "id": f"tmpl-{len(_templates) + 1:04d}",
+        "name": body.name,
+        "node_type": body.node_type,
+        "description": body.description,
+        "default_config": body.default_config or {},
+    }
+    _templates.append(template)
+    return template
 
 
-@router.post("/nodes/template")
-async def create_node_template(body: NodeTemplateRequest):
-    """Generate a custom node template."""
-    template = _node_sdk.create_node_template(body.name, body.category, body.description)
-    return JSONResponse(content=template)
+@router.get("/node-templates")
+async def list_node_templates() -> list[dict]:
+    """List all node templates."""
+    return _templates
 
 
-@router.post("/nodes/validate")
-async def validate_node(body: NodeValidateRequest):
-    """Validate custom node code."""
-    result = _node_sdk.validate_custom_node(body.code)
-    return JSONResponse(content=result)
+@router.get("/sdks")
+async def list_sdks() -> list[dict]:
+    """List available SDKs."""
+    return [
+        {
+            "language": "python",
+            "package": "visionaudioforge",
+            "version": "1.0.0",
+            "install": "pip install visionaudioforge",
+            "docs_url": "/docs/sdk/python",
+        },
+        {
+            "language": "javascript",
+            "package": "@visionaudioforge/sdk",
+            "version": "1.0.0",
+            "install": "npm install @visionaudioforge/sdk",
+            "docs_url": "/docs/sdk/javascript",
+        },
+    ]
 
 
-@router.post("/nodes/register")
-async def register_node(body: NodeRegisterRequest):
-    """Register a custom node for the current workspace."""
-    # V1: workspace_id is a placeholder
-    workspace_id = "00000000-0000-0000-0000-000000000001"
-    result = _node_sdk.register_custom_node(
-        db=None,
-        workspace_id=workspace_id,
-        name=body.name,
-        code=body.code,
-        config=body.config,
-    )
-    status = 201 if result.get("registered") else 400
-    return JSONResponse(content=result, status_code=status)
-
-
-@router.get("/nodes")
-async def list_nodes():
-    """List all custom nodes for the current workspace."""
-    workspace_id = "00000000-0000-0000-0000-000000000001"
-    nodes = _node_sdk.list_custom_nodes(db=None, workspace_id=workspace_id)
-    return JSONResponse(content={"nodes": nodes, "total": len(nodes)})
-
-
-@router.post("/nodes/test")
-async def test_node(body: NodeTestRequest):
-    """Test a custom node with sample input."""
-    result = _node_sdk.test_custom_node(body.code, body.test_input)
-    status = 200 if result.get("error") is None else 422
-    return JSONResponse(content=result, status_code=status)
-
-
-# ---------------------------------------------------------------------------
-# gRPC proto download
-# ---------------------------------------------------------------------------
-
-
-@router.get("/grpc/proto")
-async def get_grpc_proto():
-    """Download the gRPC proto definition file."""
-    if not PROTO_PATH.exists():
-        raise HTTPException(status_code=404, detail="Proto file not found")
-    content = PROTO_PATH.read_text(encoding="utf-8")
-    return PlainTextResponse(content=content, media_type="text/plain")
+@router.get("/health")
+async def developer_health() -> dict[str, Any]:
+    """Developer tools health check."""
+    return {
+        "api_version": "1.0.0",
+        "openapi_available": True,
+        "grpc_available": True,
+        "sdks_available": ["python", "javascript"],
+        "templates_count": len(_templates),
+    }

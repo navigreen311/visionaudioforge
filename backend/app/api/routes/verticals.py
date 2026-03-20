@@ -1,114 +1,127 @@
-"""Vertical starter-pack routes — browse, install, uninstall, and generate reports."""
+"""Vertical Packs routes — industry-specific module packs."""
 
-from datetime import date
-from uuid import UUID
+from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.core.deps import get_db
-from app.services.verticals.installer import VerticalInstaller
-from app.services.verticals.report_templates import ReportTemplateService
 
 router = APIRouter(prefix="/api/verticals", tags=["verticals"])
 
 
-# ------------------------------------------------------------------
-# Request / response helpers
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Available vertical packs
+# ---------------------------------------------------------------------------
 
-class DailySummaryRequest(BaseModel):
-    workspace_id: UUID
-    date: str  # ISO-8601 date string
+VERTICAL_PACKS = {
+    "security": {
+        "id": "security",
+        "name": "Security & Surveillance",
+        "description": "Intrusion detection, perimeter monitoring, anomaly alerts",
+        "modules": ["motion-detect", "perimeter-fence", "anomaly-alert", "face-blur", "license-plate"],
+        "status": "available",
+    },
+    "manufacturing": {
+        "id": "manufacturing",
+        "name": "Manufacturing QA",
+        "description": "Defect detection, assembly verification, quality metrics",
+        "modules": ["defect-detect", "assembly-check", "measurement", "spc-chart"],
+        "status": "available",
+    },
+    "retail": {
+        "id": "retail",
+        "name": "Retail Analytics",
+        "description": "Foot traffic, heatmaps, shelf monitoring, queue detection",
+        "modules": ["people-count", "heatmap", "shelf-scan", "queue-detect"],
+        "status": "available",
+    },
+    "healthcare": {
+        "id": "healthcare",
+        "name": "Healthcare Imaging",
+        "description": "Medical image analysis, DICOM support, annotation tools",
+        "modules": ["dicom-viewer", "cell-count", "pathology-assist", "radiology-aid"],
+        "status": "available",
+    },
+    "agriculture": {
+        "id": "agriculture",
+        "name": "Agriculture & Precision Farming",
+        "description": "Crop health, drone imagery, yield estimation",
+        "modules": ["crop-health", "ndvi-analysis", "pest-detect", "yield-estimate"],
+        "status": "available",
+    },
+    "logistics": {
+        "id": "logistics",
+        "name": "Logistics & Warehouse",
+        "description": "Package tracking, inventory scanning, route optimization",
+        "modules": ["barcode-scan", "package-track", "inventory-count", "route-optimize"],
+        "status": "available",
+    },
+    "media": {
+        "id": "media",
+        "name": "Media & Entertainment",
+        "description": "Content moderation, highlight reel, auto-tagging",
+        "modules": ["content-moderate", "highlight-detect", "auto-tag", "thumbnail-gen"],
+        "status": "available",
+    },
+}
+
+_installed: dict[str, dict] = {}
 
 
-class IncidentReportRequest(BaseModel):
-    workspace_id: UUID
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class InstallRequest(BaseModel):
+    pack_id: str
 
 
-# ------------------------------------------------------------------
-# Pack browsing
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
-
-@router.get("")
-async def list_available_packs():
+@router.get("/packs")
+async def list_packs() -> list[dict]:
     """List all available vertical packs."""
-    return await VerticalInstaller.list_available_packs()
+    return list(VERTICAL_PACKS.values())
+
+
+@router.get("/packs/{pack_id}")
+async def get_pack(pack_id: str) -> dict:
+    """Get details of a vertical pack."""
+    if pack_id not in VERTICAL_PACKS:
+        raise HTTPException(status_code=404, detail="Pack not found")
+    pack = dict(VERTICAL_PACKS[pack_id])
+    pack["installed"] = pack_id in _installed
+    return pack
+
+
+@router.post("/install")
+async def install_pack(body: InstallRequest) -> dict[str, Any]:
+    """Install a vertical pack."""
+    if body.pack_id not in VERTICAL_PACKS:
+        raise HTTPException(status_code=404, detail="Pack not found")
+    _installed[body.pack_id] = VERTICAL_PACKS[body.pack_id]
+    return {"pack_id": body.pack_id, "status": "installed", "modules": VERTICAL_PACKS[body.pack_id]["modules"]}
 
 
 @router.get("/installed")
-async def list_installed_packs(
-    workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = Depends(get_db),
-):
-    """List packs installed in the given workspace."""
-    return await VerticalInstaller.list_installed_packs(db, workspace_id)
+async def list_installed() -> list[dict]:
+    """List installed vertical packs."""
+    return list(_installed.values())
 
 
-@router.get("/{name}")
-async def get_pack_details(name: str):
-    """Return full details for a vertical pack."""
-    try:
-        return await VerticalInstaller.get_pack_info(name)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
-# ------------------------------------------------------------------
-# Install / uninstall
-# ------------------------------------------------------------------
-
-
-@router.post("/{name}/install")
-async def install_pack(
-    name: str,
-    workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Install a vertical pack into the workspace."""
-    try:
-        result = await VerticalInstaller.install_pack(db, workspace_id, name)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return result
-
-
-@router.post("/{name}/uninstall")
-async def uninstall_pack(
-    name: str,
-    workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Uninstall a vertical pack from the workspace."""
-    result = await VerticalInstaller.uninstall_pack(db, workspace_id, name)
-    if not result["removed"]:
-        raise HTTPException(status_code=404, detail="Pack not installed in this workspace")
-    return result
-
-
-# ------------------------------------------------------------------
-# Reports
-# ------------------------------------------------------------------
-
-
-@router.post("/reports/daily-summary")
-async def daily_summary(
-    body: DailySummaryRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate a daily security summary report."""
-    return await ReportTemplateService.generate_daily_summary(
-        db, body.workspace_id, body.date,
-    )
-
-
-@router.post("/reports/incident/{incident_id}")
-async def incident_report(
-    incident_id: str,
-    workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = Depends(get_db),
-):
-    """Generate a detailed incident report."""
-    return await ReportTemplateService.generate_incident_report(db, incident_id)
+@router.get("/packs/{pack_id}/resources")
+async def get_pack_resources(pack_id: str) -> dict[str, Any]:
+    """Get resources (models, configs) for a pack."""
+    if pack_id not in VERTICAL_PACKS:
+        raise HTTPException(status_code=404, detail="Pack not found")
+    pack = VERTICAL_PACKS[pack_id]
+    return {
+        "pack_id": pack_id,
+        "models": [f"{pack_id}-model-v1"],
+        "configs": [f"{pack_id}-config-default"],
+        "pipelines": [f"{pack_id}-pipeline-main"],
+        "total_resources": 3,
+    }

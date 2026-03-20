@@ -1,4 +1,4 @@
-.PHONY: dev build stop clean logs db-shell redis-shell test test-unit test-integration test-coverage lint format migrate seed
+.PHONY: dev build stop clean logs db-shell redis-shell test test-unit test-integration test-e2e test-coverage lint format migrate seed sdk-python-test sdk-js-build
 
 # ---------------------------------------------------------------------------
 # Docker
@@ -48,6 +48,9 @@ test-unit:
 test-integration:
 	cd backend && python -m pytest tests/integration/ -v
 
+test-e2e:
+	cd backend && python -m pytest tests/integration/ -v -m e2e
+
 test-coverage:
 	cd backend && python -m pytest tests/ --cov=app --cov-report=html --cov-report=term-missing
 
@@ -59,3 +62,12 @@ lint:
 
 format:
 	cd backend && python -m black app/ tests/ && python -m isort app/ tests/
+
+# ---------------------------------------------------------------------------
+# SDKs
+# ---------------------------------------------------------------------------
+sdk-python-test:
+	cd sdks/python && python -m pytest tests/ -v
+
+sdk-js-build:
+	cd sdks/javascript && npm run build

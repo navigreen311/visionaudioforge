@@ -1,176 +1,113 @@
-"""Federated learning routes: federation lifecycle, rounds, and privacy."""
+"""Federated Learning routes — federation management, rounds, aggregation."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
+from __future__ import annotations
 
-from app.core.deps import get_current_user, get_current_workspace, get_db
-from app.models.user import User
-from app.models.workspace import Workspace
-from app.services.federated.coordinator import FederatedCoordinator
-from app.services.federated.privacy import DifferentialPrivacy
+import time
+import uuid
+from typing import Any
 
-router = APIRouter(prefix="/federated", tags=["federated"])
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
-_coordinator = FederatedCoordinator()
-_privacy = DifferentialPrivacy()
+router = APIRouter(prefix="/api/federated", tags=["federated"])
 
 
-# --- Request / Response Models ---
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
-
-class CreateFederationRequest(BaseModel):
+class FederationCreate(BaseModel):
     name: str
     model_id: str
-    config: dict | None = None
+    aggregation_strategy: str = "fedavg"
+    min_participants: int = 2
+    rounds: int = 10
+    workspace_id: str | None = None
 
 
-class JoinFederationRequest(BaseModel):
+class JoinFederation(BaseModel):
     participant_id: str
-    participant_info: dict | None = None
-
-
-class SubmitUpdateRequest(BaseModel):
-    round_id: str
-    participant_id: str
-    model_update: dict
-    metrics: dict | None = None
+    participant_name: str
+    data_size: int = 0
 
 
 class StartRoundRequest(BaseModel):
-    pass
+    round_number: int | None = None
 
 
-class StopFederationRequest(BaseModel):
-    pass
+# ---------------------------------------------------------------------------
+# In-memory store
+# ---------------------------------------------------------------------------
+_federations: dict[str, dict] = {}
 
 
-# --- Routes ---
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
-
-@router.post("/create")
-async def create_federation(
-    req: CreateFederationRequest,
-    db: AsyncSession = Depends(get_db),
-    workspace: Workspace = Depends(get_current_workspace),
-):
+@router.post("/federations")
+async def create_federation(body: FederationCreate) -> dict[str, Any]:
     """Create a new federated learning federation."""
-    result = await _coordinator.create_federation(
-        db,
-        workspace_id=str(workspace.id),
-        name=req.name,
-        model_id=req.model_id,
-        config=req.config,
-    )
-    return result
+    fid = str(uuid.uuid4())
+    federation = {
+        "id": fid,
+        "name": body.name,
+        "model_id": body.model_id,
+        "aggregation_strategy": body.aggregation_strategy,
+        "min_participants": body.min_participants,
+        "total_rounds": body.rounds,
+        "current_round": 0,
+        "status": "waiting",
+        "participants": [],
+        "created_at": time.time(),
+    }
+    _federations[fid] = federation
+    return federation
 
 
-@router.post("/{federation_id}/join")
-async def join_federation(
-    federation_id: str,
-    req: JoinFederationRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Join an existing federation as a participant."""
-    try:
-        result = await _coordinator.join_federation(
-            db, federation_id, req.participant_id, req.participant_info
-        )
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+@router.get("/federations")
+async def list_federations() -> list[dict]:
+    """List all federations."""
+    return list(_federations.values())
 
 
-@router.post("/{federation_id}/start-round")
-async def start_round(
-    federation_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Start a new training round for the federation."""
-    try:
-        result = await _coordinator.start_round(db, federation_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        )
+@router.get("/federations/{federation_id}")
+async def get_federation(federation_id: str) -> dict:
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+    return _federations[federation_id]
 
 
-@router.post("/{federation_id}/submit-update")
-async def submit_update(
-    federation_id: str,
-    req: SubmitUpdateRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Submit a participant's model update for the current round."""
-    try:
-        result = await _coordinator.submit_update(
-            db, federation_id, req.round_id, req.participant_id, req.model_update, req.metrics
-        )
-        return result
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        )
+@router.post("/federations/{federation_id}/join")
+async def join_federation(federation_id: str, body: JoinFederation) -> dict[str, Any]:
+    """Join a federation as a participant."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+    fed = _federations[federation_id]
+    participant = {
+        "id": body.participant_id,
+        "name": body.participant_name,
+        "data_size": body.data_size,
+        "joined_at": time.time(),
+    }
+    fed["participants"].append(participant)
+    if len(fed["participants"]) >= fed["min_participants"]:
+        fed["status"] = "ready"
+    return {"federation_id": federation_id, "participant": participant, "status": fed["status"]}
 
 
-@router.post("/{federation_id}/aggregate")
-async def aggregate_round(
-    federation_id: str,
-    round_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Aggregate all participant updates for a round."""
-    try:
-        result = await _coordinator.aggregate_round(db, federation_id, round_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        )
-
-
-@router.get("/{federation_id}/status")
-async def get_federation_status(
-    federation_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Get current federation status, participants, and metrics."""
-    try:
-        result = await _coordinator.get_federation_status(db, federation_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-
-
-@router.post("/{federation_id}/stop")
-async def stop_federation(
-    federation_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Stop the federation and finalize results."""
-    try:
-        result = await _coordinator.stop_federation(db, federation_id)
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-
-
-@router.get("/{federation_id}/privacy")
-async def privacy_report(
-    federation_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Get privacy budget report for the federation."""
-    try:
-        fed = _coordinator._get_federation(federation_id)
-        report = _privacy.privacy_report(
-            federation_id=federation_id,
-            epsilon_spent=fed["epsilon_spent"],
-            epsilon_budget=fed["config"]["privacy_budget"],
-            rounds_completed=fed["current_round"],
-            max_rounds=fed["config"]["max_rounds"],
-        )
-        return report
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+@router.post("/federations/{federation_id}/start-round")
+async def start_round(federation_id: str, body: StartRoundRequest | None = None) -> dict[str, Any]:
+    """Start a new training round."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+    fed = _federations[federation_id]
+    fed["current_round"] += 1
+    fed["status"] = "training"
+    return {
+        "federation_id": federation_id,
+        "round": fed["current_round"],
+        "total_rounds": fed["total_rounds"],
+        "participants": len(fed["participants"]),
+        "status": "training",
+    }

@@ -1,205 +1,103 @@
-"""Edge Fleet Manager API routes."""
+"""Edge Fleet Manager routes — device registration, heartbeat, health."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
-from app.services.edge.fleet import (
-    DeviceRegistry,
-    OTAUpdateService,
-    RemoteConfigService,
-    OfflinePackageBuilder,
-    SyncService,
-    DeviceHealthService,
-)
-
-router = APIRouter(prefix="/api/edge", tags=["edge-fleet"])
-
-# Service singletons
-_registry = DeviceRegistry()
-_ota = OTAUpdateService()
-_config = RemoteConfigService()
-_packages = OfflinePackageBuilder()
-_sync = SyncService()
-_health = DeviceHealthService()
-
-# Placeholder DB
-_db: Any = None
+router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 
 # ---------------------------------------------------------------------------
-# Request / Response Models
+# Schemas
 # ---------------------------------------------------------------------------
 
-class RegisterDeviceRequest(BaseModel):
-    workspace_id: str
-    device_name: str
-    device_type: str
-    hardware_info: dict
-    network_info: dict | None = None
+class DeviceRegister(BaseModel):
+    name: str
+    device_type: str = "edge-node"
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    location: str | None = None
 
 
-class HeartbeatRequest(BaseModel):
-    status_payload: dict
-
-
-class CreateUpdateRequest(BaseModel):
-    workspace_id: str
-    model_id: str
-    target_devices: list[str] | str
-    strategy: str = "rolling"
-
-
-class SetConfigRequest(BaseModel):
-    config: dict
-
-
-class BuildPackageRequest(BaseModel):
-    model_id: str
-    device_type: str
-    include_runtime: bool = True
+class HeartbeatPayload(BaseModel):
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+    gpu_percent: float | None = None
+    active_models: list[str] = Field(default_factory=list)
+    inference_count: int = 0
 
 
 # ---------------------------------------------------------------------------
-# Device Registry Endpoints
+# In-memory store
+# ---------------------------------------------------------------------------
+_devices: dict[str, dict] = {}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/devices")
-async def register_device(req: RegisterDeviceRequest):
-    try:
-        result = await _registry.register_device(
-            _db, req.workspace_id, req.device_name, req.device_type,
-            req.hardware_info, req.network_info,
-        )
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+async def register_device(body: DeviceRegister) -> dict[str, Any]:
+    """Register an edge device."""
+    did = str(uuid.uuid4())
+    device = {
+        "id": did,
+        "name": body.name,
+        "device_type": body.device_type,
+        "capabilities": body.capabilities,
+        "location": body.location,
+        "status": "online",
+        "last_heartbeat": time.time(),
+        "registered_at": time.time(),
+    }
+    _devices[did] = device
+    return device
 
 
 @router.get("/devices")
-async def list_devices(workspace_id: str, status: str | None = None):
-    return await _registry.list_devices(_db, workspace_id, status)
-
-
-@router.post("/devices/{device_id}/heartbeat")
-async def device_heartbeat(device_id: str, req: HeartbeatRequest):
-    try:
-        return await _registry.heartbeat(_db, device_id, req.status_payload)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+async def list_devices() -> list[dict]:
+    """List all registered devices."""
+    return list(_devices.values())
 
 
 @router.get("/devices/{device_id}")
-async def get_device(device_id: str):
-    try:
-        return await _registry.get_device(_db, device_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.delete("/devices/{device_id}")
-async def deregister_device(device_id: str):
-    result = await _registry.deregister_device(_db, device_id)
-    if not result:
+async def get_device(device_id: str) -> dict:
+    """Get device details."""
+    if device_id not in _devices:
         raise HTTPException(status_code=404, detail="Device not found")
-    return {"deleted": True}
+    return _devices[device_id]
 
 
-@router.get("/fleet/overview")
-async def fleet_overview(workspace_id: str):
-    return await _registry.get_fleet_overview(_db, workspace_id)
+@router.post("/devices/{device_id}/heartbeat")
+async def device_heartbeat(device_id: str, body: HeartbeatPayload) -> dict[str, Any]:
+    """Receive heartbeat from a device."""
+    if device_id not in _devices:
+        raise HTTPException(status_code=404, detail="Device not found")
+    _devices[device_id]["last_heartbeat"] = time.time()
+    _devices[device_id]["status"] = "online"
+    _devices[device_id]["metrics"] = {
+        "cpu_percent": body.cpu_percent,
+        "memory_percent": body.memory_percent,
+        "gpu_percent": body.gpu_percent,
+        "active_models": body.active_models,
+        "inference_count": body.inference_count,
+    }
+    return {"device_id": device_id, "status": "acknowledged"}
 
 
-# ---------------------------------------------------------------------------
-# OTA Update Endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/updates")
-async def create_update(req: CreateUpdateRequest):
-    try:
-        return await _ota.create_update(
-            _db, req.workspace_id, req.model_id, req.target_devices, req.strategy,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.get("/updates/{update_id}")
-async def get_update_status(update_id: str):
-    try:
-        return await _ota.get_update_status(_db, update_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.post("/updates/{update_id}/approve")
-async def approve_update(update_id: str):
-    try:
-        return await _ota.approve_update(_db, update_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.post("/updates/{update_id}/rollback")
-async def rollback_update(update_id: str):
-    try:
-        return await _ota.rollback_update(_db, update_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Remote Config Endpoints
-# ---------------------------------------------------------------------------
-
-@router.get("/devices/{device_id}/config")
-async def get_device_config(device_id: str):
-    try:
-        return await _config.get_config(_db, device_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.put("/devices/{device_id}/config")
-async def set_device_config(device_id: str, req: SetConfigRequest):
-    try:
-        return await _config.set_config(_db, device_id, req.config)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-# ---------------------------------------------------------------------------
-# Offline Package Endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/packages")
-async def build_package(req: BuildPackageRequest):
-    return await _packages.build_package(
-        _db, req.model_id, req.device_type, req.include_runtime,
-    )
-
-
-@router.get("/packages")
-async def list_packages(workspace_id: str):
-    return await _packages.list_packages(_db, workspace_id)
-
-
-# ---------------------------------------------------------------------------
-# Health Endpoints
-# ---------------------------------------------------------------------------
-
-@router.get("/devices/{device_id}/health")
-async def device_health(device_id: str):
-    try:
-        return await _health.get_device_health(_db, device_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.get("/fleet/health")
-async def fleet_health(workspace_id: str):
-    return await _health.get_fleet_health(_db, workspace_id)
+@router.get("/health")
+async def fleet_health() -> dict[str, Any]:
+    """Get fleet-wide health summary."""
+    devices = list(_devices.values())
+    online = [d for d in devices if d["status"] == "online"]
+    return {
+        "total_devices": len(devices),
+        "online": len(online),
+        "offline": len(devices) - len(online),
+        "status": "healthy" if len(online) == len(devices) else "degraded",
+    }

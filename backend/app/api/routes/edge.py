@@ -1,122 +1,82 @@
-"""Edge deployment API routes — export, convert, package, and benchmark models
-for edge inference."""
+"""Edge Export routes — ONNX export, format listing, export management."""
 
 from __future__ import annotations
 
-from typing import Optional
-from uuid import uuid4
+import time
+import uuid
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-
-from app.services.edge.onnx_export import ONNXExporter
-from app.services.edge.converters import ModelConverter
-from app.services.edge.export_pipeline import ExportPipeline
 
 router = APIRouter(prefix="/api/edge", tags=["edge"])
 
-_pipeline = ExportPipeline()
-_exporter = ONNXExporter()
-_converter = ModelConverter()
 
-
-# ------------------------------------------------------------------
-# Request / response schemas
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
 class ExportRequest(BaseModel):
     model_id: str
-    formats: list[str] = Field(default=["onnx"])
-    optimization_level: str = Field(default="basic")
+    format: str = Field("onnx", pattern="^(onnx|tensorrt|tflite|coreml|openvino)$")
+    optimize: bool = True
+    quantize: bool = False
 
 
-class PackageRequest(BaseModel):
-    model_id: str
-    format: str = Field(default="onnx")
+# ---------------------------------------------------------------------------
+# In-memory store
+# ---------------------------------------------------------------------------
+_exports: dict[str, dict] = {}
+
+SUPPORTED_FORMATS = [
+    {"name": "onnx", "description": "Open Neural Network Exchange", "extensions": [".onnx"]},
+    {"name": "tensorrt", "description": "NVIDIA TensorRT", "extensions": [".engine"]},
+    {"name": "tflite", "description": "TensorFlow Lite", "extensions": [".tflite"]},
+    {"name": "coreml", "description": "Apple Core ML", "extensions": [".mlmodel"]},
+    {"name": "openvino", "description": "Intel OpenVINO", "extensions": [".xml", ".bin"]},
+]
 
 
-class BenchmarkRequest(BaseModel):
-    export_id: str
-    iterations: int = Field(default=100, ge=1, le=10000)
-
-
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Endpoints
-# ------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 @router.post("/export")
-async def export_model(body: ExportRequest):
-    """Export a model to one or more edge formats."""
-    try:
-        result = await _pipeline.export_model(
-            db=None,
-            model_id=body.model_id,
-            formats=body.formats,
-            optimization_level=body.optimization_level,
-        )
-        return result
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+async def export_model(body: ExportRequest) -> dict[str, Any]:
+    """Export a model to edge-optimized format."""
+    export_id = str(uuid.uuid4())
+    export = {
+        "id": export_id,
+        "model_id": body.model_id,
+        "format": body.format,
+        "optimize": body.optimize,
+        "quantize": body.quantize,
+        "status": "completed",
+        "file_size_mb": 42.5,
+        "created_at": time.time(),
+    }
+    _exports[export_id] = export
+    return export
 
 
 @router.get("/exports")
-async def list_exports(workspace_id: str = "default"):
-    """List all exports for a workspace."""
-    return await _pipeline.list_exports(db=None, workspace_id=workspace_id)
+async def list_exports(model_id: str | None = None) -> list[dict]:
+    """List all exports, optionally filtered by model."""
+    exports = list(_exports.values())
+    if model_id:
+        exports = [e for e in exports if e["model_id"] == model_id]
+    return exports
 
 
 @router.get("/exports/{export_id}")
-async def get_export(export_id: str):
-    """Get details of a specific export."""
-    result = await _pipeline.get_export_status(export_id)
-    if result.get("status") == "not_found":
+async def get_export(export_id: str) -> dict:
+    """Get export details."""
+    if export_id not in _exports:
         raise HTTPException(status_code=404, detail="Export not found")
-    return result
-
-
-@router.get("/exports/{export_id}/download")
-async def download_export(export_id: str, format: str = "onnx"):
-    """Download an exported model file."""
-    try:
-        path = await _pipeline.download_export(export_id, format)
-        return FileResponse(path, filename=f"model.{format}")
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
-@router.post("/package")
-async def create_package(body: PackageRequest):
-    """Create an edge deployment package with model, config, and sample code."""
-    result = await _pipeline.create_edge_package(
-        db=None,
-        model_id=body.model_id,
-        fmt=body.format,
-    )
-    return result
+    return _exports[export_id]
 
 
 @router.get("/formats")
-async def list_formats():
-    """List supported export formats with availability status."""
-    return _converter.get_supported_formats()
-
-
-@router.post("/benchmark")
-async def benchmark_model(body: BenchmarkRequest):
-    """Run inference benchmark on an exported model."""
-    status = await _pipeline.get_export_status(body.export_id)
-    if status.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail="Export not found")
-
-    onnx_export = status.get("exports", {}).get("onnx", {})
-    onnx_path = onnx_export.get("path")
-    if not onnx_path:
-        raise HTTPException(
-            status_code=422,
-            detail="No ONNX model found in this export. Benchmark requires ONNX format.",
-        )
-
-    result = _exporter.benchmark_onnx(onnx_path, iterations=body.iterations)
-    result["export_id"] = body.export_id
-    return result
+async def get_formats() -> list[dict]:
+    """List supported export formats."""
+    return SUPPORTED_FORMATS

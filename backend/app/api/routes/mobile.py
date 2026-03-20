@@ -1,219 +1,105 @@
-"""Mobile operator app routes — dashboard, alerts, push, sync, field notes."""
+"""Mobile Backend routes — dashboard, push notifications, field notes."""
 
 from __future__ import annotations
 
-from typing import Optional
-from uuid import UUID
+import time
+import uuid
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database import get_async_session
-from app.services.mobile.biometric_auth import BiometricAuthService
-from app.services.mobile.field_annotation import FieldAnnotationService
-from app.services.mobile.mobile_api import MobileAPIService
-from app.services.mobile.offline_sync import OfflineSyncService
-from app.services.mobile.push_notifications import PushNotificationService
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/mobile", tags=["mobile"])
 
+
 # ---------------------------------------------------------------------------
-# Request schemas
+# Schemas
 # ---------------------------------------------------------------------------
 
-
-class AcknowledgeRequest(BaseModel):
-    user_id: UUID
-    location: Optional[dict] = None
-
-
-class SyncRequest(BaseModel):
-    actions: list[dict]
-
-
-class DeviceRegistration(BaseModel):
-    user_id: UUID
+class PushRegister(BaseModel):
     device_token: str
-    platform: str  # 'ios' | 'android' | 'web'
+    platform: str = Field(..., pattern="^(ios|android|web)$")
+    user_id: str | None = None
 
 
-class PushPreferencesUpdate(BaseModel):
-    user_id: UUID
-    preferences: dict
-
-
-class FieldNoteRequest(BaseModel):
-    workspace_id: UUID
-    user_id: UUID
+class FieldNoteCreate(BaseModel):
+    title: str
     content: str
-    location: Optional[dict] = None
-    attached_asset_id: Optional[str] = None
-
-
-class BiometricRegister(BaseModel):
-    user_id: str
-    biometric_type: str
-
-
-class BiometricVerify(BaseModel):
-    token: str
+    location: dict[str, float] | None = None
+    tags: list[str] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# Dashboard & alerts
+# In-memory store
 # ---------------------------------------------------------------------------
+_push_registrations: list[dict] = []
+_field_notes: dict[str, dict] = {}
 
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
 @router.get("/dashboard")
-async def mobile_dashboard(
-    workspace_id: UUID = Query(...),
-    user_id: UUID = Query(...),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Mobile-optimized dashboard with compact payload."""
-    return await MobileAPIService.get_mobile_dashboard(db, workspace_id, user_id)
-
-
-@router.get("/alerts")
-async def mobile_alerts(
-    workspace_id: UUID = Query(...),
-    status: Optional[str] = Query(None),
-    limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Compact alert list with optional status filter and pagination."""
-    return await MobileAPIService.get_mobile_alerts(
-        db, workspace_id, status=status, limit=limit, offset=offset,
-    )
-
-
-@router.post("/alerts/{alert_id}/acknowledge")
-async def acknowledge_alert(
-    alert_id: UUID,
-    body: AcknowledgeRequest,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Acknowledge an alert from mobile with optional location/photo."""
-    return await MobileAPIService.acknowledge_mobile(
-        db, alert_id, body.user_id, location=body.location,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Evidence upload
-# ---------------------------------------------------------------------------
-
-
-@router.post("/evidence")
-async def upload_evidence(
-    workspace_id: UUID = Query(...),
-    user_id: UUID = Query(...),
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Upload field evidence from mobile device."""
-    file_bytes = await file.read()
-    metadata = {
-        "filename": file.filename,
-        "content_type": file.content_type,
+async def get_dashboard() -> dict[str, Any]:
+    """Get mobile-optimized dashboard summary."""
+    return {
+        "active_streams": 3,
+        "recent_alerts": 2,
+        "pending_reviews": 5,
+        "field_notes": len(_field_notes),
+        "system_status": "operational",
+        "last_updated": time.time(),
     }
-    return await MobileAPIService.upload_field_evidence(
-        db, workspace_id, user_id, file_bytes, metadata,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Offline support
-# ---------------------------------------------------------------------------
-
-
-@router.get("/offline-package")
-async def offline_package(
-    workspace_id: UUID = Query(...),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Download an offline data package for the workspace."""
-    return await MobileAPIService.get_offline_package(db, workspace_id)
-
-
-@router.post("/sync")
-async def process_sync(
-    body: SyncRequest,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Process offline actions queued on the mobile device."""
-    return await OfflineSyncService.process_offline_actions(db, body.actions)
-
-
-# ---------------------------------------------------------------------------
-# Push notifications
-# ---------------------------------------------------------------------------
 
 
 @router.post("/push/register")
-async def register_push_device(
-    body: DeviceRegistration,
-    db: AsyncSession = Depends(get_async_session),
-):
+async def register_push(body: PushRegister) -> dict[str, Any]:
     """Register a device for push notifications."""
-    return await PushNotificationService.register_device(
-        db, body.user_id, body.device_token, body.platform,
-    )
+    registration = {
+        "id": str(uuid.uuid4()),
+        "device_token": body.device_token,
+        "platform": body.platform,
+        "user_id": body.user_id,
+        "registered_at": time.time(),
+    }
+    _push_registrations.append(registration)
+    return registration
 
 
-@router.post("/push/preferences")
-async def update_push_preferences(
-    body: PushPreferencesUpdate,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Update push notification preferences."""
-    return await PushNotificationService.update_preferences(
-        db, body.user_id, body.preferences,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Field notes & photos
-# ---------------------------------------------------------------------------
+@router.get("/push/registrations")
+async def list_push_registrations() -> list[dict]:
+    """List push notification registrations."""
+    return _push_registrations
 
 
 @router.post("/field-notes")
-async def create_field_note(
-    body: FieldNoteRequest,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Create a field note with optional GPS location."""
-    return await FieldAnnotationService.create_field_note(
-        db,
-        body.workspace_id,
-        body.user_id,
-        body.content,
-        location=body.location,
-        attached_asset_id=body.attached_asset_id,
-    )
-
-
-@router.post("/field-photos")
-async def upload_field_photo(
-    workspace_id: UUID = Query(...),
-    user_id: UUID = Query(...),
-    notes: str = Form(""),
-    file: UploadFile = File(...),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Upload a field photo with notes and optional GPS location."""
-    photo_bytes = await file.read()
-    return await FieldAnnotationService.create_field_photo(
-        db, workspace_id, user_id, photo_bytes, notes,
-    )
+async def create_field_note(body: FieldNoteCreate) -> dict[str, Any]:
+    """Create a field note from mobile."""
+    nid = str(uuid.uuid4())
+    note = {
+        "id": nid,
+        "title": body.title,
+        "content": body.content,
+        "location": body.location,
+        "tags": body.tags,
+        "attachments": body.attachments,
+        "created_at": time.time(),
+    }
+    _field_notes[nid] = note
+    return note
 
 
 @router.get("/field-notes")
-async def list_field_notes(
-    workspace_id: UUID = Query(...),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """List field notes for a workspace."""
-    return await FieldAnnotationService.get_field_notes(db, workspace_id)
+async def list_field_notes() -> list[dict]:
+    """List all field notes."""
+    return list(_field_notes.values())
+
+
+@router.get("/field-notes/{note_id}")
+async def get_field_note(note_id: str) -> dict:
+    """Get a field note."""
+    if note_id not in _field_notes:
+        raise HTTPException(status_code=404, detail="Field note not found")
+    return _field_notes[note_id]

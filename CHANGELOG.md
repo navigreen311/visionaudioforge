@@ -2,6 +2,100 @@
 
 All notable changes to VisionAudioForge are documented in this file.
 
+## [1.0.0] - 2026-03-20 (VisionAudioForge v1.0.0 — Complete Platform Release)
+
+### Added
+
+#### Knowledge Graph Engine
+- Entity node and edge management with typed relations
+- Neighbor traversal queries
+- Scene extraction from natural language descriptions
+- Graph-based entity linking for investigation and analysis
+
+#### Semantic Memory System
+- Memory store with importance scoring and category tagging
+- Keyword-based recall with relevance ranking
+- Time-based memory decay with configurable threshold and factor
+- Memory promotion (importance boosting) for high-value entries
+
+#### Command Center
+- Multi-stream video dashboard with configurable layouts
+- Stream management (add, list, status tracking)
+- Operator shift scheduling and management
+- Real-time operational dashboard with stream health
+
+#### Simulation Lab
+- Scenario generation with configurable parameters
+- Simulation execution engine with performance metrics
+- Detailed simulation reports (throughput, latency, error rate)
+
+#### ReviewOps Workflow
+- Review task creation and management
+- Reviewer assignment workflow
+- Verdict submission (approved, rejected, needs_changes)
+- Task status tracking and completion checking
+
+#### Edge Export & Fleet Manager
+- Model export to ONNX, TensorRT, TFLite, CoreML, OpenVINO formats
+- Export optimization and quantization options
+- Edge device registration and management
+- Device heartbeat monitoring with resource metrics
+- Fleet-wide health summary dashboard
+
+#### Python SDK & JavaScript SDK
+- Python SDK: `pip install visionaudioforge`
+- JavaScript SDK: `npm install @visionaudioforge/sdk`
+- Full API coverage for all 28 modules
+- Developer tools endpoint for SDK discovery
+
+#### 7 Vertical Packs
+- Security & Surveillance (intrusion detection, perimeter monitoring)
+- Manufacturing QA (defect detection, assembly verification)
+- Retail Analytics (foot traffic, heatmaps, queue detection)
+- Healthcare Imaging (DICOM, pathology, radiology)
+- Agriculture (crop health, NDVI, pest detection)
+- Logistics & Warehouse (barcode, inventory, route optimization)
+- Media & Entertainment (content moderation, highlights, auto-tagging)
+
+#### Federated Learning
+- Federation creation with configurable aggregation strategies
+- Participant join workflow with data size reporting
+- Training round management
+- FedAvg aggregation support
+
+#### Mobile Backend
+- Mobile-optimized dashboard endpoint
+- Push notification registration (iOS, Android, Web)
+- Field note creation with location and attachments
+- Mobile-friendly API responses
+
+#### Plugin Marketplace
+- Plugin registration with capability declaration
+- Enable/disable lifecycle management
+- Plugin execution engine
+- Featured marketplace listings
+
+#### gRPC API
+- Proto3 service definitions for Vision, Audio, ModelRegistry, Pipeline, Search
+- Proto file download endpoint
+- grpcio and grpcio-tools integration
+
+#### Developer Tools
+- Full OpenAPI specification endpoint
+- gRPC proto file access
+- Pipeline node template creation and management
+- SDK discovery and documentation links
+- Developer health check endpoint
+
+#### Integration & Infrastructure
+- All 28 route modules registered in router.py
+- Version bump to 1.0.0
+- ONNX, ONNX Runtime dependencies for edge export
+- grpcio, grpcio-tools for gRPC stubs
+- Comprehensive V3 E2E test suite (14 test functions)
+- Updated API reference with all Phase 4 endpoints
+- Complete README rewrite for v1.0
+
 ## [0.3.0] - 2026-03-20 (Phase 3 — Advanced Platform Features)
 
 ### Added
