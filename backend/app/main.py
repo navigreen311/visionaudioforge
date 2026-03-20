@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import settings
+from app.ws.copilot import copilot_ws_handler
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -19,3 +20,9 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+
+
+@app.websocket("/ws/agents/stream")
+async def ws_copilot_stream(websocket: WebSocket):
+    """WebSocket endpoint for streaming copilot chat."""
+    await copilot_ws_handler(websocket)

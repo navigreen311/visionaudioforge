@@ -1,4 +1,4 @@
-from sqlalchemy import Column, ForeignKey, String, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 
 from app.models.base import Base, TimestampMixin
@@ -18,6 +18,9 @@ class AgentMemory(TimestampMixin, Base):
     __tablename__ = "agent_memories"
 
     agent_id = Column(UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False)
-    role = Column(String(50), nullable=False)
+    role = Column(String(50), nullable=False, default="assistant")
     content = Column(Text, nullable=False)
+    importance_score = Column(Float, nullable=False, default=0.5)
+    freshness_score = Column(Float, nullable=False, default=1.0)
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     metadata_ = Column("metadata", JSON, nullable=True, default=dict)
