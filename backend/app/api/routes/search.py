@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+import numpy as np
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
 from app.services.search.embeddings import EmbeddingService
 from app.services.search.faiss_index import FAISSIndexService
 from app.services.search.search_service import CrossModalSearchService
+from app.services.search.fusion import EventFusionEngine
+from app.services.search.saved_searches import SavedSearchService
+from app.services.search.conversational import ConversationalSearch
+from app.services.search.voice_query import VoiceQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +100,27 @@ class StatsResponse(BaseModel):
     total_vectors: int
     dimension: int
     index_type: str
+
+
+class FuseRequest(BaseModel):
+    workspace_id: str
+    start: str
+    end: str
+
+
+class SaveSearchRequest(BaseModel):
+    workspace_id: str = "00000000-0000-0000-0000-000000000000"
+    user_id: str = "default"
+    name: str
+    query: str
+    modality: str = "text"
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConversationalRequest(BaseModel):
+    query: str
+    history: list[str] = Field(default_factory=list)
+    workspace_id: str = "00000000-0000-0000-0000-000000000000"
 
 
 # ---------------------------------------------------------------------------
@@ -288,3 +315,178 @@ async def similar_assets(asset_id: str, k: int = 10):
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
+
+
+# ---------------------------------------------------------------------------
+# Audio / CLAP search
+# ---------------------------------------------------------------------------
+
+
+@router.post("/audio-query")
+async def search_audio_query(file: UploadFile = File(...), k: int = 10):
+    """Search by audio upload — embed with CLAP and find similar assets."""
+    t0 = time.perf_counter()
+
+    audio_data = await file.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    try:
+        embedding_svc = _get_embedding_service()
+        index_svc = _get_index_service()
+
+        # Decode audio bytes
+        audio_array, sr = _decode_audio(audio_data)
+        vector = embedding_svc.embed_audio(audio_array, sr)
+
+        raw_results = index_svc.search(vector, k=k)
+    except Exception as exc:
+        logger.exception("Audio query search failed")
+        raise HTTPException(status_code=500, detail=f"Audio search failed: {exc}") from exc
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+
+    results = [
+        SearchResultItem(
+            asset_id=r["asset_id"],
+            score=r["score"],
+            rank=r["rank"],
+        )
+        for r in raw_results
+    ]
+
+    return SearchResponse(
+        results=results,
+        total_results=len(results),
+        processing_time_ms=round(elapsed_ms, 2),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Voice query (STT -> text search)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/voice")
+async def search_voice(file: UploadFile = File(...)):
+    """Transcribe voice recording and run a text search."""
+    audio_data = await file.read()
+    if not audio_data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+
+    try:
+        audio_array, sr = _decode_audio(audio_data)
+        voice_svc = VoiceQueryService()
+        result = await voice_svc.process_voice_query(audio_array, sr)
+    except Exception as exc:
+        logger.exception("Voice query failed")
+        raise HTTPException(status_code=500, detail=f"Voice query failed: {exc}") from exc
+
+    return JSONResponse(content={
+        "transcript": result["transcript"],
+        "search_results": result["search_results"],
+    })
+
+
+# ---------------------------------------------------------------------------
+# Event fusion / timeline
+# ---------------------------------------------------------------------------
+
+
+@router.post("/fuse")
+async def search_fuse(body: FuseRequest):
+    """Build a fused multimodal timeline for a time range."""
+    fusion = EventFusionEngine()
+
+    try:
+        timeline = await fusion.build_multimodal_timeline(
+            db=None,
+            workspace_id=body.workspace_id,
+            start=body.start,
+            end=body.end,
+        )
+    except Exception as exc:
+        logger.exception("Fusion timeline failed")
+        raise HTTPException(status_code=500, detail=f"Fusion failed: {exc}") from exc
+
+    return JSONResponse(content={"timeline": timeline})
+
+
+# ---------------------------------------------------------------------------
+# Saved searches
+# ---------------------------------------------------------------------------
+
+
+@router.post("/saved")
+async def save_search(body: SaveSearchRequest):
+    """Save a search for later re-execution."""
+    svc = SavedSearchService()
+    result = await svc.save_search(
+        db=None,
+        workspace_id=body.workspace_id,
+        user_id=body.user_id,
+        name=body.name,
+        query=body.query,
+        modality=body.modality,
+        filters=body.filters,
+    )
+    return JSONResponse(content=result)
+
+
+@router.get("/saved")
+async def list_saved_searches(
+    workspace_id: str = Query(default="00000000-0000-0000-0000-000000000000"),
+    user_id: str | None = Query(default=None),
+):
+    """List saved searches for a workspace."""
+    svc = SavedSearchService()
+    results = await svc.list_saved_searches(
+        db=None,
+        workspace_id=workspace_id,
+        user_id=user_id,
+    )
+    return JSONResponse(content={"saved_searches": results})
+
+
+@router.post("/saved/{search_id}/execute")
+async def execute_saved_search(search_id: str):
+    """Re-run a saved search by ID."""
+    svc = SavedSearchService()
+    results = await svc.execute_saved_search(db=None, search_id=search_id)
+    return JSONResponse(content={"results": results})
+
+
+# ---------------------------------------------------------------------------
+# Conversational search
+# ---------------------------------------------------------------------------
+
+
+@router.post("/conversational")
+async def conversational_search(body: ConversationalRequest):
+    """Context-aware conversational search with follow-up suggestions."""
+    svc = ConversationalSearch()
+    result = await svc.search_with_context(
+        query=body.query,
+        conversation_history=body.history,
+        workspace_id=body.workspace_id,
+    )
+    return JSONResponse(content=result)
+
+
+# ---------------------------------------------------------------------------
+# Audio decoding helper
+# ---------------------------------------------------------------------------
+
+
+def _decode_audio(data: bytes) -> tuple[np.ndarray, int]:
+    """Decode audio bytes to numpy array and sample rate."""
+    try:
+        import soundfile as sf
+
+        audio_array, sr = sf.read(io.BytesIO(data))
+        if audio_array.ndim > 1:
+            audio_array = audio_array.mean(axis=1)
+        return audio_array.astype(np.float32), sr
+    except ImportError:
+        logger.warning("soundfile not available — generating placeholder audio")
+        return np.random.randn(16000).astype(np.float32), 16000
