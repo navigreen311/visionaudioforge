@@ -3,12 +3,19 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Audio augmentation pipeline service (`AudioAugmenter`) with noise injection (white/pink/brown), time stretch, pitch shift, time shift, and SpecAugment masking
-- Five augmentation presets: speech_robust, music_robust, environmental, light, heavy
-- POST `/api/audio/augment` endpoint accepting file upload with preset or custom JSON pipeline config
-- Pydantic schemas for augmentation steps, config, and response
-- Unit and integration tests for all augmentation methods and API endpoint
-- Documentation at `docs/audio-augmentation.md`
+- Live capture engine (M1) with WebSocket streaming
+- CaptureWebSocket handler with per-frame analysis (brightness, motion detection, resolution)
+- Channel-based ConnectionManager replacing the previous stub
+- CaptureSessionManager for in-memory session lifecycle tracking
+- WebSocket route at `/ws/live/stream/{session_id}`
+- Full capture UI with Camera, Screen, and Microphone source tabs
+- LiveFeedPanel component with video display and AI overlay canvas
+- AudioMeter component with real-time frequency visualization
+- SourceSwitcher and CaptureControls components
+- Status bar showing connection status, FPS, frame count, and session duration
+- Frame streaming to backend at 5 FPS via WebSocket
+- Snapshot download functionality
+- Backend tests for ConnectionManager, CaptureSessionManager, and WebSocket frame processing
 
 ## [0.1.0] - 2026-03-20
 
