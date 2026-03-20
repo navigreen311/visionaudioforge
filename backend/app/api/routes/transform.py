@@ -18,6 +18,10 @@ from starlette.responses import JSONResponse
 
 from app.services.transform.audio_advanced import AdvancedAudioTransform
 from app.services.transform.audio_transform import AudioTransformService
+from app.services.transform.compressor import DynamicCompressor
+from app.services.transform.dereverb import Dereverberation
+from app.services.transform.dubbing import AutoDubber
+from app.services.transform.tts import TTSService
 from app.services.transform.video_advanced import AdvancedVideoTransform
 from app.services.transform.video_transform import VideoTransformService
 
@@ -27,6 +31,10 @@ _audio_svc = AudioTransformService()
 _video_svc = VideoTransformService()
 _adv_audio = AdvancedAudioTransform()
 _adv_video = AdvancedVideoTransform()
+_tts_svc = TTSService()
+_dubber = AutoDubber()
+_dereverb = Dereverberation()
+_compressor = DynamicCompressor()
 
 
 # ===================================================================
@@ -469,5 +477,155 @@ async def video_interpolate(
     return {
         "frames": [_encode_png(f) for f in intermediates],
         "count": len(intermediates),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+# ===================================================================
+# TTS, DUBBING, DEREVERBERATION, COMPRESSION ENDPOINTS
+# ===================================================================
+
+
+@router.get("/audio/voices")
+async def audio_voices():
+    """List available TTS voices."""
+    return {"voices": _tts_svc.available_voices()}
+
+
+@router.get("/audio/compressor-presets")
+async def compressor_presets():
+    """List available compressor presets."""
+    return {"presets": _compressor.presets()}
+
+
+@router.post("/audio/tts")
+async def audio_tts(
+    text: str = Form(...),
+    voice: str = Form("default"),
+    speed: float = Form(1.0),
+):
+    """Synthesize speech from text."""
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio, sr = _tts_svc.synthesize(text, voice=voice, speed=speed)
+
+    buf = io.BytesIO()
+    sf.write(buf, audio, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "duration_s": round(len(audio) / sr, 4),
+        "voice": voice,
+        "speed": speed,
+        "processing_time_ms": round(elapsed, 2),
+        "note": "Placeholder TTS. Real TTS requires gTTS, Coqui TTS, or ElevenLabs API.",
+    }
+
+
+@router.post("/audio/dub")
+async def audio_dub(
+    file: UploadFile = File(...),
+    source_lang: str = Form("en"),
+    target_lang: str = Form("es"),
+    voice: str = Form("default"),
+):
+    """Auto-dub audio from source language to target language."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    result = _dubber.dub_audio(audio, sr, source_lang=source_lang, target_lang=target_lang, voice=voice)
+
+    buf = io.BytesIO()
+    sf.write(buf, result["dubbed_audio"], sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "original_transcript": result["original_transcript"],
+        "translated_text": result["translated_text"],
+        "source_lang": result["source_lang"],
+        "target_lang": result["target_lang"],
+        "processing_time_ms": round(elapsed, 2),
+        "note": result["note"],
+    }
+
+
+@router.post("/audio/dereverb")
+async def audio_dereverb(
+    file: UploadFile = File(...),
+    strength: float = Form(0.5),
+):
+    """Remove reverberation from audio."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    result = _dereverb.remove_reverb(audio, sr, strength=strength)
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "strength": strength,
+        "duration_s": round(len(audio) / sr, 4),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/audio/compress")
+async def audio_compress(
+    file: UploadFile = File(...),
+    threshold: float = Form(-20.0),
+    ratio: float = Form(4.0),
+    preset: str = Form(""),
+):
+    """Apply dynamic range compression to audio."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    # Use preset if specified
+    presets = _compressor.presets()
+    if preset and preset in presets:
+        p = presets[preset]
+        result = _compressor.compress(
+            audio, sr,
+            threshold_db=p["threshold_db"],
+            ratio=p["ratio"],
+            attack_ms=p.get("attack_ms", 5),
+            release_ms=p.get("release_ms", 50),
+            makeup_gain_db=p.get("makeup_gain_db", 0),
+        )
+    else:
+        result = _compressor.compress(audio, sr, threshold_db=threshold, ratio=ratio)
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "preset": preset if preset else None,
+        "threshold_db": threshold,
+        "ratio": ratio,
+        "duration_s": round(len(audio) / sr, 4),
         "processing_time_ms": round(elapsed, 2),
     }
