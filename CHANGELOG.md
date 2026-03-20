@@ -2,6 +2,115 @@
 
 All notable changes to VisionAudioForge are documented in this file.
 
+## [0.3.0] - 2026-03-20 (Phase 3 — Advanced Platform Features)
+
+### Added
+
+#### WS01 — Evaluation Lab
+- Benchmark creation and execution with multi-model comparison
+- Round-robin tournament system for model ranking
+- Threshold analysis (precision/recall/F1 across decision boundaries)
+- Model scorecards with strengths/weaknesses summary
+
+#### WS02 — Validation & Drift Detection
+- Data drift detection (KL divergence, KS test, PSI)
+- Schema validation for dataset columns
+- Prediction explainability (feature importance, SHAP-style)
+- Input constraint validation with configurable rules
+
+#### WS03 — Investigation Workspace
+- Case management with create/list/get/export
+- Evidence linking (asset attachment to cases)
+- Investigator notes with timestamped entries
+- Timeline query with time-range and event-type filtering
+- Full case export as structured JSON
+
+#### WS04 — Capture Enhancements
+- Live capture session management endpoints
+- Frame-level analysis during capture
+- Session metadata and replay support
+
+#### WS05 — Advanced Vision
+- Enhanced error analysis with confusion matrix
+- Screen-analyze endpoint for desktop captures
+- Annotated visualization with base64 output
+
+#### WS06 — Advanced Audio
+- Audio classification pipeline
+- Enhanced spectral analysis with configurable feature extraction
+- Audio augmentation chain (noise, pitch, time-stretch, filtering)
+
+#### WS07 — Transform Pipeline
+- Audio transform chain: denoise, silence removal, pitch shift, time stretch, EQ presets
+- Video transforms: background removal, super resolution, style transfer, auto crop, thumbnails
+- Composable transform runner for chained operations
+
+#### WS08 — Dataset Versioning
+- Dataset versioning with immutable snapshots
+- Enhanced split with stratification support
+- Statistics computation and JSON export
+
+#### WS09 — Pipeline Scheduling
+- Pipeline scheduling with cron expressions (croniter)
+- Pipeline validation with node-type registry
+- Run management with status tracking
+
+#### WS10 — Alert System
+- Alert rule creation with condition expressions
+- Severity levels (info, warning, critical)
+- Alert listing and acknowledgment
+
+#### WS11 — Agent Memory
+- Agent memory with importance scoring
+- Memory decay mechanism
+- Skill packs for specialized agent behavior
+
+#### WS12 — Asset Management
+- Media asset CRUD with MinIO storage
+- Asset metadata and tagging
+- Workspace-scoped asset listing
+
+#### WS13 — Workspace Management
+- Multi-tenant workspace CRUD
+- Workspace-scoped resources across all modules
+
+#### WS14 — Safety Scanning
+- Content safety scanning endpoint
+- Configurable safety policy rules
+
+#### WS15 — Search Enhancements
+- Cross-modal FAISS search with CLIP embeddings
+- Search index statistics
+- Similarity-based asset retrieval
+
+#### WS16 — Metrics & Observability
+- Prometheus metrics endpoint
+- Request ID middleware for correlation
+- Timing middleware for latency tracking
+- Audit middleware for compliance logging
+- Structured JSON logging
+
+#### WS17 — Transfer Learning
+- Transfer learning job creation
+- Pre-trained model fine-tuning support
+
+#### WS18 — Model Registry Enhancements
+- Model lifecycle management (draft, active, archived, deprecated)
+- Model comparison and rollback
+- Version tracking
+
+#### WS19 — Experiment Tracking Enhancements
+- Enhanced epoch tracking with train_loss, val_loss, accuracy
+- Training curve generation
+- Experiment comparison across metrics
+
+#### WS20 — Consolidation & Testing
+- Route verification: all 22 route files registered in router
+- Comprehensive E2E integration tests (10 test functions covering all subsystems)
+- Health check for all endpoints (verify no 404s)
+- Requirements update: croniter, scikit-learn, boto3
+- CHANGELOG, README, API reference consolidation
+
 ## [0.2.0] - 2026-03-20 (Phase 2 — Full Feature Build)
 
 ### Added
@@ -88,4 +197,13 @@ All notable changes to VisionAudioForge are documented in this file.
 
 ### Added
 - Initial project scaffold with full directory structure
+- FastAPI backend with modular service architecture
+- Next.js 14 frontend scaffold with TypeScript and Tailwind CSS
+- Docker Compose configuration for all services
 - Project configuration and CLAUDE.md
+- Base database models and Alembic migration setup
+- Core middleware stubs (CORS, request ID, timing, audit)
+- Health check and metrics endpoints
+- Authentication route stubs (login, register, /me)
+- Vision, audio, and transform route stubs
+- Test infrastructure with pytest and conftest fixtures
