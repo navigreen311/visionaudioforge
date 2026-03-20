@@ -1,6 +1,10 @@
 # ---- Build stage ----
 FROM python:3.11-slim AS builder
 
+LABEL maintainer="VAF Team"
+LABEL version="1.0.0"
+LABEL description="VAF Backend API - FastAPI application with ML pipeline support"
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -34,6 +38,12 @@ RUN groupadd --system appuser && useradd --system --gid appuser appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:8000/api/health || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
