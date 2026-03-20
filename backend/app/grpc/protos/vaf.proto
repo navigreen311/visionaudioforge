@@ -1,0 +1,218 @@
+syntax = "proto3";
+package visionaudioforge;
+
+// ---------------------------------------------------------------------------
+// Vision Service — image analysis, detection, and streaming
+// ---------------------------------------------------------------------------
+service VisionService {
+  rpc Analyze(ImageRequest) returns (AnalysisResponse);
+  rpc Detect(ImageRequest) returns (DetectionResponse);
+  rpc StreamAnalyze(stream ImageFrame) returns (stream AnalysisResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Audio Service — audio analysis, transcription, and streaming
+// ---------------------------------------------------------------------------
+service AudioService {
+  rpc Analyze(AudioRequest) returns (AudioAnalysisResponse);
+  rpc Transcribe(AudioRequest) returns (TranscriptResponse);
+  rpc StreamTranscribe(stream AudioChunk) returns (stream TranscriptChunk);
+}
+
+// ---------------------------------------------------------------------------
+// Inference Service — model prediction (single + batch)
+// ---------------------------------------------------------------------------
+service InferenceService {
+  rpc Predict(PredictRequest) returns (PredictResponse);
+  rpc BatchPredict(BatchPredictRequest) returns (BatchPredictResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Search Service — cross-modal query and indexing
+// ---------------------------------------------------------------------------
+service SearchService {
+  rpc Query(SearchQuery) returns (SearchResults);
+  rpc Index(IndexRequest) returns (IndexResponse);
+}
+
+// ===========================================================================
+// Message definitions
+// ===========================================================================
+
+// -- Vision messages ---------------------------------------------------------
+
+message ImageRequest {
+  bytes image_data = 1;
+  string format = 2;            // e.g. "png", "jpeg"
+  string model_id = 3;          // optional model override
+  map<string, string> options = 4;
+}
+
+message ImageFrame {
+  bytes frame_data = 1;
+  int64 timestamp_ms = 2;
+  int32 frame_index = 3;
+  string session_id = 4;
+}
+
+message BoundingBox {
+  float x_min = 1;
+  float y_min = 2;
+  float x_max = 3;
+  float y_max = 4;
+}
+
+message Detection {
+  string label = 1;
+  float confidence = 2;
+  BoundingBox bbox = 3;
+  map<string, string> metadata = 4;
+}
+
+message AnalysisResponse {
+  string request_id = 1;
+  map<string, float> labels = 2;       // label → confidence
+  repeated Detection detections = 3;
+  float processing_time_ms = 4;
+  string model_id = 5;
+}
+
+message DetectionResponse {
+  string request_id = 1;
+  repeated Detection detections = 2;
+  int32 total_objects = 3;
+  float processing_time_ms = 4;
+}
+
+// -- Audio messages ----------------------------------------------------------
+
+message AudioRequest {
+  bytes audio_data = 1;
+  string format = 2;            // e.g. "wav", "mp3"
+  int32 sample_rate = 3;
+  string language = 4;          // ISO 639-1 code
+  map<string, string> options = 5;
+}
+
+message AudioChunk {
+  bytes chunk_data = 1;
+  int64 timestamp_ms = 2;
+  int32 chunk_index = 3;
+  string session_id = 4;
+  int32 sample_rate = 5;
+}
+
+message AudioFeature {
+  string name = 1;
+  float value = 2;
+}
+
+message AudioAnalysisResponse {
+  string request_id = 1;
+  repeated AudioFeature features = 2;
+  float duration_seconds = 3;
+  float processing_time_ms = 4;
+  map<string, string> metadata = 5;
+}
+
+message TranscriptSegment {
+  string text = 1;
+  float start_time = 2;
+  float end_time = 3;
+  float confidence = 4;
+  string speaker_id = 5;
+}
+
+message TranscriptResponse {
+  string request_id = 1;
+  string full_text = 2;
+  repeated TranscriptSegment segments = 3;
+  string language = 4;
+  float processing_time_ms = 5;
+}
+
+message TranscriptChunk {
+  string text = 1;
+  float start_time = 2;
+  float end_time = 3;
+  float confidence = 4;
+  bool is_final = 5;
+  string session_id = 6;
+}
+
+// -- Inference messages ------------------------------------------------------
+
+message TensorData {
+  repeated float float_data = 1;
+  repeated int64 int_data = 2;
+  repeated int32 shape = 3;
+  string dtype = 4;             // e.g. "float32", "int64"
+}
+
+message PredictRequest {
+  string model_id = 1;
+  string model_version = 2;
+  map<string, TensorData> inputs = 3;
+  map<string, string> parameters = 4;
+}
+
+message PredictResponse {
+  string request_id = 1;
+  string model_id = 2;
+  map<string, TensorData> outputs = 3;
+  float inference_time_ms = 4;
+  map<string, string> metadata = 5;
+}
+
+message BatchPredictRequest {
+  string model_id = 1;
+  string model_version = 2;
+  repeated PredictRequest requests = 3;
+  int32 max_batch_size = 4;
+}
+
+message BatchPredictResponse {
+  repeated PredictResponse responses = 1;
+  float total_time_ms = 2;
+  int32 batch_size = 3;
+}
+
+// -- Search messages ---------------------------------------------------------
+
+message SearchQuery {
+  string query_text = 1;
+  bytes query_image = 2;         // optional image for cross-modal search
+  string index_name = 3;
+  int32 top_k = 4;
+  float min_score = 5;
+  map<string, string> filters = 6;
+}
+
+message SearchResult {
+  string item_id = 1;
+  float score = 2;
+  map<string, string> metadata = 3;
+  string content_type = 4;      // "image", "audio", "text"
+}
+
+message SearchResults {
+  string request_id = 1;
+  repeated SearchResult results = 2;
+  int32 total_matches = 3;
+  float search_time_ms = 4;
+}
+
+message IndexRequest {
+  string index_name = 1;
+  string item_id = 2;
+  bytes content = 3;
+  string content_type = 4;
+  map<string, string> metadata = 5;
+}
+
+message IndexResponse {
+  string request_id = 1;
+  string item_id = 2;
+  bool indexed = 3;
+  string index_name = 4;
+}
