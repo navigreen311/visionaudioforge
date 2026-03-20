@@ -3,16 +3,15 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
-    annotations,
     assets,
     audio,
     auth,
     capture,
     datasets,
     experiments,
-    governance,
     health,
     metrics,
+    observability,
     pipeline,
     registry,
     safety,
@@ -44,6 +43,5 @@ api_router.include_router(datasets.router)
 api_router.include_router(safety.router)
 api_router.include_router(validation.router)
 api_router.include_router(workspaces.router)
-api_router.include_router(annotations.router)
 api_router.include_router(capture.router)
-api_router.include_router(governance.router)
+api_router.include_router(observability.router)
