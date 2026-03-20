@@ -21,6 +21,7 @@ from app.services.transform.audio_transform import AudioTransformService
 from app.services.transform.compressor import DynamicCompressor
 from app.services.transform.dereverb import Dereverberation
 from app.services.transform.dubbing import AutoDubber
+from app.services.transform.presets import list_all_presets
 from app.services.transform.tts import TTSService
 from app.services.transform.video_advanced import AdvancedVideoTransform
 from app.services.transform.video_transform import VideoTransformService
@@ -35,6 +36,17 @@ _tts_svc = TTSService()
 _dubber = AutoDubber()
 _dereverb = Dereverberation()
 _compressor = DynamicCompressor()
+
+
+# ===================================================================
+# PRESETS ENDPOINT
+# ===================================================================
+
+
+@router.get("/presets")
+async def transform_presets():
+    """List all available audio and video transform presets."""
+    return list_all_presets()
 
 
 # ===================================================================
@@ -191,6 +203,33 @@ async def audio_eq(
         "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
         "sample_rate": sr,
         "preset": preset,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/audio/loudness")
+async def audio_loudness(
+    file: UploadFile = File(...),
+    target_lufs: float = Form(-14.0),
+):
+    """Normalize loudness of an uploaded audio file."""
+    import librosa
+    import soundfile as sf
+
+    start = time.perf_counter()
+    audio_bytes = await file.read()
+    audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+
+    result = _audio_svc.normalize_loudness(audio, sr, target_lufs=target_lufs)
+
+    buf = io.BytesIO()
+    sf.write(buf, result, sr, format="WAV")
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "audio": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "sample_rate": sr,
+        "target_lufs": target_lufs,
         "processing_time_ms": round(elapsed, 2),
     }
 
@@ -477,6 +516,65 @@ async def video_interpolate(
     return {
         "frames": [_encode_png(f) for f in intermediates],
         "count": len(intermediates),
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/video/smart-crop")
+async def video_smart_crop(
+    file: UploadFile = File(...),
+    target_width: int = Form(320),
+    target_height: int = Form(180),
+    method: str = Form("center_of_mass"),
+):
+    """Intelligently crop an image to a target size."""
+    start = time.perf_counter()
+    image = await _read_image(file)
+    h, w = image.shape[:2]
+
+    result = await _adv_video.smart_crop(
+        image, target_size=(target_width, target_height), method=method
+    )
+    rh, rw = result.shape[:2]
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "image": _encode_png(result),
+        "original_size": [w, h],
+        "cropped_size": [rw, rh],
+        "method": method,
+        "processing_time_ms": round(elapsed, 2),
+    }
+
+
+@router.post("/video/highlight")
+async def video_highlight(
+    files: list[UploadFile] = File(...),
+    scores: str = Form(...),
+    top_k: int = Form(5),
+):
+    """Select top-K highlight frames based on scores."""
+    start = time.perf_counter()
+    frames: list[np.ndarray] = []
+    for f in files:
+        frames.append(await _read_image(f))
+
+    try:
+        parsed_scores = json.loads(scores)
+        if not isinstance(parsed_scores, list):
+            raise ValueError("scores must be a JSON array of numbers")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    indices = await _adv_video.create_highlight_clip(
+        frames, parsed_scores, top_k=top_k
+    )
+    elapsed = (time.perf_counter() - start) * 1000
+
+    return {
+        "highlight_indices": indices,
+        "highlight_frames": [_encode_png(frames[i]) for i in indices],
+        "count": len(indices),
         "processing_time_ms": round(elapsed, 2),
     }
 
