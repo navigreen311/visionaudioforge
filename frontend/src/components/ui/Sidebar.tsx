@@ -21,6 +21,7 @@ const navItems = [
   { href: "/agents", label: "Agents", icon: "\uD83E\uDD16" },
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
+  { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
   { href: "/settings", label: "Settings", icon: "\u2699" },
 ];
 
