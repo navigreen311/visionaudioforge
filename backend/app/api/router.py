@@ -12,6 +12,7 @@ from app.api.routes import (
     experiments,
     health,
     investigation,
+    knowledge_graph,
     metrics,
     pipeline,
     registry,
@@ -47,3 +48,4 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
+api_router.include_router(knowledge_graph.router)
