@@ -22,7 +22,7 @@ const navItems = [
   { href: "/assets", label: "Assets", icon: "\uD83D\uDCC1" },
   { href: "/annotate", label: "Annotate", icon: "\uD83C\uDFA8" },
   { href: "/evaluation", label: "Evaluation", icon: "\uD83D\uDCCB" },
-  { href: "/simulation", label: "Simulation", icon: "\uD83C\uDFAF" },
+  { href: "/reviewops", label: "ReviewOps", icon: "\uD83D\uDD0D" },
   { href: "/observability", label: "Observability", icon: "\uD83D\uDCE1" },
   { href: "/settings", label: "Settings", icon: "\u2699" },
 ];
