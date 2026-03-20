@@ -1,4 +1,4 @@
-"""Alert system routes — rule management, incident lifecycle, delivery, and escalation."""
+"""Alert system routes — rule management, incident lifecycle, evidence, and statistics."""
 
 from typing import Optional
 from uuid import UUID
@@ -13,24 +13,12 @@ from app.schemas.alert import (
     AlertRuleRead,
     AlertRuleUpdate,
     AlertStats,
-    DeliveryTestRequest,
-    DeliveryTestResponse,
-    EscalateRequest,
-    RuleTestRequest,
-    RuleTestResponse,
 )
-from app.services.alerts.actions import (
-    AlertActionExecutor,
-    send_discord,
-    send_email,
-    send_slack,
-    send_sms_stub,
-    send_webhook,
-)
-from app.services.alerts.alert_service import (
-    AlertService,
-    EscalationPolicy,
-)
+from app.services.alerts.actions import AlertActionExecutor
+from app.services.alerts.alert_service import AlertService
+from app.services.alerts.auto_clip import AutoClipService
+from app.services.alerts.evidence_bundle import EvidenceBundleService
+from app.services.alerts.chain_of_custody import ChainOfCustodyService
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -45,7 +33,7 @@ async def create_alert_rule(
     workspace_id: UUID = Query(..., description="Workspace ID"),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """Create a new alert rule. Supports threshold, compound, temporal, and cross_modal conditions."""
+    """Create a new alert rule."""
     rule = await AlertService.create_rule(
         db,
         name=body.name,
@@ -105,27 +93,6 @@ async def delete_alert_rule(
         return await AlertService.delete_rule(db, rule_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-
-
-# ------------------------------------------------------------------
-# Rule testing
-# ------------------------------------------------------------------
-
-
-@router.post("/rules/{rule_id}/test", response_model=RuleTestResponse)
-async def test_rule_with_metrics(
-    rule_id: UUID,
-    body: RuleTestRequest,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Test a rule against sample metrics without creating alerts."""
-    try:
-        await AlertService.get_rule(db, rule_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-    result = await AlertService.test_rule(body.conditions, body.sample_metrics)
-    return RuleTestResponse(**result)
 
 
 # ------------------------------------------------------------------
@@ -202,109 +169,6 @@ async def dismiss_alert(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-# ------------------------------------------------------------------
-# Escalation endpoints
-# ------------------------------------------------------------------
-
-
-@router.get("/escalations", response_model=list[AlertRead])
-async def list_escalations(
-    workspace_id: UUID = Query(..., description="Workspace ID"),
-    db: AsyncSession = Depends(get_async_session),
-):
-    """List alerts that need escalation (unacknowledged past their timer)."""
-    alerts = await EscalationPolicy.check_escalations(db, workspace_id)
-    return [AlertRead.model_validate(a) for a in alerts]
-
-
-@router.post("/{alert_id}/escalate", response_model=AlertRead)
-async def escalate_alert(
-    alert_id: UUID,
-    body: EscalateRequest,
-    db: AsyncSession = Depends(get_async_session),
-):
-    """Manually escalate an alert to the next level."""
-    try:
-        alert = await EscalationPolicy.escalate(db, alert_id, body.escalation_config)
-        return AlertRead.model_validate(alert)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
-# ------------------------------------------------------------------
-# Delivery channel testing
-# ------------------------------------------------------------------
-
-
-@router.post("/delivery/test", response_model=DeliveryTestResponse)
-async def test_delivery_channel(body: DeliveryTestRequest):
-    """Test a delivery channel by sending a test message."""
-    try:
-        if body.channel == "webhook":
-            url = body.config.get("url", "")
-            if not url:
-                raise ValueError("Webhook URL is required")
-            result = await send_webhook(
-                url=url,
-                payload={"test": True, "message": "Test alert from VAF system"},
-                headers=body.config.get("headers"),
-                timeout=body.config.get("timeout", 10),
-            )
-            return DeliveryTestResponse(**result)
-
-        elif body.channel == "email":
-            to = body.config.get("to", "")
-            if not to:
-                raise ValueError("Email recipient is required")
-            result = await send_email(
-                to=to,
-                subject="[TEST] VAF Alert System Test",
-                body="This is a test message from the VAF alert system.",
-                smtp_config=body.config.get("smtp_config"),
-            )
-            return DeliveryTestResponse(**result)
-
-        elif body.channel == "slack":
-            webhook_url = body.config.get("webhook_url", "")
-            if not webhook_url:
-                raise ValueError("Slack webhook URL is required")
-            result = await send_slack(
-                webhook_url=webhook_url,
-                message=":test_tube: *Test Alert* from VAF system",
-            )
-            return DeliveryTestResponse(**result)
-
-        elif body.channel == "discord":
-            webhook_url = body.config.get("webhook_url", "")
-            if not webhook_url:
-                raise ValueError("Discord webhook URL is required")
-            result = await send_discord(
-                webhook_url=webhook_url,
-                message="**Test Alert** from VAF system",
-            )
-            return DeliveryTestResponse(**result)
-
-        elif body.channel == "sms":
-            to = body.config.get("to", "")
-            if not to:
-                raise ValueError("Phone number is required")
-            result = await send_sms_stub(to=to, message="[TEST] VAF Alert System")
-            return DeliveryTestResponse(**result)
-
-        else:
-            raise ValueError(f"Unknown channel: {body.channel}")
-
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Delivery failed: {exc}")
-
-
-# ------------------------------------------------------------------
-# Test alert trigger
-# ------------------------------------------------------------------
-
-
 @router.post("/test", response_model=AlertRead, status_code=201)
 async def test_alert(
     rule_id: UUID = Query(..., description="Rule ID to test"),
@@ -330,3 +194,169 @@ async def test_alert(
     await AlertActionExecutor.execute_actions(alert, actions_config)
 
     return alert
+
+
+# ------------------------------------------------------------------
+# Incident endpoints (aggregated alert views)
+# ------------------------------------------------------------------
+
+
+@router.get("/incidents", response_model=dict)
+async def list_incidents(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    window_minutes: int = Query(30, description="Time window for grouping alerts into incidents"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Aggregated incident view: group alerts by rule + time window."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models.alert import Alert
+
+    stmt = (
+        select(Alert)
+        .where(Alert.workspace_id == workspace_id)
+        .order_by(Alert.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    alerts = list(result.scalars().all())
+
+    # Group by rule_id and time window
+    incidents: list[dict] = []
+    used: set[UUID] = set()
+
+    for alert in alerts:
+        if alert.id in used:
+            continue
+        group = [alert]
+        used.add(alert.id)
+        for other in alerts:
+            if other.id in used:
+                continue
+            if other.rule_id == alert.rule_id:
+                if alert.created_at and other.created_at:
+                    diff = abs((alert.created_at - other.created_at).total_seconds())
+                    if diff <= window_minutes * 60:
+                        group.append(other)
+                        used.add(other.id)
+
+        incident_id = str(group[0].id)
+        incidents.append({
+            "incident_id": incident_id,
+            "rule_id": str(alert.rule_id),
+            "alert_count": len(group),
+            "severity": max(
+                (a.severity.value if hasattr(a.severity, "value") else str(a.severity) for a in group),
+                key=lambda s: {"critical": 4, "high": 3, "medium": 2, "low": 1}.get(s, 0),
+            ),
+            "first_alert_at": min(
+                a.created_at.isoformat() for a in group if a.created_at
+            ) if any(a.created_at for a in group) else None,
+            "last_alert_at": max(
+                a.created_at.isoformat() for a in group if a.created_at
+            ) if any(a.created_at for a in group) else None,
+            "alert_ids": [str(a.id) for a in group],
+            "status": group[0].status.value if hasattr(group[0].status, "value") else str(group[0].status),
+        })
+
+    return {"incidents": incidents, "total": len(incidents)}
+
+
+@router.get("/incidents/{incident_id}/timeline", response_model=dict)
+async def incident_timeline(
+    incident_id: UUID,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Chronological timeline for an incident (alerts + events + evidence)."""
+    from sqlalchemy import select
+    from app.models.alert import Alert
+
+    result = await db.execute(select(Alert).where(Alert.id == incident_id))
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+
+    timeline_entries = [
+        {
+            "type": "alert",
+            "timestamp": alert.created_at.isoformat() if alert.created_at else None,
+            "data": AlertRead.model_validate(alert).model_dump(),
+        }
+    ]
+
+    return {
+        "incident_id": str(incident_id),
+        "timeline": sorted(timeline_entries, key=lambda x: x.get("timestamp") or ""),
+    }
+
+
+@router.get("/incidents/{incident_id}/bundle", response_model=dict)
+async def get_or_create_incident_bundle(
+    incident_id: UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get or create an evidence bundle for an incident."""
+    bundle = await EvidenceBundleService.create_bundle(db, str(incident_id))
+    return bundle
+
+
+# ------------------------------------------------------------------
+# Auto-clip endpoint
+# ------------------------------------------------------------------
+
+
+@router.post("/{alert_id}/auto-clip", response_model=dict, status_code=201)
+async def trigger_auto_clip(
+    alert_id: UUID,
+    before_s: float = Query(10, description="Seconds before alert to capture"),
+    after_s: float = Query(5, description="Seconds after alert to capture"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Trigger auto-clip capture for an alert."""
+    clip_result = await AutoClipService.capture_clip_on_alert(
+        alert_id=str(alert_id),
+        before_s=before_s,
+        after_s=after_s,
+    )
+    snapshot_result = await AutoClipService.create_snapshot_on_alert(
+        alert_id=str(alert_id),
+    )
+    return {
+        "clip": clip_result,
+        "snapshot": snapshot_result,
+    }
+
+
+# ------------------------------------------------------------------
+# Evidence bundle endpoints
+# ------------------------------------------------------------------
+
+
+@router.post("/{alert_id}/bundle", response_model=dict, status_code=201)
+async def create_evidence_bundle(
+    alert_id: UUID,
+    case_id: Optional[str] = Query(None, description="Optional case/incident ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Create an evidence bundle for an alert."""
+    bundle = await EvidenceBundleService.create_bundle(
+        db, str(alert_id), case_id=case_id,
+    )
+    return bundle
+
+
+# ------------------------------------------------------------------
+# Chain of custody endpoint
+# ------------------------------------------------------------------
+
+
+@router.get("/{alert_id}/custody", response_model=dict)
+async def get_chain_of_custody(
+    alert_id: UUID,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get chain of custody for an alert's evidence."""
+    report = await ChainOfCustodyService.generate_custody_report(
+        db, str(alert_id),
+    )
+    return report
