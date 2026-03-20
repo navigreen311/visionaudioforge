@@ -1,5 +1,6 @@
 """Security utilities: password hashing and JWT token management."""
 
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -9,7 +10,23 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Bcrypt with explicit rounds (default 12, ~250ms per hash on modern hardware)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+
+# JWT secret MUST come from environment — fail loudly if using the insecure default
+_JWT_SECRET = os.environ.get("JWT_SECRET_KEY", settings.JWT_SECRET_KEY)
+if _JWT_SECRET in ("change-me-jwt-secret", ""):
+    import warnings
+
+    warnings.warn(
+        "JWT_SECRET_KEY is not set or uses the insecure default. "
+        "Set the JWT_SECRET_KEY environment variable before deploying.",
+        stacklevel=1,
+    )
+
+# Token expiry defaults
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
 def hash_password(password: str) -> str:
@@ -28,9 +45,11 @@ def create_access_token(
 ) -> str:
     """Create a JWT access token (default 30 min expiry)."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=30))
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
     to_encode.update({"exp": expire, "type": "access"})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(to_encode, _JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def create_refresh_token(
@@ -39,9 +58,11 @@ def create_refresh_token(
 ) -> str:
     """Create a JWT refresh token (default 7 day expiry)."""
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(days=7))
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    )
     to_encode.update({"exp": expire, "type": "refresh"})
-    return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+    return jwt.encode(to_encode, _JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_token(token: str) -> dict[str, Any]:
@@ -49,7 +70,7 @@ def decode_token(token: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(
             token,
-            settings.JWT_SECRET_KEY,
+            _JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
         if payload.get("sub") is None:

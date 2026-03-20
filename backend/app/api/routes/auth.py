@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_db
 from app.core.security import hash_password
+from app.middleware.rate_limit import rate_limit_auth
 from app.models.user import User
 from app.schemas.auth import (
     AuthResponse,
@@ -17,7 +18,11 @@ from app.schemas.auth import (
 )
 from app.services.auth_service import AuthService
 
-router = APIRouter(prefix="/api/auth", tags=["auth"])
+router = APIRouter(
+    prefix="/api/auth",
+    tags=["auth"],
+    dependencies=[Depends(rate_limit_auth)],
+)
 
 
 @router.post("/register", response_model=AuthResponse, status_code=201)

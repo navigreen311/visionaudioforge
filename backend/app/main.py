@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,9 +21,12 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Middleware (order matters — outermost first)
 # ---------------------------------------------------------------------------
+_cors_origins_raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000")
+_cors_origins = [origin.strip() for origin in _cors_origins_raw.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
