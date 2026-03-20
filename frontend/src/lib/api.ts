@@ -98,3 +98,65 @@ export async function rollbackModel(modelId: string, toVersion: string): Promise
   });
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Audio API
+// ---------------------------------------------------------------------------
+
+export interface AudioAnalysisResult {
+  stft?: { image: string; shape: number[] };
+  mel?: { image: string; shape: number[] };
+  mfcc?: { image: string; coefficients: number[][]; shape: number[] };
+  waveform?: {
+    image: string;
+    duration: number;
+    sample_rate: number;
+    rms: number;
+    peak: number;
+    samples: number;
+  };
+}
+
+export interface AugmentationStep {
+  type: string;
+  params: Record<string, number | string>;
+}
+
+export interface AugmentationConfig {
+  preset?: string;
+  steps?: AugmentationStep[];
+}
+
+export interface AugmentationResult {
+  audio_base64: string;
+  original_duration: number;
+  augmented_duration: number;
+  applied: string[];
+  mime_type: string;
+}
+
+export async function analyzeAudio(
+  file: File,
+  operations: string[],
+): Promise<AudioAnalysisResult> {
+  const form = new FormData();
+  form.append("file", file);
+  operations.forEach((op) => form.append("operations", op));
+  const { data } = await api.post("/api/audio/analyze", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
+
+export async function augmentAudio(
+  file: File,
+  config: AugmentationConfig,
+): Promise<AugmentationResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("config", JSON.stringify(config));
+  const { data } = await api.post("/api/audio/augment", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return data;
+}
