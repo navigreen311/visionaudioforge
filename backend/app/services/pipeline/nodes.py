@@ -1,4 +1,4 @@
-"""Pipeline node definitions — 20 node types across 6 categories."""
+"""Pipeline node definitions — 26 node types across 7 categories."""
 
 from __future__ import annotations
 
@@ -579,6 +579,172 @@ class SaveAssetNode(BaseNode):
 
 
 # ---------------------------------------------------------------------------
+# CONTROL FLOW nodes
+# ---------------------------------------------------------------------------
+
+class ConditionalNode(BaseNode):
+    name = "Conditional"
+    category = "Control"
+    description = "Route data based on a condition: pass to output_true or output_false."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "data": {"type": "any", "description": "Input data to evaluate", "required": True},
+            "condition": {"type": "string", "description": "Condition key to check in data", "required": True},
+        }
+
+    @property
+    def output_schema(self) -> dict:
+        return {
+            "output_true": {"type": "any", "description": "Data if condition is true"},
+            "output_false": {"type": "any", "description": "Data if condition is false"},
+            "branch": {"type": "string", "description": "'true' or 'false'"},
+        }
+
+    async def _run(self, inputs: dict) -> dict:
+        data = inputs.get("data", {})
+        condition_key = inputs.get("condition", "")
+        # Evaluate: check if key exists and is truthy in data
+        if isinstance(data, dict):
+            result = bool(data.get(condition_key))
+        else:
+            result = bool(data)
+        branch = "true" if result else "false"
+        return {
+            "output_true": data if result else None,
+            "output_false": data if not result else None,
+            "branch": branch,
+        }
+
+
+class LoopNode(BaseNode):
+    name = "Loop"
+    category = "Control"
+    description = "Repeat processing N times or until a condition is met."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "data": {"type": "any", "description": "Input data to iterate over", "required": True},
+            "iterations": {"type": "integer", "description": "Number of iterations", "required": False},
+            "until_key": {"type": "string", "description": "Stop when this key is truthy", "required": False},
+        }
+
+    @property
+    def output_schema(self) -> dict:
+        return {
+            "output": {"type": "any", "description": "Final data after looping"},
+            "iteration_count": {"type": "integer", "description": "How many iterations ran"},
+        }
+
+    async def _run(self, inputs: dict) -> dict:
+        data = inputs.get("data")
+        iterations = inputs.get("iterations", 1)
+        until_key = inputs.get("until_key")
+        count = 0
+        for _ in range(iterations):
+            count += 1
+            if until_key and isinstance(data, dict) and data.get(until_key):
+                break
+        return {"output": data, "iteration_count": count}
+
+
+class DelayNode(BaseNode):
+    name = "Delay"
+    category = "Control"
+    description = "Wait N seconds before passing data through (for rate limiting)."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "data": {"type": "any", "description": "Pass-through data", "required": False},
+            "seconds": {"type": "number", "description": "Seconds to wait", "required": True},
+        }
+
+    @property
+    def output_schema(self) -> dict:
+        return {"data": {"type": "any", "description": "Pass-through data unchanged"}}
+
+    async def _run(self, inputs: dict) -> dict:
+        import asyncio
+
+        seconds = min(inputs.get("seconds", 1), 30)  # Cap at 30s safety
+        await asyncio.sleep(seconds)
+        return {"data": inputs.get("data")}
+
+
+class LogNode(BaseNode):
+    name = "Log"
+    category = "Control"
+    description = "Log input data to structured logger and pass through."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "data": {"type": "any", "description": "Data to log", "required": True},
+            "label": {"type": "string", "description": "Log label/tag", "required": False},
+        }
+
+    @property
+    def output_schema(self) -> dict:
+        return {"data": {"type": "any", "description": "Pass-through data unchanged"}}
+
+    async def _run(self, inputs: dict) -> dict:
+        import logging
+
+        logger = logging.getLogger("pipeline.log_node")
+        label = inputs.get("label", "LogNode")
+        data = inputs.get("data")
+        # Log a summary — avoid dumping huge arrays
+        summary = str(data)[:500] if data is not None else "None"
+        logger.info("[%s] %s", label, summary)
+        return {"data": data}
+
+
+class HTTPRequestNode(BaseNode):
+    name = "HTTP Request"
+    category = "Control"
+    description = "Make an HTTP request to an external URL and return the response."
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "url": {"type": "string", "description": "Target URL", "required": True},
+            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE"], "required": False},
+            "body": {"type": "object", "description": "JSON body for POST/PUT", "required": False},
+            "headers": {"type": "object", "description": "Request headers", "required": False},
+        }
+
+    @property
+    def output_schema(self) -> dict:
+        return {
+            "status_code": {"type": "integer", "description": "HTTP status code"},
+            "response": {"type": "string", "description": "Response body (truncated)"},
+        }
+
+    async def _run(self, inputs: dict) -> dict:
+        import httpx
+
+        url = inputs["url"]
+        method = inputs.get("method", "GET").upper()
+        body = inputs.get("body")
+        headers = inputs.get("headers", {})
+        async with httpx.AsyncClient(timeout=30) as client:
+            if method == "GET":
+                resp = await client.get(url, headers=headers)
+            elif method == "POST":
+                resp = await client.post(url, json=body, headers=headers)
+            elif method == "PUT":
+                resp = await client.put(url, json=body, headers=headers)
+            elif method == "DELETE":
+                resp = await client.delete(url, headers=headers)
+            else:
+                return {"error": f"Unsupported HTTP method: {method}"}
+        return {"status_code": resp.status_code, "response": resp.text[:1000]}
+
+
+# ---------------------------------------------------------------------------
 # TRANSFORM nodes
 # ---------------------------------------------------------------------------
 
@@ -698,6 +864,11 @@ NODE_REGISTRY: dict[str, type[BaseNode]] = {
     "resize": ResizeNode,
     "filter": FilterNode,
     "merge": MergeNode,
+    "conditional": ConditionalNode,
+    "loop": LoopNode,
+    "delay": DelayNode,
+    "log": LogNode,
+    "http_request": HTTPRequestNode,
 }
 
 

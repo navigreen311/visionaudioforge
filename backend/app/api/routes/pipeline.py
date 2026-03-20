@@ -6,6 +6,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,11 +23,31 @@ from app.schemas.pipeline import (
     ValidationResult,
 )
 from app.services.pipeline.engine import PipelineEngine
+from app.services.pipeline.nl_generator import NLPipelineGenerator
 from app.services.pipeline.nodes import NODE_REGISTRY, get_node
+from app.services.pipeline.scheduler import PipelineScheduler
+from app.services.pipeline.templates import PIPELINE_TEMPLATES, get_template, list_templates
 
 router = APIRouter(prefix="/api", tags=["pipeline"])
 
 engine = PipelineEngine()
+nl_generator = NLPipelineGenerator()
+scheduler = PipelineScheduler()
+
+
+# -- Request/response models for new endpoints --------------------------------
+
+class GenerateRequest(BaseModel):
+    description: str = Field(..., min_length=3, max_length=1000)
+
+
+class ScheduleRequest(BaseModel):
+    pipeline_id: str
+    cron: str
+
+
+class SuggestNextRequest(BaseModel):
+    current_nodes: list[str]
 
 
 # --------------------------------------------------------------------------
@@ -184,3 +205,72 @@ async def get_pipeline_run(
     if not run:
         raise HTTPException(status_code=404, detail="Pipeline run not found")
     return run
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/generate — NL-to-pipeline generation
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/generate")
+async def generate_pipeline(body: GenerateRequest) -> dict:
+    """Generate a pipeline definition from a natural language description."""
+    definition = await nl_generator.generate_from_description(body.description)
+    return {"definition": definition, "description": body.description}
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/templates — list all templates
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/templates")
+async def get_templates() -> list[dict]:
+    """Return all pre-built pipeline templates."""
+    return list_templates()
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/templates/{name} — get specific template
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/templates/{name}")
+async def get_template_by_name(name: str) -> dict:
+    """Return a specific pipeline template by key."""
+    template = get_template(name)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Template '{name}' not found")
+    return {"key": name, **template}
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/schedule — schedule a pipeline
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/schedule")
+async def schedule_pipeline(body: ScheduleRequest) -> dict:
+    """Create a cron schedule for a pipeline."""
+    try:
+        result = await scheduler.schedule(body.pipeline_id, body.cron)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return result
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/schedules — list all schedules
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/schedules")
+async def get_schedules(workspace_id: str | None = Query(None)) -> list[dict]:
+    """Return all active pipeline schedules."""
+    return await scheduler.list_schedules(workspace_id)
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/suggest-next — suggest next nodes
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/suggest-next")
+async def suggest_next_nodes(body: SuggestNextRequest) -> dict:
+    """Suggest next nodes based on current pipeline composition."""
+    suggestions = await nl_generator.suggest_next_nodes(body.current_nodes)
+    return {"suggestions": suggestions}
