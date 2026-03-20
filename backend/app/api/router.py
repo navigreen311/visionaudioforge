@@ -13,6 +13,7 @@ from app.api.routes import (
     registry,
     safety,
     search,
+    transform,
     transfer,
     vision,
     workspaces,
@@ -24,6 +25,7 @@ api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(vision.router)
 api_router.include_router(audio.router)
+api_router.include_router(transform.router)
 api_router.include_router(transfer.router)
 api_router.include_router(experiments.router)
 api_router.include_router(registry.router)
