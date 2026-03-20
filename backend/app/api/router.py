@@ -7,6 +7,7 @@ from app.api.routes import (
     audio,
     auth,
     datasets,
+    evaluation,
     experiments,
     health,
     metrics,
@@ -29,6 +30,7 @@ api_router.include_router(vision.router)
 api_router.include_router(audio.router)
 api_router.include_router(transform.router)
 api_router.include_router(transfer.router)
+api_router.include_router(evaluation.router)
 api_router.include_router(experiments.router)
 api_router.include_router(registry.router)
 api_router.include_router(search.router)
