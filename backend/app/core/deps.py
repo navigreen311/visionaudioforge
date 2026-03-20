@@ -1,9 +1,9 @@
-"""FastAPI dependencies: DB session, auth, RBAC."""
+"""FastAPI dependencies: DB session, auth (JWT + API key), RBAC."""
 
 from typing import AsyncGenerator, Callable
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +13,7 @@ from app.database import async_session_factory
 from app.models.user import User
 from app.models.workspace import Workspace
 
-security_scheme = HTTPBearer()
+security_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
@@ -23,10 +23,40 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security_scheme),
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Decode the Bearer token and return the authenticated user."""
+    """Authenticate via Bearer token or X-API-Key header."""
+    # Check for API key in X-API-Key header
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        from app.services.governance.api_keys import APIKeyService
+
+        key_info = await APIKeyService.validate_key(db, api_key)
+        if not key_info["valid"]:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired API key",
+            )
+        result = await db.execute(
+            select(User).where(User.id == UUID(key_info["user_id"]))
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="API key owner not found",
+            )
+        return user
+
+    # Fall back to Bearer token
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication: provide Bearer token or X-API-Key header",
+        )
+
     payload = decode_token(credentials.credentials)
     user_id = payload.get("sub")
     if user_id is None:
