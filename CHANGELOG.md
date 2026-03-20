@@ -3,12 +3,14 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Object detection service (`ObjectDetector`) with YOLOv8 and graceful ImportError fallback
-- OCR service (`OCREngine`) with pytesseract and stub fallback
-- Systematic error analysis: confusion matrix, per-class metrics, top confusions, quality reports
-- API endpoints: `POST /api/vision/detect`, `/api/vision/ocr`, `/api/vision/error-analysis`
-- Comprehensive test suite for detection, OCR, error analysis, and API routes
-- Documentation at `docs/vision-detection.md`
+- Audio spectral analysis service (STFT, Mel spectrogram, MFCC, power spectrogram)
+- Audio I/O utilities (load, save, base64 encode, validate with size/duration limits)
+- Visualization module generating base64 PNG plots (spectrogram, Mel, MFCC, waveform)
+- POST /api/audio/analyze endpoint with selectable operations
+- Pydantic schemas for audio analysis request/response
+- Comprehensive test suite for spectral analysis, I/O, visualization, and API
+- Documentation for audio spectral analysis feature
+- matplotlib dependency for headless plot rendering
 
 ## [0.1.0] - 2026-03-20
 
