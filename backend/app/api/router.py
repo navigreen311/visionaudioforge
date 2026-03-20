@@ -7,7 +7,6 @@ from app.api.routes import (
     audio,
     auth,
     capture,
-    command_center,
     datasets,
     evaluation,
     experiments,
@@ -18,6 +17,7 @@ from app.api.routes import (
     registry,
     safety,
     search,
+    simulation,
     transfer,
     transform,
     validation,
@@ -48,4 +48,4 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
-api_router.include_router(command_center.router)
+api_router.include_router(simulation.router)
