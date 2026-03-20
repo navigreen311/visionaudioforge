@@ -1,0 +1,30 @@
+"use client";
+
+import React from "react";
+
+interface CardProps {
+  title?: string;
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+  className?: string;
+}
+
+export default function Card({ title, children, footer, className = "" }: CardProps) {
+  return (
+    <div
+      className={`rounded-lg border border-gray-200 bg-white shadow-sm ${className}`}
+    >
+      {title && (
+        <div className="border-b border-gray-200 px-6 py-4">
+          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+        </div>
+      )}
+      <div className="px-6 py-4">{children}</div>
+      {footer && (
+        <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 rounded-b-lg">
+          {footer}
+        </div>
+      )}
+    </div>
+  );
+}
