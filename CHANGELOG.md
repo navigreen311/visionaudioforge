@@ -3,13 +3,14 @@
 ## [0.2.0] - 2026-03-20
 
 ### Added
-- Video Transform Studio (M5) with full service, API, frontend, and tests
-- `VideoTransformService` with background removal (threshold, grabcut, rembg), super-resolution (2x/4x), style transfer (sketch, edges, cartoon, oil painting), auto-crop, thumbnail generation, frame stabilisation, and scene detection
-- Five REST endpoints under `/api/transform/video/*` for background-remove, super-resolution, style, auto-crop, and thumbnail
-- Interactive Transform page with Video/Image tab, mode selector, upload zone, and per-mode options
-- `BeforeAfterSlider` component for drag-to-compare before/after image results
-- Comprehensive test suite (`test_video_transform.py`) covering all service methods and API endpoints
-- Documentation at `docs/video-transform.md`
+- Shared UI component library: Button, Card, Badge, Modal, DataTable, FileUpload, Tabs, Toast/useToast, LoadingSpinner, SkeletonLoader, EmptyState, StatusIndicator
+- Responsive dashboard layout with collapsible sidebar, top bar with breadcrumbs, search, notifications, and user dropdown
+- Dashboard home page with stats cards, recent activity feed, quick actions, system health, and module status grid
+- Login and Register auth pages with form validation and zustand auth integration
+- Settings page with tabbed UI: General, API Keys, Users, Integrations
+- Enhanced auth store with login/register/initialize actions and localStorage persistence
+- Enhanced providers with QueryClient (30s stale, retry 1), ToastProvider, and AuthGuard redirect
+- Mobile-responsive sidebar with hamburger toggle
 
 ## [0.1.0] - 2026-03-20
 
