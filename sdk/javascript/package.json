@@ -1,0 +1,34 @@
+{
+  "name": "@visionaudioforge/sdk",
+  "version": "0.1.0",
+  "description": "JavaScript/TypeScript SDK for the VisionAudioForge API",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "visionaudioforge",
+    "sdk",
+    "vision",
+    "audio",
+    "machine-learning",
+    "api-client"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.0",
+    "typescript": "^5.3.0"
+  }
+}
