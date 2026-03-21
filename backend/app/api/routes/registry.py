@@ -102,6 +102,25 @@ async def rollback_model(
 
 
 # ------------------------------------------------------------------
+# Available models for federation (lightweight list, no DB required)
+# ------------------------------------------------------------------
+
+@router.get("/models/available")
+async def list_available_models() -> list[dict[str, str]]:
+    """Return a lightweight list of models available for federated training.
+
+    Stub endpoint — returns demo data until wired to the real registry.
+    """
+    return [
+        {"id": "resnet50-v2", "name": "ResNet-50", "version": "2.1", "backbone": "resnet50"},
+        {"id": "yolov8-det", "name": "YOLOv8 Detection", "version": "1.0", "backbone": "yolov8n"},
+        {"id": "clip-vit-b32", "name": "CLIP ViT-B/32", "version": "1.2", "backbone": "vit-b-32"},
+        {"id": "wav2vec2-base", "name": "Wav2Vec2 Base", "version": "1.0", "backbone": "wav2vec2"},
+        {"id": "efficientnet-b4", "name": "EfficientNet-B4", "version": "3.0", "backbone": "efficientnet"},
+    ]
+
+
+# ------------------------------------------------------------------
 # Model Card attachment stub
 # ------------------------------------------------------------------
 

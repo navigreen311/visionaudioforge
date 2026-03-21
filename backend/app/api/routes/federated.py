@@ -23,6 +23,8 @@ class FederationCreate(BaseModel):
     min_participants: int = 2
     rounds: int = 10
     workspace_id: str | None = None
+    privacy_enabled: bool = True
+    epsilon_budget: float = 1.0
 
 
 class JoinFederation(BaseModel):
@@ -58,7 +60,11 @@ async def create_federation(body: FederationCreate) -> dict[str, Any]:
         "total_rounds": body.rounds,
         "current_round": 0,
         "status": "waiting",
+        "privacy_enabled": body.privacy_enabled,
+        "epsilon_budget": body.epsilon_budget,
+        "epsilon_spent": 0.0,
         "participants": [],
+        "metrics_history": [],
         "created_at": time.time(),
     }
     _federations[fid] = federation
@@ -111,3 +117,71 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
         "participants": len(fed["participants"]),
         "status": "training",
     }
+
+
+# ---------------------------------------------------------------------------
+# Training control endpoints (FL3)
+# ---------------------------------------------------------------------------
+
+def _get_fed_or_404(federation_id: str) -> dict[str, Any]:
+    """Look up federation or raise 404."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+    return _federations[federation_id]
+
+
+@router.post("/federations/{federation_id}/pause")
+async def pause_federation(federation_id: str) -> dict[str, str]:
+    """Pause a running federation."""
+    fed = _get_fed_or_404(federation_id)
+    if fed["status"] != "training":
+        raise HTTPException(status_code=400, detail="Federation is not training")
+    fed["status"] = "paused"
+    return {"federation_id": federation_id, "status": "paused"}
+
+
+@router.post("/federations/{federation_id}/resume")
+async def resume_federation(federation_id: str) -> dict[str, str]:
+    """Resume a paused federation."""
+    fed = _get_fed_or_404(federation_id)
+    if fed["status"] != "paused":
+        raise HTTPException(status_code=400, detail="Federation is not paused")
+    fed["status"] = "training"
+    return {"federation_id": federation_id, "status": "training"}
+
+
+@router.post("/federations/{federation_id}/stop")
+async def stop_federation(federation_id: str) -> dict[str, str]:
+    """Stop a federation (training or paused)."""
+    fed = _get_fed_or_404(federation_id)
+    if fed["status"] not in ("training", "paused"):
+        raise HTTPException(status_code=400, detail="Federation cannot be stopped from current state")
+    fed["status"] = "stopped"
+    return {"federation_id": federation_id, "status": "stopped"}
+
+
+@router.post("/federations/{federation_id}/export")
+async def export_global_model(federation_id: str) -> dict[str, str]:
+    """Export the global model from a completed federation (stub)."""
+    fed = _get_fed_or_404(federation_id)
+    if fed["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Federation must be completed to export")
+    return {
+        "federation_id": federation_id,
+        "status": "completed",
+        "export_url": f"/exports/{federation_id}/global_model.pt",
+        "message": "Export queued (stub)",
+    }
+
+
+@router.post("/federations/{federation_id}/retrain")
+async def retrain_federation(federation_id: str) -> dict[str, str]:
+    """Re-start training on a completed federation (stub)."""
+    fed = _get_fed_or_404(federation_id)
+    if fed["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Federation must be completed to re-train")
+    fed["current_round"] = 0
+    fed["status"] = "training"
+    fed["metrics_history"] = []
+    fed["epsilon_spent"] = 0.0
+    return {"federation_id": federation_id, "status": "training"}
