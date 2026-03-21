@@ -45,6 +45,14 @@ export interface VisionOperations {
   includeStats: boolean;
 }
 
+/** JSON payload sent to POST /api/vision/analyze as the operations array. */
+export interface OperationParams {
+  operations: Array<{ op: string; params: Record<string, unknown> }>;
+  outputFormat: OutputFormat;
+  jpegQuality: number;
+  includeStats: boolean;
+}
+
 const DEFAULT_VALUES: VisionOperations = {
   normalization: "none",
   minMaxRange: { min: 0, max: 1 },
@@ -68,6 +76,104 @@ const DEFAULT_VALUES: VisionOperations = {
   jpegQuality: 95,
   includeStats: false,
 };
+
+// ── Build pipeline steps from VisionOperations ─────────────────────
+
+function buildOperationParams(ops: VisionOperations): OperationParams {
+  const steps: Array<{ op: string; params: Record<string, unknown> }> = [];
+
+  // Normalization
+  if (ops.normalization !== "none") {
+    const params: Record<string, unknown> = { method: ops.normalization.replace("-", "_") };
+    if (ops.normalization === "min-max") {
+      params.target_range = [ops.minMaxRange.min, ops.minMaxRange.max];
+    }
+    if (ops.normalization === "z-score") {
+      params.global_stats = [ops.zScoreParams.mean, ops.zScoreParams.std];
+    }
+    steps.push({ op: "normalize", params });
+  }
+
+  // Color space
+  if (ops.colorSpace !== "original") {
+    const toMap: Record<string, string> = {
+      hsv: "hsv",
+      grayscale: "gray",
+      lab: "lab",
+      bgr: "bgr",
+    };
+    steps.push({
+      op: "color_space",
+      params: { from: "bgr", to: toMap[ops.colorSpace] ?? ops.colorSpace },
+    });
+  }
+
+  // Blur
+  if (ops.blur !== "none") {
+    steps.push({
+      op: "blur",
+      params: { method: ops.blur, kernel_size: ops.blurKernelSize },
+    });
+  }
+
+  // Brightness
+  if (ops.brightness !== 0) {
+    steps.push({ op: "brightness", params: { value: ops.brightness } });
+  }
+
+  // Contrast
+  if (ops.contrast !== 1.0) {
+    steps.push({ op: "contrast", params: { factor: ops.contrast } });
+  }
+
+  // Edge detection
+  if (ops.edgeDetection !== "none") {
+    const params: Record<string, unknown> = { method: ops.edgeDetection };
+    if (ops.edgeDetection === "canny") {
+      params.low = ops.cannyThreshold1;
+      params.high = ops.cannyThreshold2;
+    }
+    steps.push({ op: "edge_detection", params });
+  }
+
+  // Resize (only if both dimensions are positive)
+  if (ops.resizeWidth > 0 && ops.resizeHeight > 0) {
+    steps.push({
+      op: "resize",
+      params: {
+        width: ops.resizeWidth,
+        height: ops.resizeHeight,
+        maintain_aspect: ops.keepAspectRatio,
+      },
+    });
+  }
+
+  // Rotation
+  const angle =
+    ops.rotation === "custom"
+      ? ops.customRotation
+      : parseInt(ops.rotation, 10);
+  if (angle !== 0) {
+    steps.push({ op: "rotation", params: { angle } });
+  }
+
+  // Flip
+  if (ops.flip !== "none") {
+    const modeMap: Record<string, string> = {
+      horizontal: "h",
+      vertical: "v",
+      both: "both",
+    };
+    steps.push({ op: "flip", params: { mode: modeMap[ops.flip] ?? ops.flip } });
+  }
+
+  return {
+    operations: steps,
+    outputFormat: ops.outputFormat,
+    jpegQuality: ops.jpegQuality,
+    includeStats: ops.includeStats,
+  };
+}
 
 // ── Collapsible Section ────────────────────────────────────────────
 
@@ -181,46 +287,64 @@ function NumberInput({ label, value, onChange, min, max, step }: NumberInputProp
 // ── Main Component ─────────────────────────────────────────────────
 
 interface OperationsPanelProps {
-  values: VisionOperations;
-  onChange: (ops: VisionOperations) => void;
+  onAnalyze: (params: OperationParams) => void;
+  isAnalyzing: boolean;
 }
 
-export default function OperationsPanel({ values, onChange }: OperationsPanelProps) {
+export default function OperationsPanel({
+  onAnalyze,
+  isAnalyzing,
+}: OperationsPanelProps) {
+  const [values, setValues] = useState<VisionOperations>({ ...DEFAULT_VALUES });
   const [livePreview, setLivePreview] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingRef = useRef<VisionOperations>(values);
+  const valuesRef = useRef<VisionOperations>(values);
 
-  // Keep pendingRef in sync when values prop changes
+  // Keep ref in sync
   useEffect(() => {
-    pendingRef.current = values;
+    valuesRef.current = values;
   }, [values]);
 
-  const emit = useCallback(
-    (next: VisionOperations) => {
-      if (livePreview) {
-        pendingRef.current = next;
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => {
-          onChange(pendingRef.current);
-        }, 500);
-      } else {
-        onChange(next);
-      }
-    },
-    [livePreview, onChange],
-  );
+  // Debounced live-preview trigger
+  const triggerLivePreview = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      onAnalyze(buildOperationParams(valuesRef.current));
+    }, 500);
+  }, [onAnalyze]);
+
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   const update = useCallback(
     <K extends keyof VisionOperations>(key: K, val: VisionOperations[K]) => {
-      const next = { ...values, [key]: val };
-      emit(next);
+      setValues((prev) => {
+        const next = { ...prev, [key]: val };
+        return next;
+      });
     },
-    [values, emit],
+    [],
   );
 
+  // Fire live preview whenever values change AND livePreview is on
+  useEffect(() => {
+    if (livePreview && !isAnalyzing) {
+      triggerLivePreview();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values, livePreview]);
+
   const resetAll = useCallback(() => {
-    onChange({ ...DEFAULT_VALUES });
-  }, [onChange]);
+    setValues({ ...DEFAULT_VALUES });
+  }, []);
+
+  const handleAnalyze = useCallback(() => {
+    onAnalyze(buildOperationParams(values));
+  }, [onAnalyze, values]);
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white">
@@ -242,13 +366,17 @@ export default function OperationsPanel({ values, onChange }: OperationsPanelPro
             <NumberInput
               label="Target Min"
               value={values.minMaxRange.min}
-              onChange={(v) => update("minMaxRange", { ...values.minMaxRange, min: v })}
+              onChange={(v) =>
+                update("minMaxRange", { ...values.minMaxRange, min: v })
+              }
               step={0.1}
             />
             <NumberInput
               label="Target Max"
               value={values.minMaxRange.max}
-              onChange={(v) => update("minMaxRange", { ...values.minMaxRange, max: v })}
+              onChange={(v) =>
+                update("minMaxRange", { ...values.minMaxRange, max: v })
+              }
               step={0.1}
             />
           </div>
@@ -258,13 +386,17 @@ export default function OperationsPanel({ values, onChange }: OperationsPanelPro
             <NumberInput
               label="Mean"
               value={values.zScoreParams.mean}
-              onChange={(v) => update("zScoreParams", { ...values.zScoreParams, mean: v })}
+              onChange={(v) =>
+                update("zScoreParams", { ...values.zScoreParams, mean: v })
+              }
               step={0.01}
             />
             <NumberInput
               label="Std"
               value={values.zScoreParams.std}
-              onChange={(v) => update("zScoreParams", { ...values.zScoreParams, std: v })}
+              onChange={(v) =>
+                update("zScoreParams", { ...values.zScoreParams, std: v })
+              }
               step={0.01}
               min={0.01}
             />
@@ -275,7 +407,7 @@ export default function OperationsPanel({ values, onChange }: OperationsPanelPro
       {/* ── Color Space ────────────────────────────────────── */}
       <Section title="Color Space">
         <Select
-          label="Color Space"
+          label="Convert To"
           value={values.colorSpace}
           options={[
             { value: "original", label: "Original" },
@@ -461,23 +593,59 @@ export default function OperationsPanel({ values, onChange }: OperationsPanelPro
       </Section>
 
       {/* ── Action Bar ─────────────────────────────────────── */}
-      <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3">
+      <div className="flex flex-col gap-3 border-t border-gray-200 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={resetAll}
+            className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Reset All
+          </button>
+          <label className="flex items-center gap-2 text-xs text-gray-600">
+            <input
+              type="checkbox"
+              checked={livePreview}
+              onChange={(e) => setLivePreview(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Live Preview
+          </label>
+        </div>
         <button
           type="button"
-          onClick={resetAll}
-          className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+          onClick={handleAnalyze}
+          disabled={isAnalyzing}
+          className="inline-flex items-center justify-center rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Reset All
+          {isAnalyzing ? (
+            <>
+              <svg
+                className="-ml-0.5 mr-1.5 h-3 w-3 animate-spin"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                />
+              </svg>
+              Analyzing...
+            </>
+          ) : (
+            "Analyze"
+          )}
         </button>
-        <label className="flex items-center gap-2 text-xs text-gray-600">
-          <input
-            type="checkbox"
-            checked={livePreview}
-            onChange={(e) => setLivePreview(e.target.checked)}
-            className="rounded border-gray-300"
-          />
-          Live Preview
-        </label>
       </div>
     </div>
   );
