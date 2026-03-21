@@ -1,17 +1,24 @@
-"""Capture API routes — RTSP, multi-cam, recording, snapshots."""
+"""Capture API routes — RTSP, multi-cam, recording, snapshots, frame analysis."""
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import os
 import tempfile
+import time
 
+import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.services.capture.rtsp import RTSPStreamReader
 from app.services.capture.recorder import ClipRecorder
 from app.services.capture.multicam import multicam_manager
+from app.services.vision.detection import ObjectDetector
+from app.services.vision.ocr import OCREngine
+from app.services.vision.motion import MotionAnalyzer
 
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 
@@ -22,6 +29,9 @@ _rtsp_readers: dict[str, RTSPStreamReader] = {}
 _recorder = ClipRecorder(
     output_dir=os.environ.get("CAPTURE_OUTPUT_DIR", os.path.join(tempfile.gettempdir(), "vaf_captures"))
 )
+_detector = ObjectDetector()
+_ocr_engine = OCREngine()
+_motion_analyzer = MotionAnalyzer()
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +63,12 @@ class RecordStopRequest(BaseModel):
 
 class SnapshotRequest(BaseModel):
     session_id: str
+
+
+class AnalyzeFrameRequest(BaseModel):
+    frame_b64: str
+    overlays: list[str] = []
+    threshold: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -145,3 +161,94 @@ async def capture_snapshot(body: SnapshotRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Frame analysis
+# ---------------------------------------------------------------------------
+
+@router.post("/analyze-frame")
+async def analyze_frame(body: AnalyzeFrameRequest):
+    """Analyze a base64-encoded frame for detections, OCR regions, and motion vectors.
+
+    Body:
+        frame_b64: base64-encoded image
+        overlays: list of overlay types (e.g. ["detection"])
+        threshold: confidence threshold for detection (default 0.5)
+
+    Returns detections, ocr_regions, and motion_vectors.
+    """
+    # Decode the base64 image
+    try:
+        raw = base64.b64decode(body.frame_b64)
+        nparr = np.frombuffer(raw, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 image data")
+
+    if image is None:
+        raise HTTPException(status_code=400, detail="Could not decode image from base64 payload")
+
+    detections: list[dict] = []
+    ocr_regions: list[dict] = []
+    motion_vectors: list[dict] = []
+
+    # Run detection if requested or by default
+    if "detection" in body.overlays or not body.overlays:
+        raw_dets = _detector.detect(image, confidence=body.threshold)
+        detections = [
+            {
+                "bbox": d["bbox"],
+                "class_name": d["class_name"],
+                "confidence": d["confidence"],
+            }
+            for d in raw_dets
+        ]
+
+    # Run OCR if requested
+    if "ocr" in body.overlays:
+        ocr_result = _ocr_engine.extract_text(image)
+        ocr_regions = ocr_result.get("blocks", [])
+
+    # Run motion analysis if requested (single-frame produces empty vectors)
+    if "motion" in body.overlays:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Motion vectors require two frames; return empty for a single frame.
+        motion_vectors = []
+
+    return {
+        "detections": detections,
+        "ocr_regions": ocr_regions,
+        "motion_vectors": motion_vectors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# RTSP connectivity test
+# ---------------------------------------------------------------------------
+
+@router.get("/rtsp/test")
+async def test_rtsp(url: str = Query(..., description="RTSP stream URL to test")):
+    """Test connectivity to an RTSP stream and report latency.
+
+    Returns success flag and round-trip latency in milliseconds.
+    """
+    t0 = time.perf_counter()
+    reader = RTSPStreamReader(url)
+
+    try:
+        loop = asyncio.get_event_loop()
+        success = await reader.connect()
+    except Exception:
+        success = False
+
+    latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+
+    # Clean up the probe connection
+    if hasattr(reader, "_cap") and reader._cap is not None:
+        try:
+            reader._cap.release()
+        except Exception:
+            pass
+
+    return {"success": success, "latency_ms": latency_ms}
