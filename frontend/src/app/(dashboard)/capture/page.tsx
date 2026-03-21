@@ -6,12 +6,29 @@ import SourceSwitcher, {
 } from "@/components/capture/SourceSwitcher";
 import CaptureControls from "@/components/capture/CaptureControls";
 import LiveFeedPanel from "@/components/capture/LiveFeedPanel";
-import AudioMeter from "@/components/capture/AudioMeter";
 import MultiCamGrid, {
   type CaptureSource,
 } from "@/components/capture/MultiCamGrid";
 import RTSPConnectPanel from "@/components/capture/RTSPConnectPanel";
 import RecordingControls from "@/components/capture/RecordingControls";
+import AIOverlayPanel, {
+  type OverlaySettings,
+} from "@/components/capture/AIOverlayPanel";
+import StreamHealthBar, {
+  type StreamStats,
+} from "@/components/capture/StreamHealthBar";
+import SnapshotStrip, {
+  type Snapshot,
+} from "@/components/capture/SnapshotStrip";
+import MicrophoneVisualizer from "@/components/capture/MicrophoneVisualizer";
+import CameraPlaceholder from "@/components/capture/CameraPlaceholder";
+import AnalysisModeSelector, {
+  type AnalysisMode,
+} from "@/components/capture/AnalysisModeSelector";
+import LiveResultsSidebar, {
+  type AnalysisResults,
+} from "@/components/capture/LiveResultsSidebar";
+import CopilotInline from "@/components/capture/CopilotInline";
 
 interface AnalysisResult {
   frame_id: number;
@@ -61,6 +78,19 @@ export default function CapturePage() {
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
 
+  // New component state
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("balanced");
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [overlaySettings, setOverlaySettings] = useState<OverlaySettings | null>(null);
+  const [liveResults, setLiveResults] = useState<AnalysisResults | null>(null);
+  const [selectedCameraDeviceId, setSelectedCameraDeviceId] = useState<string | undefined>(undefined);
+  const [streamStats, setStreamStats] = useState<StreamStats>({
+    fps: 0,
+    latency: 0,
+    bitrate: 0,
+    droppedFrames: 0,
+  });
+
   const wsRef = useRef<WebSocket | null>(null);
   const fpsCounterRef = useRef(0);
   const fpsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -107,6 +137,25 @@ export default function CapturePage() {
         setAnalysisResult(data);
         setFrameCount(data.frame_id);
         fpsCounterRef.current++;
+
+        // Populate live results sidebar from analysis data
+        setLiveResults({
+          detections: data.detections.map((d) => ({
+            label: d.label,
+            confidence: d.confidence,
+            bbox: [...d.bbox],
+          })),
+          ocr_regions: [],
+          motion_vectors: data.analysis.motion_detected
+            ? [{ direction: "detected", magnitude: 1 }]
+            : [],
+        });
+
+        // Update stream stats
+        setStreamStats((prev) => ({
+          ...prev,
+          fps: fpsCounterRef.current,
+        }));
       } catch {
         // ignore parse errors
       }
@@ -176,10 +225,23 @@ export default function CapturePage() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.drawImage(video, 0, 0);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
+
+      // Download
       const link = document.createElement("a");
       link.download = `snapshot-${Date.now()}.jpg`;
-      link.href = canvas.toDataURL("image/jpeg", 0.95);
+      link.href = dataUrl;
       link.click();
+
+      // Add to snapshot strip
+      setSnapshots((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          dataUrl,
+          timestamp: new Date().toISOString(),
+        },
+      ]);
     }
 
     // Also trigger server-side snapshot
@@ -335,6 +397,33 @@ export default function CapturePage() {
     }
   }, [recordingId]);
 
+  // CopilotInline: grab current frame as base64 for AI chat
+  const getFrameBase64 = useCallback(() => {
+    const video = document.querySelector("video");
+    if (!video) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0);
+    return canvas.toDataURL("image/jpeg", 0.8);
+  }, []);
+
+  // Camera device selection
+  const handleDeviceSelect = useCallback((deviceId: string) => {
+    setSelectedCameraDeviceId(deviceId);
+  }, []);
+
+  // Snapshot strip helpers
+  const handleDeleteSnapshot = useCallback((id: string) => {
+    setSnapshots((prev) => prev.filter((s) => s.id !== id));
+  }, []);
+
+  const handleClearAllSnapshots = useCallback(() => {
+    setSnapshots([]);
+  }, []);
+
   const elapsed = startTime ? Math.floor((Date.now() - startTime) / 1000) : 0;
   const minutes = Math.floor(elapsed / 60)
     .toString()
@@ -372,6 +461,10 @@ export default function CapturePage() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          <AnalysisModeSelector
+            value={analysisMode}
+            onChange={setAnalysisMode}
+          />
           <RecordingControls
             isCapturing={isCapturing}
             onRecordStart={handleRecordStart}
@@ -428,34 +521,71 @@ export default function CapturePage() {
       {/* Main Content */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Feed / Audio Panel */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-2 space-y-4">
           {activeSource === "microphone" ? (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-              <h3 className="text-sm font-medium text-gray-700 mb-4">
-                Audio Monitor
-              </h3>
-              <AudioMeter stream={stream} />
-            </div>
+            <MicrophoneVisualizer
+              onRecordingComplete={(blob) => {
+                // Download the recorded audio
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `recording-${Date.now()}.webm`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            />
           ) : activeSource === "rtsp" || activeSource === "multicam" ? null : (
-            <LiveFeedPanel
-              sourceType={activeSource}
-              stream={stream}
-              analysisResult={analysisResult}
-              onFrame={handleFrame}
+            <>
+              {isCapturing ? (
+                <LiveFeedPanel
+                  sourceType={activeSource}
+                  stream={stream}
+                  analysisResult={analysisResult}
+                  onFrame={handleFrame}
+                />
+              ) : (
+                <CameraPlaceholder
+                  onDeviceSelect={handleDeviceSelect}
+                  selectedDeviceId={selectedCameraDeviceId}
+                />
+              )}
+            </>
+          )}
+
+          {/* Stream Health Bar — shown when capturing non-audio sources */}
+          {isCapturing && activeSource !== "microphone" && (
+            <StreamHealthBar
+              stats={streamStats}
+              onReconnect={() => {
+                disconnectWebSocket();
+                connectWebSocket();
+              }}
             />
           )}
 
-          {!isCapturing && activeSource !== "microphone" && activeSource !== "rtsp" && activeSource !== "multicam" && (
-            <div className="flex items-center justify-center bg-gray-900 rounded-lg" style={{ aspectRatio: "16/9" }}>
-              <p className="text-gray-400">
-                Click <span className="font-medium text-white">Start</span> to begin {activeSource} capture
-              </p>
-            </div>
-          )}
+          {/* Snapshot Strip */}
+          <SnapshotStrip
+            snapshots={snapshots}
+            onCapture={handleSnapshot}
+            onDelete={handleDeleteSnapshot}
+            onClearAll={handleClearAllSnapshots}
+          />
         </div>
 
         {/* Sidebar -- Stats, Analysis & Sources */}
         <div className="space-y-4">
+          {/* AI Overlay Panel */}
+          <AIOverlayPanel
+            onSettingsChange={(settings) => setOverlaySettings(settings)}
+            apiBaseUrl={API_BASE}
+          />
+
+          {/* Live Results Sidebar */}
+          <LiveResultsSidebar
+            results={liveResults}
+            isLoading={isCapturing && !liveResults}
+          />
+
           {/* Status Bar */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-4 space-y-3">
             <h3 className="text-sm font-medium text-gray-700">Session Status</h3>
@@ -611,6 +741,9 @@ export default function CapturePage() {
                 </ul>
               </div>
             )}
+
+          {/* Copilot Inline Chat */}
+          <CopilotInline getFrameBase64={getFrameBase64} />
         </div>
       </div>
     </div>

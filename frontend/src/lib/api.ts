@@ -93,6 +93,7 @@ export interface VisionAnalyzeResult {
   processed_image?: string;
   stats?: VisionImageStats;
   processing_time_ms?: number;
+  histogram?: { r: number[]; g: number[]; b: number[] };
   stft?: unknown;
   mel?: unknown;
   mfcc?: unknown;
