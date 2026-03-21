@@ -731,6 +731,28 @@ export async function generateFromDescription(
   return data;
 }
 
+export async function listSavedPipelines(
+  page = 1,
+  pageSize = 20,
+): Promise<PaginatedPipelines> {
+  const { data } = await api.get("/api/pipeline/list", {
+    params: { page, page_size: pageSize },
+  });
+  return data;
+}
+
+export async function savePipeline(payload: {
+  name: string;
+  description?: string;
+  definition: Record<string, unknown>;
+}): Promise<Pipeline> {
+  const { data } = await api.post("/api/pipeline/save", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // Alerts API
 // ---------------------------------------------------------------------------
