@@ -787,6 +787,79 @@ export interface AlertRule {
   updated_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// AL4 — Alert Rules Tab types
+// ---------------------------------------------------------------------------
+
+export type AL4Severity = "critical" | "warning" | "info";
+export type AL4ConditionField = "confidence" | "class" | "motion" | "audio_level" | "ocr_text" | "custom";
+export type AL4Operator = ">" | "<" | "=" | "contains" | "not_contains";
+export type AL4LogicOperator = "AND" | "OR";
+export type AL4Cooldown = "none" | "1m" | "5m" | "15m" | "1h";
+export type AL4DeliveryChannel = "email" | "slack" | "webhook";
+
+export interface AL4Condition {
+  id: string;
+  field: AL4ConditionField;
+  operator: AL4Operator;
+  value: string;
+}
+
+export interface AL4Actions {
+  email: { enabled: boolean; address: string };
+  slack: { enabled: boolean; webhook_url: string };
+  webhook: { enabled: boolean; post_url: string };
+  auto_clip: boolean;
+}
+
+export interface AL4RulePayload {
+  name: string;
+  severity: AL4Severity;
+  conditions: AL4Condition[];
+  logic_operator: AL4LogicOperator;
+  cooldown: AL4Cooldown;
+  actions: AL4Actions;
+  enabled: boolean;
+}
+
+export interface AL4Rule extends AL4RulePayload {
+  id: string;
+  trigger_count: number;
+  trigger_window_days: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listAL4Rules(): Promise<AL4Rule[]> {
+  const { data } = await api.get("/api/alerts/rules/al4", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createAL4Rule(payload: AL4RulePayload): Promise<AL4Rule> {
+  const { data } = await api.post("/api/alerts/rules/al4", payload, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function duplicateAL4Rule(ruleId: string): Promise<AL4Rule> {
+  const { data } = await api.post(`/api/alerts/rules/al4/${ruleId}/duplicate`, null, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function deleteAL4Rule(ruleId: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/al4/${ruleId}`);
+}
+
+export async function toggleAL4Rule(ruleId: string, enabled: boolean): Promise<AL4Rule> {
+  const { data } = await api.patch(`/api/alerts/rules/al4/${ruleId}`, { enabled });
+  return data;
+}
+
 export interface AlertRuleCreatePayload {
   name: string;
   conditions: AlertRuleCondition[] | Record<string, unknown>;
