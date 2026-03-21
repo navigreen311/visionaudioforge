@@ -1,31 +1,20 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
+import Badge from "@/components/ui/Badge";
+import ScenarioSelector, { type ScenarioConfig } from "@/components/simulation/ScenarioSelector";
+import SimulationProgress from "@/components/simulation/SimulationProgress";
+import SimulationEventFeed, { type SimulationEvent } from "@/components/simulation/SimulationEventFeed";
+import SimulationResults, { type SimulationResultData } from "@/components/simulation/SimulationResults";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
-// Types
+// Types (existing tabs)
 // ---------------------------------------------------------------------------
-
-interface ScenarioResult {
-  scenario_id: string;
-  type: string;
-  events: Record<string, unknown>[];
-  duration_s: number;
-  description: string;
-}
-
-interface SimulationResult {
-  simulation_id: string;
-  events_injected: number;
-  alerts_triggered: number;
-  duration_s: number;
-  timeline: Record<string, unknown>[];
-}
 
 interface StressTestResult {
   test_id: string;
@@ -61,167 +50,155 @@ interface SimulationReport {
 }
 
 // ---------------------------------------------------------------------------
-// Scenarios Tab
+// API response shape for POST /api/simulation/runs
 // ---------------------------------------------------------------------------
 
-const SCENARIO_TYPES = [
-  { value: "intrusion", label: "Intrusion Detection" },
-  { value: "equipment_failure", label: "Equipment Failure" },
-  { value: "crowd_formation", label: "Crowd Formation" },
-  { value: "fire_smoke", label: "Fire / Smoke" },
-  { value: "package_left", label: "Unattended Package" },
-  { value: "medical_emergency", label: "Medical Emergency" },
-];
+interface RunApiEvent {
+  seq: number;
+  type: string;
+  timestamp_offset: number;
+  pipeline: string;
+  confidence: number;
+  alert_triggered: boolean;
+  severity: string | null;
+}
+
+interface RunApiResponse {
+  id: string;
+  scenario_id: string;
+  label: string;
+  status: string;
+  event_count: number;
+  duration_s: number;
+  events: RunApiEvent[];
+  robustness_score: number;
+  detections: number;
+  false_alarms: number;
+  missed: number;
+  total_events: number;
+}
+
+// ---------------------------------------------------------------------------
+// SI1 + SI2: Scenarios Tab (new — with ScenarioSelector, Progress, Feed, Results)
+// ---------------------------------------------------------------------------
 
 function ScenariosTab() {
-  const [scenarioType, setScenarioType] = useState("intrusion");
-  const [eventCount, setEventCount] = useState(8);
-  const [durationS, setDurationS] = useState(30);
-  const [scenario, setScenario] = useState<ScenarioResult | null>(null);
-  const [simResult, setSimResult] = useState<SimulationResult | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [currentEvent, setCurrentEvent] = useState(-1);
+  const [totalEvents, setTotalEvents] = useState(0);
+  const [events, setEvents] = useState<SimulationEvent[]>([]);
+  const [resultData, setResultData] = useState<SimulationResultData | null>(null);
+  const cancelledRef = useRef(false);
 
-  async function handleGenerateAndRun() {
-    setLoading(true);
+  const handleSelect = useCallback(async (config: ScenarioConfig) => {
+    setRunning(true);
+    setCurrentEvent(-1);
+    setTotalEvents(config.eventCount);
+    setEvents([]);
+    setResultData(null);
+    cancelledRef.current = false;
+
     try {
-      // Generate scenario
-      const genRes = await fetch(`${API}/api/simulation/scenarios/generate`, {
+      const res = await fetch(`${API}/api/simulation/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          type: scenarioType,
-          params: { event_count: eventCount, duration_s: durationS },
+          scenario_id: config.scenarioId,
+          label: config.label,
+          event_count: config.eventCount,
+          duration_s: config.durationS,
+          noise_level: config.noiseLevel,
+          confidence_threshold: config.confidenceThreshold,
+          random_seed: config.randomSeed,
         }),
       });
-      const genData: ScenarioResult = await genRes.json();
-      setScenario(genData);
 
-      // Run simulation
-      const runRes = await fetch(`${API}/api/simulation/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          workspace_id: "00000000-0000-0000-0000-000000000001",
-          scenario: genData,
-        }),
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data: RunApiResponse = await res.json();
+
+      if (cancelledRef.current) return;
+
+      // Simulate live event feed — drip events in one by one
+      const apiEvents = data.events;
+      for (let i = 0; i < apiEvents.length; i++) {
+        if (cancelledRef.current) return;
+        setCurrentEvent(i);
+        const ev = apiEvents[i];
+        const mapped: SimulationEvent = {
+          seq: ev.seq,
+          type: ev.type,
+          timestampOffset: ev.timestamp_offset,
+          pipeline: ev.pipeline,
+          confidence: ev.confidence,
+          alertTriggered: ev.alert_triggered,
+          severity: (ev.severity as SimulationEvent["severity"]) ?? undefined,
+        };
+        setEvents((prev) => [...prev, mapped]);
+        // Small delay between events for visual effect
+        await new Promise((r) => setTimeout(r, 120));
+      }
+
+      if (cancelledRef.current) return;
+
+      // Show results
+      setResultData({
+        robustnessScore: data.robustness_score,
+        detections: data.detections,
+        falseAlarms: data.false_alarms,
+        missed: data.missed,
+        totalEvents: data.total_events,
+        durationS: data.duration_s,
+        simulationId: data.id,
       });
-      const runData: SimulationResult = await runRes.json();
-      setSimResult(runData);
+    } catch (err) {
+      if (!cancelledRef.current) {
+        console.error("Simulation failed:", err);
+      }
     } finally {
-      setLoading(false);
+      setRunning(false);
     }
-  }
+  }, []);
+
+  const handleCancel = useCallback(() => {
+    cancelledRef.current = true;
+    setRunning(false);
+  }, []);
+
+  const handleReRun = useCallback(() => {
+    // Reset to selector state
+    setResultData(null);
+    setEvents([]);
+  }, []);
 
   return (
     <div className="space-y-6">
-      <Card title="Generate Scenario">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Scenario Type</label>
-            <select
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              value={scenarioType}
-              onChange={(e) => setScenarioType(e.target.value)}
-            >
-              {SCENARIO_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>{t.label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Event Count</label>
-            <input
-              type="number"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              value={eventCount}
-              onChange={(e) => setEventCount(parseInt(e.target.value, 10) || 5)}
-              min={1}
-              max={50}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Duration (seconds)</label>
-            <input
-              type="number"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              value={durationS}
-              onChange={(e) => setDurationS(parseInt(e.target.value, 10) || 30)}
-              min={5}
-              max={300}
-            />
-          </div>
-        </div>
-        <div className="mt-4">
-          <Button onClick={handleGenerateAndRun} loading={loading}>
-            Generate &amp; Run
-          </Button>
-        </div>
-      </Card>
-
-      {scenario && (
-        <Card title={`Scenario: ${scenario.description}`}>
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <div className="rounded-lg bg-gray-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-gray-500">Type</p>
-              <p className="text-lg font-bold text-gray-900">{scenario.type}</p>
-            </div>
-            <div className="rounded-lg bg-gray-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-gray-500">Events</p>
-              <p className="text-lg font-bold text-gray-900">{scenario.events.length}</p>
-            </div>
-            <div className="rounded-lg bg-gray-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-gray-500">Duration</p>
-              <p className="text-lg font-bold text-gray-900">{scenario.duration_s}s</p>
-            </div>
-          </div>
-        </Card>
+      {/* Scenario selector — hidden while running or showing results */}
+      {!running && !resultData && (
+        <ScenarioSelector onSelect={handleSelect} disabled={running} />
       )}
 
-      {simResult && (
-        <Card title="Simulation Results">
-          <div className="grid grid-cols-4 gap-4 mb-4">
-            <div className="rounded-lg bg-blue-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-blue-600">Events Injected</p>
-              <p className="text-2xl font-bold text-blue-900">{simResult.events_injected}</p>
-            </div>
-            <div className="rounded-lg bg-red-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-red-600">Alerts Triggered</p>
-              <p className="text-2xl font-bold text-red-900">{simResult.alerts_triggered}</p>
-            </div>
-            <div className="rounded-lg bg-green-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-green-600">Duration</p>
-              <p className="text-2xl font-bold text-green-900">{simResult.duration_s}s</p>
-            </div>
-            <div className="rounded-lg bg-purple-50 p-3 text-center">
-              <p className="text-xs font-medium uppercase text-purple-600">Sim ID</p>
-              <p className="text-xs font-mono text-purple-900 break-all">{simResult.simulation_id}</p>
-            </div>
-          </div>
-          <h4 className="text-sm font-semibold text-gray-700 mb-2">Timeline</h4>
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {simResult.timeline.map((entry, idx) => {
-              const ev = entry.event as Record<string, unknown>;
-              const isAlert = ev?.type === "alert_triggered";
-              return (
-                <div
-                  key={idx}
-                  className={`rounded px-3 py-2 text-xs font-mono ${
-                    isAlert ? "bg-red-50 text-red-800 border-l-4 border-red-500" : "bg-gray-50 text-gray-700"
-                  }`}
-                >
-                  <span className="text-gray-400 mr-2">#{(entry.seq as number) ?? idx + 1}</span>
-                  <span className="font-semibold">{ev?.type as string}</span>
-                  {ev?.confidence !== undefined && (
-                    <span className="ml-2 text-gray-500">conf={String(ev.confidence)}</span>
-                  )}
-                  {ev?.severity ? (
-                    <span className="ml-2 text-red-600">severity={String(ev.severity)}</span>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
-        </Card>
+      {/* Progress bar */}
+      <SimulationProgress
+        currentEvent={currentEvent}
+        totalEvents={totalEvents}
+        running={running}
+        onCancel={handleCancel}
+      />
+
+      {/* Event feed — show during run and after */}
+      {events.length > 0 && (
+        <SimulationEventFeed events={events} />
+      )}
+
+      {/* Results — show after completion */}
+      {resultData && (
+        <SimulationResults
+          data={resultData}
+          onReRun={handleReRun}
+          onOpenEvaluate={() => window.open("/evaluate", "_blank")}
+          onCreateCase={() => window.open("/investigation", "_blank")}
+          onSaveTemplate={() => alert("Template saved (stub)")}
+        />
       )}
     </div>
   );
@@ -449,17 +426,11 @@ function EdgeCasesTab() {
                   <tr key={tc.case} className={tc.status === "failed" ? "bg-red-50" : "hover:bg-gray-50"}>
                     <td className="px-4 py-3 text-sm font-mono text-gray-900">{tc.case}</td>
                     <td className="px-4 py-3 text-sm">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${
-                          tc.status === "passed"
-                            ? "bg-green-100 text-green-800"
-                            : "bg-red-100 text-red-800"
-                        }`}
-                      >
+                      <Badge variant={tc.status === "passed" ? "success" : "error"}>
                         {tc.status}
-                      </span>
+                      </Badge>
                     </td>
-                    <td className="px-4 py-3 text-sm text-gray-500">{tc.error || "—"}</td>
+                    <td className="px-4 py-3 text-sm text-gray-500">{tc.error || "---"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -475,7 +446,7 @@ function EdgeCasesTab() {
 // Reports Tab
 // ---------------------------------------------------------------------------
 
-function ReportsTab() {
+function SimulationReportsTab() {
   const [simId, setSimId] = useState("");
   const [report, setReport] = useState<SimulationReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -523,20 +494,20 @@ function ReportsTab() {
             <div className="grid grid-cols-3 gap-4">
               <div className="rounded-lg bg-gray-50 p-3 text-center">
                 <p className="text-xs font-medium uppercase text-gray-500">Type</p>
-                <p className="text-lg font-bold text-gray-900">{String(report.scenario.type)}</p>
+                <p className="text-lg font-bold text-gray-900">{String(report.scenario)}</p>
               </div>
               <div className="rounded-lg bg-gray-50 p-3 text-center">
                 <p className="text-xs font-medium uppercase text-gray-500">Events</p>
-                <p className="text-lg font-bold text-gray-900">{String(report.results.events_injected)}</p>
+                <p className="text-lg font-bold text-gray-900">{String(report.results?.events_injected ?? "N/A")}</p>
               </div>
               <div className="rounded-lg bg-gray-50 p-3 text-center">
                 <p className="text-xs font-medium uppercase text-gray-500">Alerts</p>
-                <p className="text-lg font-bold text-gray-900">{String(report.results.alerts_triggered)}</p>
+                <p className="text-lg font-bold text-gray-900">{String(report.results?.alerts_triggered ?? "N/A")}</p>
               </div>
             </div>
           </Card>
 
-          {report.alerts.length > 0 && (
+          {report.alerts && report.alerts.length > 0 && (
             <Card title="Alerts Fired">
               <div className="space-y-2">
                 {report.alerts.map((a, idx) => (
@@ -549,7 +520,7 @@ function ReportsTab() {
             </Card>
           )}
 
-          {report.missed_detections.length > 0 && (
+          {report.missed_detections && report.missed_detections.length > 0 && (
             <Card title="Missed Detections">
               <ul className="list-disc list-inside text-sm text-red-700">
                 {report.missed_detections.map((m) => <li key={m}>{m}</li>)}
@@ -557,11 +528,13 @@ function ReportsTab() {
             </Card>
           )}
 
-          <Card title="Recommendations">
-            <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-              {report.recommendations.map((r, idx) => <li key={idx}>{r}</li>)}
-            </ul>
-          </Card>
+          {report.recommendations && report.recommendations.length > 0 && (
+            <Card title="Recommendations">
+              <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                {report.recommendations.map((r, idx) => <li key={idx}>{r}</li>)}
+              </ul>
+            </Card>
+          )}
         </>
       )}
     </div>
@@ -579,7 +552,7 @@ export default function SimulationPage() {
     { id: "scenarios", label: "Scenarios", content: <ScenariosTab /> },
     { id: "stress", label: "Stress Test", content: <StressTestTab /> },
     { id: "edge", label: "Edge Cases", content: <EdgeCasesTab /> },
-    { id: "reports", label: "Reports", content: <ReportsTab /> },
+    { id: "reports", label: "Reports", content: <SimulationReportsTab /> },
   ];
 
   return (

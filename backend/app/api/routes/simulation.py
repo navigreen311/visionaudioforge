@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import random
 import time
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
@@ -29,25 +29,42 @@ class SimulationRun(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class SimulationRunRequest(BaseModel):
-    """Body for the simplified POST /run endpoint."""
-    scenario_type: str = "detection"
-    duration_sec: int = 60
-    parameters: dict[str, Any] = Field(default_factory=dict)
+class SimulationRunFull(BaseModel):
+    """Run a simulation directly from scenario config (no pre-created scenario needed)."""
+    scenario_id: str
+    label: str = ""
+    event_count: int = Field(default=10, ge=1, le=200)
+    duration_s: int = Field(default=30, ge=5, le=600)
+    noise_level: float = Field(default=0.1, ge=0.0, le=1.0)
+    confidence_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    random_seed: int = 42
 
 
-class StressTestRequest(BaseModel):
-    """Body for POST /stress-test."""
-    target: str = "pipeline"
-    concurrency: int = 50
-    duration_sec: int = 30
-    parameters: dict[str, Any] = Field(default_factory=dict)
+# ---------------------------------------------------------------------------
+# Event type mapping per scenario
+# ---------------------------------------------------------------------------
 
+_SCENARIO_EVENT_TYPES: dict[str, list[str]] = {
+    "intrusion_detection": ["person_detected", "motion_alert", "perimeter_breach", "loitering"],
+    "vehicle_tracking": ["vehicle_enter", "vehicle_tracked", "license_plate_read", "speed_violation"],
+    "crowd_monitoring": ["crowd_count", "density_spike", "flow_change", "overcrowding"],
+    "package_abandoned": ["object_stationary", "unattended_timer", "abandoned_alert", "object_removed"],
+    "audio_anomaly": ["audio_classified", "anomaly_detected", "glass_break", "gunshot_detected"],
+    "ocr_document": ["text_region_found", "ocr_result", "document_classified", "verification_pass"],
+    "multi_zone_handoff": ["track_started", "zone_exit", "re_id_match", "handoff_complete"],
+    "system_stress": ["request_sent", "response_received", "timeout", "error_500"],
+}
 
-class EdgeCaseRequest(BaseModel):
-    """Body for POST /edge-case."""
-    case_name: str = "low_light_noise_burst"
-    parameters: dict[str, Any] = Field(default_factory=dict)
+_PIPELINES: dict[str, str] = {
+    "intrusion_detection": "vision-yolov8",
+    "vehicle_tracking": "vision-deepsort",
+    "crowd_monitoring": "vision-crowdnet",
+    "package_abandoned": "vision-stationary",
+    "audio_anomaly": "audio-mel-classifier",
+    "ocr_document": "vision-tesseract",
+    "multi_zone_handoff": "vision-reid",
+    "system_stress": "pipeline-load",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -58,55 +75,7 @@ _simulations: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
-# Mock data helpers
-# ---------------------------------------------------------------------------
-
-_MOCK_EVENTS = [
-    {"event_num": 1, "type": "anomaly_detected", "timestamp_offset_sec": 3.2, "triggered_alert": True},
-    {"event_num": 2, "type": "normal_activity", "timestamp_offset_sec": 7.5, "triggered_alert": False},
-    {"event_num": 3, "type": "anomaly_detected", "timestamp_offset_sec": 12.1, "triggered_alert": True},
-    {"event_num": 4, "type": "anomaly_detected", "timestamp_offset_sec": 18.4, "triggered_alert": True},
-    {"event_num": 5, "type": "false_positive", "timestamp_offset_sec": 22.0, "triggered_alert": True},
-    {"event_num": 6, "type": "anomaly_detected", "timestamp_offset_sec": 30.7, "triggered_alert": True},
-    {"event_num": 7, "type": "anomaly_detected", "timestamp_offset_sec": 38.9, "triggered_alert": True},
-    {"event_num": 8, "type": "missed_anomaly", "timestamp_offset_sec": 45.3, "triggered_alert": False},
-]
-
-_MOCK_RUNS = [
-    {"run_id": f"sim_{str(i).zfill(3)}", "status": "completed", "total_events": 8,
-     "score": 76, "created_at": 1700000000 + i * 3600}
-    for i in range(1, 6)
-]
-
-
-def _build_stress_summary() -> dict[str, Any]:
-    return {
-        "total": 1000,
-        "successful": 950,
-        "failed": 50,
-        "rps_peak": 42.5,
-        "avg_latency_ms": 85.3,
-        "p99_latency_ms": 234.1,
-        "passed": True,
-    }
-
-
-def _build_throughput_series() -> list[dict[str, Any]]:
-    return [
-        {"time_sec": t, "rps": 30 + t * 1.2}
-        for t in range(0, 31, 5)
-    ]
-
-
-def _build_latency_series() -> list[dict[str, Any]]:
-    return [
-        {"time_sec": t, "p50_ms": 40 + t, "p99_ms": 100 + t * 4}
-        for t in range(0, 31, 5)
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Existing endpoints — scenarios (unchanged)
+# Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/scenarios")
@@ -135,13 +104,8 @@ async def get_scenario(scenario_id: str) -> dict:
     return _scenarios[scenario_id]
 
 
-# ---------------------------------------------------------------------------
-# Existing endpoint — run with scenario_id (unchanged)
-# ---------------------------------------------------------------------------
-
-@router.post("/run/scenario")
-async def run_simulation_with_scenario(body: SimulationRun) -> dict[str, Any]:
-    """Run a simulation against a previously created scenario."""
+@router.post("/run")
+async def run_simulation(body: SimulationRun) -> dict[str, Any]:
     if body.scenario_id not in _scenarios:
         raise HTTPException(status_code=404, detail="Scenario not found")
     sim_id = str(uuid.uuid4())
@@ -164,139 +128,94 @@ async def run_simulation_with_scenario(body: SimulationRun) -> dict[str, Any]:
     return simulation
 
 
-# ---------------------------------------------------------------------------
-# Existing endpoint — report (unchanged)
-# ---------------------------------------------------------------------------
+@router.post("/runs")
+async def run_simulation_full(body: SimulationRunFull) -> dict[str, Any]:
+    """Run a full simulation from scenario config — generates synthetic events."""
+    rng = random.Random(body.random_seed)
+    event_types = _SCENARIO_EVENT_TYPES.get(body.scenario_id, ["generic_event"])
+    pipeline = _PIPELINES.get(body.scenario_id, "pipeline-default")
+
+    events: list[dict[str, Any]] = []
+    detections = 0
+    false_alarms = 0
+    missed = 0
+
+    for i in range(body.event_count):
+        offset = round((body.duration_s / max(body.event_count, 1)) * i, 2)
+        confidence = round(max(0.0, min(1.0, rng.gauss(0.75, body.noise_level))), 3)
+        etype = rng.choice(event_types)
+        alert = confidence >= body.confidence_threshold and rng.random() > 0.3
+
+        if alert:
+            detections += 1
+        if confidence < body.confidence_threshold and rng.random() < 0.15:
+            false_alarms += 1
+            alert = True
+        if confidence >= body.confidence_threshold and not alert:
+            missed += 1
+
+        severity = None
+        if alert:
+            severity = rng.choice(["low", "medium", "high", "critical"])
+
+        events.append({
+            "seq": i + 1,
+            "type": etype,
+            "timestamp_offset": offset,
+            "pipeline": pipeline,
+            "confidence": confidence,
+            "alert_triggered": alert,
+            "severity": severity,
+        })
+
+    total = body.event_count
+    robustness = max(0, min(100, round(
+        100 * (detections / max(total, 1))
+        - 20 * (false_alarms / max(total, 1))
+        - 30 * (missed / max(total, 1))
+    )))
+
+    sim_id = str(uuid.uuid4())
+    simulation = {
+        "id": sim_id,
+        "scenario_id": body.scenario_id,
+        "label": body.label,
+        "status": "completed",
+        "event_count": body.event_count,
+        "duration_s": body.duration_s,
+        "events": events,
+        "robustness_score": robustness,
+        "detections": detections,
+        "false_alarms": false_alarms,
+        "missed": missed,
+        "total_events": total,
+        "started_at": time.time(),
+        "completed_at": time.time(),
+    }
+    _simulations[sim_id] = simulation
+    return simulation
+
+
+@router.get("/runs/{simulation_id}")
+async def get_simulation_run(simulation_id: str) -> dict[str, Any]:
+    """Retrieve a completed simulation run by ID."""
+    if simulation_id not in _simulations:
+        raise HTTPException(status_code=404, detail="Simulation run not found")
+    return _simulations[simulation_id]
+
 
 @router.get("/report/{simulation_id}")
 async def get_report(simulation_id: str) -> dict[str, Any]:
     if simulation_id not in _simulations:
         raise HTTPException(status_code=404, detail="Simulation not found")
     sim = _simulations[simulation_id]
-    scenario = _scenarios.get(sim["scenario_id"], {})
+    scenario = _scenarios.get(sim.get("scenario_id", ""), {})
+    results = sim.get("results", {})
+    error_rate = results.get("error_rate", 0)
     return {
         "simulation_id": simulation_id,
-        "scenario": scenario.get("name", "unknown"),
+        "scenario": scenario.get("name", sim.get("label", "unknown")),
         "status": sim["status"],
-        "results": sim["results"],
-        "summary": f"Simulation completed with {sim['results']['error_rate']*100:.1f}% error rate",
+        "results": results,
+        "summary": f"Simulation completed with {error_rate*100:.1f}% error rate" if results else "Simulation completed",
     }
-
-
-# ---------------------------------------------------------------------------
-# NEW: POST /run — simplified simulation run (mock)
-# ---------------------------------------------------------------------------
-
-@router.post("/run")
-async def run_simulation(body: SimulationRunRequest) -> dict[str, Any]:
-    """Run a simulation and return mock summary."""
-    return {
-        "run_id": "sim_001",
-        "status": "completed",
-        "total_events": 8,
-    }
-
-
-# ---------------------------------------------------------------------------
-# NEW: GET /runs/{run_id} — detailed run results (mock)
-# ---------------------------------------------------------------------------
-
-@router.get("/runs/{run_id}")
-async def get_run(run_id: str) -> dict[str, Any]:
-    """Get detailed results for a simulation run."""
-    return {
-        "run_id": run_id,
-        "status": "completed",
-        "events": _MOCK_EVENTS,
-        "score": 76,
-        "detection_rate": 0.875,
-        "false_alarm_rate": 0.125,
-        "missed_events": 1,
-    }
-
-
-# ---------------------------------------------------------------------------
-# NEW: GET /runs — list past runs (mock)
-# ---------------------------------------------------------------------------
-
-@router.get("/runs")
-async def list_runs() -> list[dict[str, Any]]:
-    """List recent simulation runs."""
-    return _MOCK_RUNS
-
-
-# ---------------------------------------------------------------------------
-# NEW: POST /stress-test — launch stress test (mock)
-# ---------------------------------------------------------------------------
-
-@router.post("/stress-test")
-async def run_stress_test(body: StressTestRequest) -> dict[str, Any]:
-    """Launch a stress test and return mock summary."""
-    return {
-        "test_id": "stress_001",
-        "status": "completed",
-    }
-
-
-# ---------------------------------------------------------------------------
-# NEW: GET /stress-test/{test_id}/status — stress test status (mock)
-# ---------------------------------------------------------------------------
-
-@router.get("/stress-test/{test_id}/status")
-async def get_stress_test_status(test_id: str) -> dict[str, Any]:
-    """Get status and results of a stress test."""
-    return {
-        "test_id": test_id,
-        "status": "completed",
-        "throughput": _build_throughput_series(),
-        "latency": _build_latency_series(),
-        "summary": _build_stress_summary(),
-    }
-
-
-# ---------------------------------------------------------------------------
-# NEW: POST /edge-case — run edge case test (mock)
-# ---------------------------------------------------------------------------
-
-@router.post("/edge-case")
-async def run_edge_case(body: EdgeCaseRequest) -> dict[str, Any]:
-    """Run an edge-case scenario and return mock result."""
-    return {
-        "case_name": body.case_name,
-        "result": "degraded",
-        "score_before": 92,
-        "score_after": 71,
-        "confidence_drop": 21,
-    }
-
-
-# ---------------------------------------------------------------------------
-# NEW: POST /runs/{run_id}/report — generate plain text report (mock)
-# ---------------------------------------------------------------------------
-
-@router.post("/runs/{run_id}/report")
-async def generate_run_report(run_id: str) -> PlainTextResponse:
-    """Generate a plain-text report for a simulation run."""
-    report = (
-        f"SIMULATION REPORT — {run_id}\n"
-        f"{'=' * 40}\n"
-        f"Status: completed\n"
-        f"Total Events: 8\n"
-        f"Score: 76 / 100\n"
-        f"Detection Rate: 87.5%\n"
-        f"False Alarm Rate: 12.5%\n"
-        f"Missed Events: 1\n"
-        f"\n"
-        f"EVENT LOG:\n"
-        f"  #1  anomaly_detected   @ 3.2s   [ALERT]\n"
-        f"  #2  normal_activity    @ 7.5s   [—]\n"
-        f"  #3  anomaly_detected   @ 12.1s  [ALERT]\n"
-        f"  #4  anomaly_detected   @ 18.4s  [ALERT]\n"
-        f"  #5  false_positive     @ 22.0s  [ALERT]\n"
-        f"  #6  anomaly_detected   @ 30.7s  [ALERT]\n"
-        f"  #7  anomaly_detected   @ 38.9s  [ALERT]\n"
-        f"  #8  missed_anomaly     @ 45.3s  [—]\n"
-        f"\n"
-        f"SUMMARY: 7/8 events detected. 1 false alarm. 1 miss.\n"
-    )
-    return PlainTextResponse(content=report)
