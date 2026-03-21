@@ -1,8 +1,10 @@
-"""Command Center routes — streams, layouts, shifts, dashboard."""
+"""Command Center routes — streams, layouts, shifts, dashboard, KPIs."""
 
 from __future__ import annotations
 
+import random
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,6 +38,14 @@ class ShiftCreate(BaseModel):
     zone: str | None = None
 
 
+class ShiftStartRequest(BaseModel):
+    zone: str = "Zone A"
+
+
+class ShiftEndRequest(BaseModel):
+    handoff_notes: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
@@ -43,6 +53,8 @@ _streams: dict[str, dict] = {}
 _layout: dict | None = None
 _shifts: list[dict] = []
 _stream_counter = 0
+_active_shift: dict | None = None
+_shift_counter = 0
 
 
 # ---------------------------------------------------------------------------
@@ -104,3 +116,60 @@ async def get_dashboard() -> dict[str, Any]:
         "active_shifts": len(_shifts),
         "status": "operational",
     }
+
+
+# ---------------------------------------------------------------------------
+# KPIs
+# ---------------------------------------------------------------------------
+
+@router.get("/kpis")
+async def get_kpis() -> dict[str, Any]:
+    """Return current KPI snapshot (stub with realistic random data)."""
+    return {
+        "avg_response_time_seconds": round(random.uniform(8, 45), 1),
+        "response_time_trend": round(random.uniform(-5, 5), 1),
+        "resolution_rate_pct": round(random.uniform(85, 99), 1),
+        "resolution_rate_trend": round(random.uniform(-3, 3), 1),
+        "false_alarm_rate_pct": round(random.uniform(2, 15), 1),
+        "false_alarm_trend": round(random.uniform(-4, 4), 1),
+        "incidents_today": random.randint(0, 25),
+        "incidents_today_trend": round(random.uniform(-10, 10), 1),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shift start / end (CC6)
+# ---------------------------------------------------------------------------
+
+@router.post("/shift/start")
+async def start_shift(body: ShiftStartRequest) -> dict[str, Any]:
+    """Start an operator shift. Returns the active shift object."""
+    global _active_shift, _shift_counter
+    if _active_shift and not _active_shift.get("ended_at"):
+        raise HTTPException(status_code=409, detail="A shift is already active")
+    _shift_counter += 1
+    now = datetime.now(timezone.utc).isoformat()
+    _active_shift = {
+        "id": f"shift-{_shift_counter:04d}",
+        "operator_id": "op-default",
+        "operator_name": "Operator",
+        "zone": body.zone,
+        "started_at": now,
+        "ended_at": None,
+        "handoff_notes": None,
+    }
+    return _active_shift
+
+
+@router.post("/shift/end")
+async def end_shift(body: ShiftEndRequest | None = None) -> dict[str, Any]:
+    """End the active shift."""
+    global _active_shift
+    if not _active_shift or _active_shift.get("ended_at"):
+        raise HTTPException(status_code=404, detail="No active shift to end")
+    _active_shift["ended_at"] = datetime.now(timezone.utc).isoformat()
+    if body and body.handoff_notes:
+        _active_shift["handoff_notes"] = body.handoff_notes
+    result = dict(_active_shift)
+    _active_shift = None
+    return result
