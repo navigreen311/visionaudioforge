@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Optional
 from uuid import UUID
 
@@ -19,6 +20,8 @@ from app.schemas.asset import (
 from app.schemas.common import PaginatedResponse
 from app.services.assets.asset_service import AssetService
 from app.services.data.storage import MinIOStorageService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/assets", tags=["assets"])
 
@@ -87,24 +90,87 @@ async def list_assets(
     limit: int = Query(20, ge=1, le=100),
     db=Depends(get_db),
 ):
-    """List assets with optional type/tag filtering and pagination."""
+    """List assets with optional type/tag filtering and pagination.
+
+    Always returns a valid PaginatedResponse with items as a list (never null).
+    """
     parsed_tags: list[str] | None = tags.split(",") if tags else None
 
-    assets, total = await AssetService.list_assets(
-        db=db,
-        workspace_id=workspace_id,
-        asset_type=type,
-        tags=parsed_tags,
-        skip=skip,
-        limit=limit,
-    )
+    try:
+        assets, total = await AssetService.list_assets(
+            db=db,
+            workspace_id=workspace_id,
+            asset_type=type,
+            tags=parsed_tags,
+            skip=skip,
+            limit=limit,
+        )
+    except Exception:
+        logger.exception("Failed to fetch assets for workspace %s", workspace_id)
+        # Return empty list instead of letting the error propagate as null
+        assets, total = [], 0
 
     return PaginatedResponse(
-        items=[AssetRead.model_validate(a) for a in assets],
-        total=total,
+        items=[AssetRead.model_validate(a) for a in assets] if assets else [],
+        total=total or 0,
         page=skip // limit,
         size=limit,
     )
+
+
+# ------------------------------------------------------------------
+# Storage stats
+# ------------------------------------------------------------------
+
+
+@router.get("/storage-stats")
+async def storage_stats(
+    workspace_id: UUID = Query(...),
+    db=Depends(get_db),
+):
+    """Return storage usage statistics for the given workspace.
+
+    Response shape:
+    {
+      "total_assets": int,
+      "total_size_bytes": int,
+      "by_type": { "image": { "count": int, "size_bytes": int }, ... }
+    }
+    """
+    try:
+        assets, total = await AssetService.list_assets(
+            db=db,
+            workspace_id=workspace_id,
+            skip=0,
+            limit=10_000,
+        )
+    except Exception:
+        logger.exception("Failed to compute storage stats for workspace %s", workspace_id)
+        return {
+            "total_assets": 0,
+            "total_size_bytes": 0,
+            "by_type": {},
+        }
+
+    by_type: dict[str, dict[str, int]] = {}
+    total_size = 0
+
+    for asset in assets or []:
+        asset_data = AssetRead.model_validate(asset)
+        asset_type = asset_data.type or "unknown"
+        size = asset_data.size or 0
+        total_size += size
+
+        if asset_type not in by_type:
+            by_type[asset_type] = {"count": 0, "size_bytes": 0}
+        by_type[asset_type]["count"] += 1
+        by_type[asset_type]["size_bytes"] += size
+
+    return {
+        "total_assets": total or 0,
+        "total_size_bytes": total_size,
+        "by_type": by_type,
+    }
 
 
 # ------------------------------------------------------------------
