@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { InstalledTab } from "@/components/marketplace/InstalledTab";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -297,61 +298,7 @@ export default function MarketplacePage() {
       {/* ================================================================= */}
       {/* Installed Tab                                                     */}
       {/* ================================================================= */}
-      {tab === "installed" && (
-        <div className="space-y-3">
-          {installed.length === 0 && (
-            <p className="text-center text-gray-400 py-12 text-sm">
-              No plugins installed yet. Browse the marketplace to get started.
-            </p>
-          )}
-          {installed.map((plugin) => (
-            <div
-              key={plugin.plugin_id}
-              className="flex items-center gap-4 border border-gray-200 rounded-xl bg-white p-4 shadow-sm"
-            >
-              <span className="text-2xl">{CATEGORY_ICONS[plugin.category] || "🔌"}</span>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-gray-900">{plugin.name}</h3>
-                <p className="text-xs text-gray-500">{plugin.description}</p>
-              </div>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                  CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
-                }`}
-              >
-                {plugin.category}
-              </span>
-
-              {/* Enable/Disable toggle */}
-              <button
-                onClick={() => handleToggle(plugin.plugin_id!)}
-                className={`relative w-10 h-5 rounded-full transition-colors ${
-                  plugin.enabled ? "bg-brand-600" : "bg-gray-300"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                    plugin.enabled ? "translate-x-5" : ""
-                  }`}
-                />
-              </button>
-
-              {/* Configure */}
-              <button className="px-3 py-1 text-xs border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
-                Configure
-              </button>
-
-              {/* Uninstall */}
-              <button
-                onClick={() => handleUninstall(plugin.plugin_id!)}
-                className="px-3 py-1 text-xs border border-red-200 rounded-lg text-red-600 hover:bg-red-50"
-              >
-                Uninstall
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      {tab === "installed" && <InstalledTab />}
 
       {/* ================================================================= */}
       {/* BYOM Tab                                                          */}
