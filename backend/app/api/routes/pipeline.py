@@ -107,6 +107,64 @@ async def create_pipeline(
 
 
 # --------------------------------------------------------------------------
+# GET /api/pipeline/list — convenience alias for listing saved pipelines
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/list", response_model=PaginatedResponse)
+async def list_pipelines_alias(
+    workspace_id: uuid.UUID | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """List saved pipelines (alias for GET /api/pipelines)."""
+    query = select(Pipeline)
+    count_query = select(func.count(Pipeline.id))
+
+    if workspace_id:
+        query = query.where(Pipeline.workspace_id == workspace_id)
+        count_query = count_query.where(Pipeline.workspace_id == workspace_id)
+
+    total = (await db.execute(count_query)).scalar() or 0
+    total_pages = max(1, -(-total // page_size))
+
+    query = query.order_by(Pipeline.updated_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    return {
+        "items": [PipelineRead.model_validate(p) for p in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/save — save or update a pipeline
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/save", response_model=PipelineRead, status_code=201)
+async def save_pipeline(
+    body: PipelineCreate,
+    db: AsyncSession = Depends(get_db),
+) -> Pipeline:
+    """Save a pipeline (create new). Acts as an alias for create with relaxed validation."""
+    pipeline = Pipeline(
+        name=body.name,
+        description=body.description,
+        definition=body.definition,
+        workspace_id=body.workspace_id,
+    )
+    db.add(pipeline)
+    await db.commit()
+    await db.refresh(pipeline)
+    return pipeline
+
+
+# --------------------------------------------------------------------------
 # GET /api/pipelines
 # --------------------------------------------------------------------------
 
