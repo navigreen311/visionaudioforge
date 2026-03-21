@@ -2,11 +2,9 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
+import NewCaseModal, { NewCasePayload } from "@/components/investigate/NewCaseModal";
 import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
-import CaseTimeline from "@/components/investigate/CaseTimeline";
-import AddEvidenceModal from "@/components/investigate/AddEvidenceModal";
-import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { TimelineEventData } from "@/components/investigate/TimelineEvent";
@@ -467,12 +465,6 @@ export default function InvestigatePage() {
 
   // New case modal
   const [showNewCase, setShowNewCase] = useState(false);
-  const [newCaseName, setNewCaseName] = useState("");
-  const [newCaseDesc, setNewCaseDesc] = useState("");
-  const [creating, setCreating] = useState(false);
-
-  // Add Evidence modal
-  const [showAddEvidence, setShowAddEvidence] = useState(false);
 
   // Right panel tab
   const [activeTab, setActiveTab] = useState<TabKey>("evidence");
@@ -537,26 +529,23 @@ export default function InvestigatePage() {
     }
   }, [selectedCase, loadTimeline]);
 
-  // Create case
-  const handleCreateCase = async () => {
-    if (!newCaseName.trim()) return;
-    setCreating(true);
-    try {
+  // Create case via NewCaseModal
+  const handleCreateCase = useCallback(
+    async (payload: NewCasePayload) => {
       await axios.post(`${API_BASE}/api/investigate/cases`, {
-        name: newCaseName.trim(),
-        description: newCaseDesc.trim(),
+        name: payload.name,
+        description: payload.description,
+        priority: payload.priority,
+        status: payload.status,
+        assignee: payload.assignee,
+        tags: payload.tags,
         workspace_id: DEFAULT_WORKSPACE_ID,
       });
       setShowNewCase(false);
-      setNewCaseName("");
-      setNewCaseDesc("");
       await loadCases();
-    } catch {
-      // Handle silently
-    } finally {
-      setCreating(false);
-    }
-  };
+    },
+    [loadCases]
+  );
 
   // Add note
   const handleAddNote = async (content: string) => {
@@ -618,32 +607,31 @@ export default function InvestigatePage() {
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* Left panel — Case list */}
-      <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white">
-        <CaseList
-          cases={cases}
-          selectedCaseId={selectedCase?.id || null}
-          onSelectCase={(c) => {
-            setSelectedCase(c);
-            setSelectedEvent(null);
-          }}
-          onNewCase={() => setShowNewCase(true)}
-          loading={casesLoading}
-        />
+      <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col">
+        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900">Investigate</h2>
+          <Button size="sm" onClick={() => setShowNewCase(true)}>
+            + New Case
+          </Button>
+        </div>
+        {casesLoading ? (
+          <div className="flex items-center justify-center py-12 flex-1">
+            <div className="animate-spin h-6 w-6 border-2 border-brand-600 border-t-transparent rounded-full" />
+          </div>
+        ) : (
+          <CaseList
+            cases={cases}
+            selectedId={selectedCase?.id || null}
+            onSelect={(c) => {
+              setSelectedCase(c);
+              setSelectedEvent(null);
+            }}
+          />
+        )}
       </div>
 
       {/* Center — Timeline */}
-      <div className="flex-1 min-w-0 bg-gray-50 overflow-y-auto">
-        {/* Horizontal CaseTimeline (IV3) — shown when a case is selected */}
-        {selectedCase && (
-          <div className="p-4 border-b border-gray-200 bg-white">
-            <CaseTimeline
-              caseId={selectedCase.id}
-              dateRange={{ start: startDate, end: endDate }}
-              onAddEvidence={() => setShowAddEvidence(true)}
-            />
-          </div>
-        )}
-
+      <div className="flex-1 min-w-0 bg-gray-50">
         {/* Checkpoint markers */}
         {checkpoints.length > 0 && (
           <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 overflow-x-auto">
@@ -731,66 +719,12 @@ export default function InvestigatePage() {
         </div>
       </div>
 
-      {/* Add Evidence Modal (IV3) */}
-      {selectedCase && (
-        <AddEvidenceModal
-          isOpen={showAddEvidence}
-          onClose={() => setShowAddEvidence(false)}
-          caseId={selectedCase.id}
-          onAdded={() => {
-            loadTimeline();
-          }}
-        />
-      )}
-
       {/* New Case Modal */}
-      <Modal
+      <NewCaseModal
         isOpen={showNewCase}
         onClose={() => setShowNewCase(false)}
-        title="Create New Case"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setShowNewCase(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCreateCase}
-              loading={creating}
-              disabled={!newCaseName.trim()}
-            >
-              Create Case
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Case Name
-            </label>
-            <input
-              type="text"
-              value={newCaseName}
-              onChange={(e) => setNewCaseName(e.target.value)}
-              placeholder="e.g., Intrusion Investigation Alpha"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
-              autoFocus
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Description
-            </label>
-            <textarea
-              value={newCaseDesc}
-              onChange={(e) => setNewCaseDesc(e.target.value)}
-              placeholder="Describe the investigation scope and objectives..."
-              rows={3}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 resize-none"
-            />
-          </div>
-        </div>
-      </Modal>
+        onSubmit={handleCreateCase}
+      />
     </div>
   );
 }

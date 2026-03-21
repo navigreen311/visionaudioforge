@@ -27,8 +27,12 @@ report_service = ReportService()
 
 class CreateCaseRequest(BaseModel):
     name: str
-    description: str
+    description: str = ""
     workspace_id: UUID
+    priority: str = "medium"
+    status: str = "open"
+    assignee: str = ""
+    tags: list[str] = []
 
 
 class AddEvidenceRequest(BaseModel):
@@ -106,7 +110,14 @@ def _serialize_event(e) -> dict:
 async def create_case(body: CreateCaseRequest, db: AsyncSession = Depends(get_db)):
     """Create a new investigation case."""
     case = await investigation_service.create_case(
-        db, name=body.name, description=body.description, workspace_id=body.workspace_id
+        db,
+        name=body.name,
+        description=body.description,
+        workspace_id=body.workspace_id,
+        priority=body.priority,
+        status=body.status,
+        assignee=body.assignee,
+        tags=body.tags,
     )
     return _serialize_event(case)
 
