@@ -109,3 +109,31 @@ async def current_schedule():
     """Return current job queue."""
     queue = _gpu_scheduler.get_queue()
     return {"queue": queue, "total_jobs": len(queue)}
+
+
+# ---------------------------------------------------------------------------
+# System metrics
+# ---------------------------------------------------------------------------
+
+@router.get("/metrics")
+async def runtime_metrics():
+    """Return system resource utilisation metrics.
+
+    Uses *psutil* for real CPU percentage when available; falls back to
+    hard-coded stub values so the endpoint always returns a valid response.
+    """
+    cpu_pct: float = 12.0
+    try:
+        import psutil  # noqa: WPS433 — optional runtime import
+
+        cpu_pct = psutil.cpu_percent(interval=0.1)
+    except ImportError:
+        pass
+
+    # Storage: stub values — replace with real disk inspection later.
+    return {
+        "gpu_pct": 0,
+        "cpu_pct": round(cpu_pct, 1),
+        "storage_used_gb": 2.4,
+        "storage_total_gb": 50,
+    }
