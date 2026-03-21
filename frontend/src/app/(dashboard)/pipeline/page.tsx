@@ -1,64 +1,56 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 
-import GenerateModal from "@/components/pipeline/GenerateModal";
 import NodeConfig from "@/components/pipeline/NodeConfig";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
-import SavedPipelinesDrawer from "@/components/pipeline/SavedPipelinesDrawer";
-import TemplatesModal from "@/components/pipeline/TemplatesModal";
-import { PipelineTemplate } from "@/lib/pipeline-templates";
+import RunHistory, { type PipelineRunRecord } from "@/components/pipeline/RunHistory";
+import RunProgressBar from "@/components/pipeline/RunProgressBar";
+import ScheduleModal from "@/components/pipeline/ScheduleModal";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface PipelineRun {
-  id: string;
-  status: string;
-  created_at: string;
-  duration_ms?: number;
+interface PipelineTemplate {
+  key: string;
+  name: string;
+  description: string;
+  category: string;
+  definition: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] };
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+interface DefinitionNode {
+  id: string;
+  type: string;
+  params?: Record<string, unknown>;
+}
+
+interface DefinitionEdge {
+  from: string;
+  to: string;
+}
 
 export default function PipelinePage() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-
-  // Pipeline name (editable inline)
   const [pipelineName, setPipelineName] = useState("Untitled Pipeline");
-  const [isEditingName, setIsEditingName] = useState(false);
-  const nameInputRef = useRef<HTMLInputElement>(null);
-
-  const [runs] = useState<PipelineRun[]>([]);
+  const [runs, setRuns] = useState<PipelineRunRecord[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
 
-  // Dirty tracking
-  const [isDirty, setIsDirty] = useState(false);
-
-  // Modal / drawer states
-  const [showSavedDrawer, setShowSavedDrawer] = useState(false);
-  const [showTemplatesModal, setShowTemplatesModal] = useState(false);
+  // Modal states
   const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [generateDescription, setGenerateDescription] = useState("");
+  const [generating, setGenerating] = useState(false);
 
-  // Schedule modal (inline)
+  const [showTemplatesPanel, setShowTemplatesPanel] = useState(false);
+  const [templates, setTemplates] = useState<PipelineTemplate[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(false);
+
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [scheduleFrequency, setScheduleFrequency] = useState("daily");
-  const [scheduleTime, setScheduleTime] = useState("00:00");
-  const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
 
-  // ---- Helpers ----
-
-  const flash = (msg: string, durationMs = 5000) => {
-    setValidationMsg(msg);
-    setTimeout(() => setValidationMsg(null), durationMs);
-  };
+  // Pipeline ID (for schedule & runs — uses saved pipeline id when available)
+  const currentPipelineId = "00000000-0000-0000-0000-000000000000";
 
   // Build definition from React Flow state
   const buildDefinition = useCallback(() => {
@@ -79,163 +71,86 @@ export default function PipelinePage() {
 
   // Load a pipeline definition into the canvas
   const loadDefinitionToCanvas = useCallback(
-    (definition: {
-      nodes: Array<Record<string, unknown>>;
-      edges: Array<Record<string, unknown>>;
-    }) => {
+    (definition: { nodes: DefinitionNode[]; edges: DefinitionEdge[] }) => {
       const newNodes: Node[] = definition.nodes.map(
-        (n: Record<string, unknown>, i: number) => ({
-          id: (n.id as string) || `node_${i}_${Date.now()}`,
-          type: "pipeline",
-          position: (n.position as { x: number; y: number }) || {
-            x: 100 + i * 250,
-            y: 100 + (i % 2) * 80,
-          },
+        (n: DefinitionNode, i: number) => ({
+          id: n.id,
+          type: "default",
+          position: { x: 100 + i * 250, y: 100 + (i % 2) * 80 },
           data: {
-            label: ((n.type as string) || "unknown")
-              .replace(/_/g, " ")
-              .replace(/\b\w/g, (c: string) => c.toUpperCase()),
-            category: (n.category as string) || "Action",
-            nodeType: (n.type as string) || "unknown",
-            params:
-              (n.params as Record<string, unknown>) ||
-              (n.config as Record<string, unknown>) ||
-              {},
+            label: n.type.replace(/_/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+            nodeType: n.type,
+            params: n.params || {},
           },
-        })
+        }),
       );
       const newEdges: Edge[] = definition.edges.map(
-        (e: Record<string, unknown>, i: number) => ({
-          id:
-            (e.id as string) ||
-            `e-${i}-${e.from || e.source}-${e.to || e.target}`,
-          source: (e.from as string) || (e.source as string) || "",
-          target: (e.to as string) || (e.target as string) || "",
-        })
+        (e: DefinitionEdge, i: number) => ({
+          id: `e-${i}-${e.from}-${e.to}`,
+          source: e.from,
+          target: e.to,
+        }),
       );
       setNodes(newNodes);
       setEdges(newEdges);
-      setIsDirty(false);
     },
-    [setNodes, setEdges]
+    [setNodes, setEdges],
   );
 
-  // ---- Pipeline name editing ----
-
-  const handleNameClick = () => {
-    setIsEditingName(true);
-    setTimeout(() => nameInputRef.current?.select(), 0);
-  };
-
-  const handleNameBlur = () => {
-    setIsEditingName(false);
-    if (!pipelineName.trim()) {
-      setPipelineName("Untitled Pipeline");
-    }
-  };
-
-  const handleNameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") {
-      nameInputRef.current?.blur();
-    }
-    if (e.key === "Escape") {
-      setIsEditingName(false);
-    }
-  };
-
-  // ---- Saved Pipelines Drawer ----
-
-  const handleLoadSavedPipeline = (pipeline: {
-    name: string;
-    definition: {
-      nodes: Array<Record<string, unknown>>;
-      edges: Array<Record<string, unknown>>;
-    };
-  }) => {
-    setPipelineName(pipeline.name);
-    loadDefinitionToCanvas(pipeline.definition);
-    setShowSavedDrawer(false);
-    flash("Pipeline loaded");
-  };
-
-  // ---- Templates Modal ----
-
-  const handleSelectTemplate = (template: PipelineTemplate) => {
-    const definition = {
-      nodes: template.nodes.map((n) => ({
-        id: n.id,
-        type: n.type,
-        position: n.position,
-        config: n.config,
-      })),
-      edges: template.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-      })),
-    };
-    loadDefinitionToCanvas(definition);
-    setPipelineName(template.name);
-    flash(`Loaded template: ${template.name}`);
-  };
-
-  // ---- Generate Modal ----
-
-  const handleGenerated = (pipeline: {
-    nodes: Array<Record<string, unknown>>;
-    edges: Array<Record<string, unknown>>;
-  }) => {
-    loadDefinitionToCanvas(pipeline);
-    flash("Pipeline generated from description!");
-  };
-
-  // ---- Schedule helpers ----
-
-  const updateCronFromUI = (frequency: string, time: string) => {
-    const [hours, minutes] = time.split(":").map(Number);
-    switch (frequency) {
-      case "hourly":
-        setScheduleCron(`${minutes} * * * *`);
-        break;
-      case "daily":
-        setScheduleCron(`${minutes} ${hours} * * *`);
-        break;
-      case "weekly":
-        setScheduleCron(`${minutes} ${hours} * * 1`);
-        break;
-      case "monthly":
-        setScheduleCron(`${minutes} ${hours} 1 * *`);
-        break;
-      default:
-        setScheduleCron(`${minutes} ${hours} * * *`);
-    }
-  };
-
-  const handleSchedule = async () => {
+  // --- Generate from Description ---
+  const handleGenerate = async () => {
+    if (!generateDescription.trim()) return;
+    setGenerating(true);
     try {
-      const resp = await fetch("/api/pipeline/schedule", {
+      const resp = await fetch("/api/pipeline/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pipeline_id: "00000000-0000-0000-0000-000000000000",
-          cron: scheduleCron,
-        }),
+        body: JSON.stringify({ description: generateDescription }),
       });
       if (resp.ok) {
         const data = await resp.json();
-        flash(`Scheduled! Next run: ${data.next_run}`);
-        setShowScheduleModal(false);
+        loadDefinitionToCanvas(data.definition);
+        setShowGenerateModal(false);
+        setGenerateDescription("");
+        setValidationMsg("Pipeline generated from description!");
       } else {
-        const err = await resp.json();
-        flash(`Schedule failed: ${err.detail}`);
+        setValidationMsg("Generation failed");
       }
     } catch {
-      flash("Schedule request failed");
+      setValidationMsg("Generation request failed");
+    }
+    setGenerating(false);
+    setTimeout(() => setValidationMsg(null), 5000);
+  };
+
+  // --- Templates ---
+  const handleLoadTemplates = async () => {
+    setShowTemplatesPanel(!showTemplatesPanel);
+    if (!showTemplatesPanel && templates.length === 0) {
+      setLoadingTemplates(true);
+      try {
+        const resp = await fetch("/api/pipeline/templates");
+        if (resp.ok) {
+          const data = await resp.json();
+          setTemplates(data);
+        }
+      } catch {
+        setValidationMsg("Failed to load templates");
+        setTimeout(() => setValidationMsg(null), 3000);
+      }
+      setLoadingTemplates(false);
     }
   };
 
-  // ---- Toolbar actions ----
+  const handleSelectTemplate = (template: PipelineTemplate) => {
+    loadDefinitionToCanvas(template.definition as unknown as { nodes: DefinitionNode[]; edges: DefinitionEdge[] });
+    setPipelineName(template.name);
+    setShowTemplatesPanel(false);
+    setValidationMsg(`Loaded template: ${template.name}`);
+    setTimeout(() => setValidationMsg(null), 3000);
+  };
 
+  // Toolbar actions
   const handleValidate = async () => {
     try {
       const resp = await fetch("/api/pipeline/validate", {
@@ -245,18 +160,19 @@ export default function PipelinePage() {
       });
       const data = await resp.json();
       if (data.valid) {
-        flash("Pipeline is valid!");
+        setValidationMsg("Pipeline is valid!");
       } else {
-        flash(`Errors: ${data.errors.join(", ")}`);
+        setValidationMsg(`Errors: ${data.errors.join(", ")}`);
       }
     } catch {
-      flash("Validation request failed");
+      setValidationMsg("Validation request failed");
     }
+    setTimeout(() => setValidationMsg(null), 5000);
   };
 
   const handleSave = async () => {
     try {
-      const resp = await fetch("/api/pipeline/save", {
+      const resp = await fetch("/api/pipeline/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -266,127 +182,66 @@ export default function PipelinePage() {
         }),
       });
       if (resp.ok) {
-        setIsDirty(false);
-        flash("Pipeline saved!");
+        setValidationMsg("Pipeline saved!");
       } else {
         const err = await resp.json();
-        flash(`Save failed: ${JSON.stringify(err.detail)}`);
+        setValidationMsg(`Save failed: ${JSON.stringify(err.detail)}`);
       }
     } catch {
-      flash("Save request failed");
+      setValidationMsg("Save request failed");
     }
+    setTimeout(() => setValidationMsg(null), 5000);
   };
 
-  const handleRun = () => {
-    flash("Pipeline run dispatched (requires saved pipeline)", 3000);
+  const handleRun = async () => {
+    setValidationMsg("Running pipeline...");
+    try {
+      const resp = await fetch("/api/pipeline/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline_id: currentPipelineId }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setActiveRunId(data.run_id);
+        setValidationMsg("Pipeline run started!");
+      } else {
+        setValidationMsg("Failed to start pipeline run");
+      }
+    } catch {
+      setValidationMsg("Run request failed");
+    }
+    setTimeout(() => setValidationMsg(null), 5000);
   };
 
   const handleClear = () => {
     setNodes([]);
     setEdges([]);
     setSelectedNode(null);
-    setIsDirty(false);
   };
 
   const handleNodeParamsUpdate = useCallback(
     (nodeId: string, params: Record<string, unknown>) => {
       setNodes((nds) =>
         nds.map((n) =>
-          n.id === nodeId ? { ...n, data: { ...n.data, params } } : n
-        )
+          n.id === nodeId ? { ...n, data: { ...n.data, params } } : n,
+        ),
       );
-      setIsDirty(true);
     },
-    [setNodes]
+    [setNodes],
   );
-
-  // Mark dirty when nodes/edges change
-  const wrappedOnNodesChange: typeof onNodesChange = useCallback(
-    (changes) => {
-      onNodesChange(changes);
-      setIsDirty(true);
-    },
-    [onNodesChange]
-  );
-
-  const wrappedOnEdgesChange: typeof onEdgesChange = useCallback(
-    (changes) => {
-      onEdgesChange(changes);
-      setIsDirty(true);
-    },
-    [onEdgesChange]
-  );
-
-  const canvasEmpty = nodes.length === 0;
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-white border-b border-gray-200">
-        {/* Saved Pipelines button */}
-        <button
-          onClick={() => setShowSavedDrawer(true)}
-          className="p-1.5 rounded hover:bg-gray-100 text-gray-500 hover:text-gray-700 transition-colors"
-          title="Saved Pipelines"
-        >
-          <svg
-            className="w-5 h-5"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 6h16M4 12h16M4 18h7"
-            />
-          </svg>
-        </button>
-
-        {/* Editable pipeline name */}
-        {isEditingName ? (
-          <input
-            ref={nameInputRef}
-            type="text"
-            value={pipelineName}
-            onChange={(e) => {
-              setPipelineName(e.target.value);
-              setIsDirty(true);
-            }}
-            onBlur={handleNameBlur}
-            onKeyDown={handleNameKeyDown}
-            className="text-lg font-semibold text-gray-800 bg-white border border-brand-300 rounded px-2 py-0.5 focus:outline-none focus:ring-2 focus:ring-brand-400"
-            autoFocus
-          />
-        ) : (
-          <button
-            onClick={handleNameClick}
-            className="text-lg font-semibold text-gray-800 hover:text-brand-600 transition-colors flex items-center gap-1.5 group"
-            title="Click to rename"
-          >
-            {pipelineName}
-            <svg
-              className="w-3.5 h-3.5 text-gray-300 group-hover:text-brand-400 transition-colors"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-              />
-            </svg>
-          </button>
-        )}
-        {isDirty && (
-          <span className="text-xs text-gray-400 italic">unsaved</span>
-        )}
-
+        <input
+          type="text"
+          value={pipelineName}
+          onChange={(e) => setPipelineName(e.target.value)}
+          className="text-lg font-semibold text-gray-800 bg-transparent border-none focus:outline-none focus:ring-0"
+        />
         <div className="flex-1" />
-
         <button
           onClick={() => setShowGenerateModal(true)}
           className="px-3 py-1.5 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md transition-colors"
@@ -394,7 +249,7 @@ export default function PipelinePage() {
           Generate from Description
         </button>
         <button
-          onClick={() => setShowTemplatesModal(true)}
+          onClick={handleLoadTemplates}
           className="px-3 py-1.5 text-sm font-medium text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-md transition-colors"
         >
           Templates
@@ -436,157 +291,115 @@ export default function PipelinePage() {
         )}
       </div>
 
-      {/* Main area: palette + canvas + config */}
+      {/* Main area: palette + canvas + config + optional templates panel */}
       <div className="flex flex-1 overflow-hidden">
         <NodePalette />
         <PipelineCanvas
           onNodeSelect={setSelectedNode}
           onNodeParamsUpdate={handleNodeParamsUpdate}
-          nodesState={[nodes, setNodes, wrappedOnNodesChange]}
-          edgesState={[edges, setEdges, wrappedOnEdgesChange]}
+          nodesState={[nodes, setNodes, onNodesChange]}
+          edgesState={[edges, setEdges, onEdgesChange]}
         />
         <NodeConfig node={selectedNode} onUpdate={handleNodeParamsUpdate} />
-      </div>
 
-      {/* Run history panel */}
-      <div className="h-36 bg-white border-t border-gray-200 overflow-y-auto">
-        <div className="px-4 py-2 border-b border-gray-100">
-          <h4 className="text-sm font-semibold text-gray-600">Run History</h4>
-        </div>
-        {runs.length === 0 ? (
-          <div className="flex items-center justify-center h-20 text-sm text-gray-400">
-            No pipeline runs yet
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 border-b border-gray-100">
-                <th className="px-4 py-1 font-medium">Run ID</th>
-                <th className="px-4 py-1 font-medium">Status</th>
-                <th className="px-4 py-1 font-medium">Duration</th>
-                <th className="px-4 py-1 font-medium">Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.id} className="border-b border-gray-50">
-                  <td className="px-4 py-1 font-mono text-xs">
-                    {run.id.slice(0, 8)}
-                  </td>
-                  <td className="px-4 py-1">
-                    <span
-                      className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
-                        run.status === "completed"
-                          ? "bg-green-100 text-green-700"
-                          : run.status === "failed"
-                            ? "bg-red-100 text-red-700"
-                            : "bg-yellow-100 text-yellow-700"
-                      }`}
-                    >
-                      {run.status}
+        {/* Templates side panel */}
+        {showTemplatesPanel && (
+          <div className="w-80 bg-white border-l border-gray-200 overflow-y-auto p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800">
+                Pipeline Templates
+              </h3>
+              <button
+                onClick={() => setShowTemplatesPanel(false)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                X
+              </button>
+            </div>
+            {loadingTemplates ? (
+              <div className="text-sm text-gray-400">Loading templates...</div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3">
+                {templates.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => handleSelectTemplate(t)}
+                    className="text-left p-3 border border-gray-200 rounded-lg hover:border-purple-300 hover:bg-purple-50 transition-colors"
+                  >
+                    <div className="font-medium text-sm text-gray-800">
+                      {t.name}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      {t.description}
+                    </div>
+                    <span className="inline-block mt-2 px-2 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 rounded">
+                      {t.category}
                     </span>
-                  </td>
-                  <td className="px-4 py-1">
-                    {run.duration_ms ? `${run.duration_ms}ms` : "-"}
-                  </td>
-                  <td className="px-4 py-1 text-gray-500">
-                    {new Date(run.created_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
-      {/* --- Modals & Drawers --- */}
-
-      <SavedPipelinesDrawer
-        isOpen={showSavedDrawer}
-        onClose={() => setShowSavedDrawer(false)}
-        onLoad={handleLoadSavedPipeline}
-        hasUnsavedChanges={isDirty}
-      />
-
-      <TemplatesModal
-        isOpen={showTemplatesModal}
-        onClose={() => setShowTemplatesModal(false)}
-        onSelect={handleSelectTemplate}
-        canvasEmpty={canvasEmpty}
-      />
-
-      <GenerateModal
-        isOpen={showGenerateModal}
-        onClose={() => setShowGenerateModal(false)}
-        onGenerated={handleGenerated}
-      />
-
-      {/* Schedule Modal (inline) */}
-      {showScheduleModal && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+      {/* Generate from Description Modal */}
+      {showGenerateModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              Schedule Pipeline
+              Generate Pipeline from Description
             </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Frequency
-                </label>
-                <select
-                  value={scheduleFrequency}
-                  onChange={(e) => {
-                    setScheduleFrequency(e.target.value);
-                    updateCronFromUI(e.target.value, scheduleTime);
-                  }}
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                >
-                  <option value="hourly">Hourly</option>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly (Monday)</option>
-                  <option value="monthly">Monthly (1st)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Time
-                </label>
-                <input
-                  type="time"
-                  value={scheduleTime}
-                  onChange={(e) => {
-                    setScheduleTime(e.target.value);
-                    updateCronFromUI(scheduleFrequency, e.target.value);
-                  }}
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                />
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <span className="text-xs text-gray-500">
-                  Cron expression:{" "}
-                </span>
-                <code className="text-sm font-mono text-gray-700">
-                  {scheduleCron}
-                </code>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-6">
+            <textarea
+              value={generateDescription}
+              onChange={(e) => setGenerateDescription(e.target.value)}
+              placeholder='Describe what you want, e.g. "detect objects in images and send alert"'
+              className="w-full h-32 border border-gray-300 rounded-lg p-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-purple-400"
+            />
+            <div className="flex justify-end gap-3 mt-4">
               <button
-                onClick={() => setShowScheduleModal(false)}
+                onClick={() => {
+                  setShowGenerateModal(false);
+                  setGenerateDescription("");
+                }}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
               >
                 Cancel
               </button>
               <button
-                onClick={handleSchedule}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                onClick={handleGenerate}
+                disabled={generating || !generateDescription.trim()}
+                className="px-4 py-2 text-sm font-medium text-white bg-purple-600 hover:bg-purple-700 rounded-md disabled:opacity-50 transition-colors"
               >
-                Schedule
+                {generating ? "Generating..." : "Generate"}
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Schedule Modal */}
+      <ScheduleModal
+        pipelineId={currentPipelineId}
+        open={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        onSaved={() => setValidationMsg("Schedule saved!")}
+      />
+
+      {/* Live run progress */}
+      {activeRunId && (
+        <div className="px-4 py-2 border-t border-gray-200 bg-white">
+          <RunProgressBar runId={activeRunId} />
+        </div>
+      )}
+
+      {/* Run history panel */}
+      <div className="h-48 bg-white border-t border-gray-200 overflow-y-auto">
+        <div className="px-4 py-2 border-b border-gray-100">
+          <h4 className="text-sm font-semibold text-gray-600">Run History</h4>
+        </div>
+        <RunHistory pipelineId={currentPipelineId} runs={runs.length > 0 ? runs : undefined} />
+      </div>
     </div>
   );
 }
