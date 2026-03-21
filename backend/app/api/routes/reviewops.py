@@ -1,10 +1,12 @@
-"""ReviewOps routes — task management, assignments, review submissions."""
+"""ReviewOps routes — task management, assignments, review submissions, quality."""
 
 from __future__ import annotations
 
+import math
 import random
 import time
 import uuid
+from datetime import date, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
@@ -34,27 +36,12 @@ class ReviewSubmit(BaseModel):
     annotations: dict[str, Any] = Field(default_factory=dict)
 
 
-class TrendPoint(BaseModel):
-    day: int
-    value: float
+class TaskDecision(BaseModel):
+    """Body for PATCH /tasks/{id} — workspace review decision."""
 
-
-class ReviewerEntry(BaseModel):
-    id: str
-    name: str
-    avatar_url: str
-    tasks_completed: int
-    max_tasks: int
-    accuracy: float
-    avg_review_time_sec: int
-    streak_days: int
-    trend: list[TrendPoint]
-
-
-class LeaderboardResponse(BaseModel):
-    range: str
-    entries: list[ReviewerEntry]
-    my_stats: ReviewerEntry | None = None
+    decision: Literal["approved", "rejected", "escalated"]
+    notes: str | None = Field(None, max_length=500)
+    flagged_annotations: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -131,65 +118,234 @@ async def check_task_status(task_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Leaderboard — mock data
+# Review Workspace stubs — GET task data, PATCH decision
 # ---------------------------------------------------------------------------
 
-_MOCK_REVIEWERS = [
-    {"id": "r1", "name": "Alice Chen",     "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=alice"},
-    {"id": "r2", "name": "Bob Martinez",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=bob"},
-    {"id": "r3", "name": "Carol Nguyen",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=carol"},
-    {"id": "r4", "name": "David Kim",      "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=david"},
-    {"id": "r5", "name": "Eva Johansson",  "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=eva"},
-    {"id": "r6", "name": "Frank Okafor",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=frank"},
-]
 
-_RANGE_MULTIPLIER: dict[str, float] = {"today": 0.15, "week": 1.0, "month": 4.0}
+@router.get("/tasks/{task_id}/data")
+async def get_task_data(task_id: str) -> dict[str, Any]:
+    """Return media + annotation data for the review workspace.
+
+    Stub: returns synthetic data so the frontend can render immediately.
+    Replace with real asset/annotation lookups once storage is wired up.
+    """
+    if task_id not in _tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task = _tasks[task_id]
+
+    # Synthetic stub data keyed by a rough review-type heuristic
+    annotations: list[dict[str, Any]] = [
+        {
+            "id": str(uuid.uuid4()),
+            "label": "person",
+            "confidence": 0.95,
+            "bbox": {"x": 50, "y": 30, "width": 120, "height": 200},
+            "flagged": False,
+        },
+        {
+            "id": str(uuid.uuid4()),
+            "label": "vehicle",
+            "confidence": 0.82,
+            "bbox": {"x": 300, "y": 150, "width": 180, "height": 100},
+            "flagged": False,
+        },
+    ]
+
+    dataset_sample: list[dict[str, Any]] = [
+        {"row": 1, "text": "Sample text content", "label": "positive", "score": 0.91},
+        {"row": 2, "text": "Another sample row", "label": "negative", "score": 0.45},
+        {"row": 3, "text": "Third sample entry", "label": "neutral", "score": 0.67},
+    ]
+
+    model_prediction: dict[str, Any] = {
+        "input": "A pedestrian crossing the street at a busy intersection.",
+        "prediction": "pedestrian_crossing",
+        "confidence": 0.88,
+    }
+
+    return {
+        "media_url": None,  # Replace with real asset URL
+        "media_type": None,
+        "annotations": annotations,
+        "dataset_sample": dataset_sample,
+        "model_prediction": model_prediction,
+    }
 
 
-def _build_mock_entries(time_range: str) -> list[ReviewerEntry]:
-    """Generate deterministic-but-varied mock leaderboard entries."""
-    rng = random.Random(42)
-    mult = _RANGE_MULTIPLIER.get(time_range, 1.0)
-    entries: list[ReviewerEntry] = []
+@router.patch("/tasks/{task_id}")
+async def patch_task_decision(task_id: str, body: TaskDecision) -> dict[str, Any]:
+    """Apply a review workspace decision (approve/reject/escalate).
 
-    base_tasks = [47, 42, 38, 31, 25, 18]
-    base_accuracy = [97.3, 94.8, 96.1, 88.5, 91.2, 85.0]
-    base_time = [45, 62, 53, 78, 95, 120]
-    base_streak = [12, 5, 8, 3, 0, 7]
+    Updates the task status and records the decision. In production this
+    should persist a Review row and trigger downstream workflows.
+    """
+    if task_id not in _tasks:
+        raise HTTPException(status_code=404, detail="Task not found")
 
-    for i, reviewer in enumerate(_MOCK_REVIEWERS):
-        tasks = max(1, int(base_tasks[i] * mult))
-        max_tasks = max(tasks, int(base_tasks[0] * mult))
-        trend = [
-            TrendPoint(day=d, value=round(rng.uniform(0.6, 1.0) * base_tasks[i] * mult / 7, 1))
-            for d in range(7)
-        ]
-        entries.append(
-            ReviewerEntry(
-                id=reviewer["id"],
-                name=reviewer["name"],
-                avatar_url=reviewer["avatar_url"],
-                tasks_completed=tasks,
-                max_tasks=max_tasks,
-                accuracy=base_accuracy[i],
-                avg_review_time_sec=base_time[i],
-                streak_days=base_streak[i],
-                trend=trend,
+    if body.decision == "rejected" and not body.notes:
+        raise HTTPException(
+            status_code=422,
+            detail="Quality notes are required when rejecting a task",
+        )
+
+    status_map: dict[str, str] = {
+        "approved": "completed",
+        "rejected": "needs_changes",
+        "escalated": "escalated",
+    }
+
+    task = _tasks[task_id]
+    task["status"] = status_map[body.decision]
+    task["review"] = {
+        "decision": body.decision,
+        "notes": body.notes,
+        "flagged_annotations": body.flagged_annotations,
+        "submitted_at": time.time(),
+    }
+
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Quality schemas
+# ---------------------------------------------------------------------------
+
+
+class QualitySummary(BaseModel):
+    inter_rater_agreement: float
+    rejection_rate: float
+    escalation_rate: float
+    avg_quality_score: float
+
+
+class AccuracyPoint(BaseModel):
+    date: str
+    accuracy: float
+
+
+class DisagreementCase(BaseModel):
+    task_id: str
+    task_type: str
+    reviewer_a: str
+    reviewer_b: str
+    decision_a: str
+    decision_b: str
+    resolved: bool
+
+
+class ConfusionMatrixData(BaseModel):
+    labels: list[str]
+    values: list[list[int]]
+
+
+class QualityResponse(BaseModel):
+    summary: QualitySummary
+    accuracy_trend: list[AccuracyPoint]
+    disagreements: list[DisagreementCase]
+    confusion_matrix: ConfusionMatrixData
+
+
+class TieBreakRequest(BaseModel):
+    task_id: str
+    verdict: Literal["approve", "reject"]
+
+
+# ---------------------------------------------------------------------------
+# Quality mock data generator
+# ---------------------------------------------------------------------------
+
+_MOCK_REVIEWERS = ["alice", "bob", "carol", "dave"]
+_MOCK_TASK_TYPES = ["bbox", "classification", "segmentation", "caption"]
+_MOCK_LABELS = ["person", "vehicle", "animal", "object"]
+
+
+def _generate_quality_mock(range_param: str) -> dict[str, Any]:
+    """Generate deterministic-ish mock quality metrics."""
+    random.seed(42)
+
+    days = 7 if range_param == "week" else 30
+    today = date(2026, 3, 21)
+
+    # Summary
+    summary = QualitySummary(
+        inter_rater_agreement=87.3,
+        rejection_rate=12.5,
+        escalation_rate=4.2,
+        avg_quality_score=91.8,
+    )
+
+    # Accuracy trend (14 data points)
+    trend_days = min(days, 14)
+    accuracy_trend: list[AccuracyPoint] = []
+    for i in range(trend_days):
+        d = today - timedelta(days=trend_days - 1 - i)
+        acc = 0.88 + 0.08 * math.sin(i * 0.5) + random.uniform(-0.02, 0.02)
+        accuracy_trend.append(
+            AccuracyPoint(date=d.isoformat(), accuracy=round(min(max(acc, 0.75), 0.99), 4))
+        )
+
+    # Disagreements
+    disagreements: list[DisagreementCase] = []
+    for i in range(5):
+        a_idx = i % len(_MOCK_REVIEWERS)
+        b_idx = (i + 1) % len(_MOCK_REVIEWERS)
+        disagreements.append(
+            DisagreementCase(
+                task_id=str(uuid.UUID(int=1000 + i)),
+                task_type=_MOCK_TASK_TYPES[i % len(_MOCK_TASK_TYPES)],
+                reviewer_a=_MOCK_REVIEWERS[a_idx],
+                reviewer_b=_MOCK_REVIEWERS[b_idx],
+                decision_a="approved",
+                decision_b="rejected",
+                resolved=i >= 3,
             )
         )
 
-    entries.sort(key=lambda e: e.tasks_completed, reverse=True)
-    return entries
+    # Confusion matrix (4x4)
+    confusion_matrix = ConfusionMatrixData(
+        labels=_MOCK_LABELS,
+        values=[
+            [42, 3, 1, 2],
+            [2, 38, 0, 4],
+            [1, 0, 35, 1],
+            [3, 2, 1, 40],
+        ],
+    )
+
+    return QualityResponse(
+        summary=summary,
+        accuracy_trend=accuracy_trend,
+        disagreements=disagreements,
+        confusion_matrix=confusion_matrix,
+    ).model_dump()
 
 
-@router.get("/leaderboard")
-async def get_leaderboard(
-    time_range: Literal["today", "week", "month"] = Query("week", alias="range"),
-) -> LeaderboardResponse:
-    """Return reviewer leaderboard with mock data."""
-    entries = _build_mock_entries(time_range)
+# ---------------------------------------------------------------------------
+# Quality endpoints
+# ---------------------------------------------------------------------------
 
-    # Treat the 4th reviewer (David Kim) as "me" for the My Stats panel
-    my_stats = next((e for e in entries if e.id == "r4"), None)
 
-    return LeaderboardResponse(range=time_range, entries=entries, my_stats=my_stats)
+@router.get("/quality")
+async def get_quality_metrics(
+    range: str = Query("week", pattern="^(week|month)$"),  # noqa: A002
+) -> dict[str, Any]:
+    """Return quality metrics for the ReviewOps Quality tab.
+
+    Stub: returns mock data. Replace with real aggregation queries once
+    the review data store is wired up.
+    """
+    return _generate_quality_mock(range)
+
+
+@router.post("/quality/tiebreak")
+async def submit_tiebreak(body: TieBreakRequest) -> dict[str, str]:
+    """Record a tie-break decision for a disagreement case.
+
+    Stub: accepts any task_id and returns success.
+    """
+    return {
+        "task_id": body.task_id,
+        "verdict": body.verdict,
+        "status": "resolved",
+    }
