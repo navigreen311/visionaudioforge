@@ -279,9 +279,16 @@ async def screen_analyze(file: UploadFile = File(...)):
 async def detect(
     file: UploadFile = File(...),
     confidence: float = Query(0.5, ge=0.0, le=1.0),
+    iou_threshold: float = Query(0.45, ge=0.0, le=1.0, description="IoU threshold for NMS"),
+    max_detections: int = Query(100, ge=1, le=1000, description="Maximum detections to return"),
     classes: str | None = Query(None, description="Comma-separated class IDs"),
 ):
-    """Detect objects in an uploaded image."""
+    """Detect objects in an uploaded image.
+
+    Accepts multipart file upload with confidence, iou_threshold, and
+    max_detections parameters.  Returns detections list, annotated image
+    as base64 PNG, and processing time.
+    """
     t0 = time.perf_counter()
 
     contents = await file.read()
@@ -297,17 +304,31 @@ async def detect(
 
     detections = _detector.detect(image, confidence=confidence, classes=class_ids or None)
 
+    # Apply IoU-based NMS filtering when detections are available
+    if detections and iou_threshold < 1.0:
+        boxes = np.array([d["bbox"] for d in detections], dtype=np.float32)
+        scores = np.array([d["confidence"] for d in detections], dtype=np.float32)
+        indices = cv2.dnn.NMSBoxes(
+            boxes.tolist(), scores.tolist(), confidence, iou_threshold
+        )
+        if len(indices) > 0:
+            kept = indices.flatten().tolist()
+            detections = [detections[i] for i in kept]
+
+    # Cap to max_detections
+    detections = detections[:max_detections]
+
     # Generate annotated visualization
     annotated = _detector.draw_detections(image, detections)
     _, buf = cv2.imencode(".png", annotated)
-    visualization = base64.b64encode(buf.tobytes()).decode("utf-8")
+    image_b64 = base64.b64encode(buf.tobytes()).decode("utf-8")
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     return {
         "detections": detections,
         "count": len(detections),
-        "visualization": visualization,
+        "image_b64": image_b64,
         "processing_time_ms": round(elapsed_ms, 2),
     }
 
@@ -318,8 +339,18 @@ async def detect(
 
 
 @router.post("/ocr")
-async def ocr(file: UploadFile = File(...)):
-    """Extract text from an uploaded image using OCR."""
+async def ocr(
+    file: UploadFile = File(...),
+    language: str = Query("en", description="OCR language code (e.g. en, de, fr)"),
+    output_format: str = Query("text", description="Output format: text or json"),
+    confidence_filter: float = Query(0.0, ge=0.0, le=1.0, description="Min confidence to include a word"),
+):
+    """Extract text from an uploaded image using OCR.
+
+    Accepts multipart file upload with language, output_format, and
+    confidence_filter parameters.  Returns extracted text, word-level
+    details, detected language, and overall confidence.
+    """
     t0 = time.perf_counter()
 
     contents = await file.read()
@@ -330,11 +361,33 @@ async def ocr(file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"error": "Invalid image file"})
 
     result = _ocr_engine.extract_text(image)
+
+    # Build word-level output from blocks
+    blocks = result.get("blocks", [])
+    words = []
+    total_conf = 0.0
+    for block in blocks:
+        conf = block.get("confidence", 0.0)
+        # Tesseract returns confidence in 0-100 range; normalise to 0-1
+        conf_normalised = conf / 100.0 if conf > 1.0 else conf
+        if conf_normalised >= confidence_filter:
+            words.append({
+                "text": block["text"],
+                "bbox": block["bbox"],
+                "confidence": round(conf_normalised, 4),
+            })
+            total_conf += conf_normalised
+
+    overall_confidence = round(total_conf / len(words), 4) if words else 0.0
+    detected_language = result.get("language", language)
+
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     return {
-        "full_text": result["full_text"],
-        "blocks": result.get("blocks", []),
+        "text": result["full_text"],
+        "words": words,
+        "language": detected_language,
+        "confidence": overall_confidence,
         "processing_time_ms": round(elapsed_ms, 2),
     }
 
