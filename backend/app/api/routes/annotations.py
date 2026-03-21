@@ -118,3 +118,31 @@ async def annotation_stats(dataset_id: UUID, db=Depends(get_db)):
     """Get annotation statistics for a dataset."""
     stats = await AnnotationService.annotation_stats(db, dataset_id)
     return AnnotationStatsResponse(**stats)
+
+
+# ------------------------------------------------------------------
+# Annotate page helpers
+# ------------------------------------------------------------------
+
+
+@router.get("/annotate/assets")
+async def get_annotate_assets(
+    dataset_id: UUID = Query(...),
+    workspace_id: UUID = Query(...),
+):
+    """Return mock asset list for the annotation page thumbnail strip.
+
+    TODO: Replace with real DB query joining assets to the dataset.
+    """
+    mock_assets = [
+        {
+            "id": f"a{i:04d}-0000-0000-0000-000000000000",
+            "filename": f"image_{i:03d}.jpg",
+            "path": f"/data/images/image_{i:03d}.jpg",
+            "type": "image",
+            "thumbnail_url": None,
+            "annotation_count": (i * 3) % 5,
+        }
+        for i in range(1, 21)
+    ]
+    return {"items": mock_assets, "total": len(mock_assets)}
