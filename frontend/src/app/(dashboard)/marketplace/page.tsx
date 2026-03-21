@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import InstallModal from "@/components/marketplace/InstallModal";
+import { InstalledTab } from "@/components/marketplace/InstalledTab";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -12,7 +12,6 @@ interface Plugin {
   category: string;
   description: string;
   version: string;
-  latestVersion?: string;
   author?: string;
   install_count?: number;
   avg_rating?: number;
@@ -117,14 +116,14 @@ export default function MarketplacePage() {
   // Marketplace data — seeded from built-in list
   useEffect(() => {
     const builtIn: Plugin[] = [
-      { name: "CSV Exporter", category: "integration", description: "Export any data as CSV", version: "1.0", latestVersion: "1.1", author: "VAF Team", install_count: 342, avg_rating: 4.2 },
-      { name: "Slack Notifier", category: "integration", description: "Send alerts to Slack", version: "1.0", author: "VAF Team", install_count: 510, avg_rating: 4.5 },
-      { name: "Image Watermarker", category: "transform", description: "Add watermarks to images", version: "1.0", author: "VAF Team", install_count: 128, avg_rating: 3.9 },
-      { name: "Audio Normalizer", category: "transform", description: "Batch normalize audio files", version: "1.0", author: "VAF Team", install_count: 95, avg_rating: 4.0 },
-      { name: "YOLO Detector", category: "vision", description: "Object detection with YOLOv8", version: "1.0", latestVersion: "1.1", author: "VAF Team", install_count: 876, avg_rating: 4.8 },
-      { name: "Whisper Transcriber", category: "audio", description: "Speech-to-text with Whisper", version: "1.0", author: "VAF Team", install_count: 654, avg_rating: 4.7 },
-      { name: "Sentiment Analyzer", category: "analytics", description: "Text sentiment analysis", version: "1.0", author: "VAF Team", install_count: 231, avg_rating: 4.1 },
-      { name: "Report Generator", category: "analytics", description: "Auto-generate PDF reports", version: "1.0", author: "VAF Team", install_count: 189, avg_rating: 3.8 },
+      { name: "CSV Exporter", category: "integration", description: "Export any data as CSV", version: "1.0", install_count: 342, avg_rating: 4.2 },
+      { name: "Slack Notifier", category: "integration", description: "Send alerts to Slack", version: "1.0", install_count: 510, avg_rating: 4.5 },
+      { name: "Image Watermarker", category: "transform", description: "Add watermarks to images", version: "1.0", install_count: 128, avg_rating: 3.9 },
+      { name: "Audio Normalizer", category: "transform", description: "Batch normalize audio files", version: "1.0", install_count: 95, avg_rating: 4.0 },
+      { name: "YOLO Detector", category: "vision", description: "Object detection with YOLOv8", version: "1.0", install_count: 876, avg_rating: 4.8 },
+      { name: "Whisper Transcriber", category: "audio", description: "Speech-to-text with Whisper", version: "1.0", install_count: 654, avg_rating: 4.7 },
+      { name: "Sentiment Analyzer", category: "analytics", description: "Text sentiment analysis", version: "1.0", install_count: 231, avg_rating: 4.1 },
+      { name: "Report Generator", category: "analytics", description: "Auto-generate PDF reports", version: "1.0", install_count: 189, avg_rating: 3.8 },
     ];
     setPlugins(builtIn);
   }, []);
@@ -136,47 +135,10 @@ export default function MarketplacePage() {
     return true;
   });
 
-  // Install modal state
-  const [installTarget, setInstallTarget] = useState<Plugin | null>(null);
-  const [installModalOpen, setInstallModalOpen] = useState(false);
-  const [updateTarget, setUpdateTarget] = useState<Plugin | null>(null);
-
-  const openInstallModal = (plugin: Plugin) => {
-    setInstallTarget(plugin);
-    setUpdateTarget(null);
-    setInstallModalOpen(true);
-  };
-
-  const openUpdateModal = (plugin: Plugin) => {
-    setUpdateTarget(plugin);
-    setInstallTarget(plugin);
-    setInstallModalOpen(true);
-  };
-
-  const handleInstallComplete = () => {
-    if (!installTarget) return;
-    const alreadyInstalled = installed.find((i) => i.name === installTarget.name);
-    if (alreadyInstalled && updateTarget) {
-      // Update: bump the version
-      setInstalled((prev) =>
-        prev.map((p) =>
-          p.name === installTarget.name
-            ? { ...p, version: installTarget.latestVersion ?? installTarget.version }
-            : p,
-        ),
-      );
-    } else if (!alreadyInstalled) {
-      setInstalled((prev) => [
-        ...prev,
-        { ...installTarget, enabled: true, plugin_id: crypto.randomUUID() },
-      ]);
-    }
-  };
-
   // -- handlers
   const handleInstall = (plugin: Plugin) => {
     if (installed.find((i) => i.name === plugin.name)) return;
-    openInstallModal(plugin);
+    setInstalled((prev) => [...prev, { ...plugin, enabled: true, plugin_id: crypto.randomUUID() }]);
   };
 
   const handleToggle = (pluginId: string) => {
@@ -273,41 +235,24 @@ export default function MarketplacePage() {
           {/* Plugin Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map((plugin) => {
-              const installedPlugin = installed.find((i) => i.name === plugin.name);
-              const isInstalled = !!installedPlugin;
-              const hasUpdate =
-                isInstalled &&
-                plugin.latestVersion &&
-                plugin.latestVersion !== installedPlugin.version;
-
+              const isInstalled = installed.some((i) => i.name === plugin.name);
               return (
                 <div
                   key={plugin.name}
-                  className={`border rounded-xl p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow ${
-                    isInstalled
-                      ? "border-green-300 bg-green-50/30"
-                      : "border-gray-200 bg-white"
-                  }`}
+                  className="border border-gray-200 rounded-xl bg-white p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow"
                 >
-                  {/* Icon + Category + Update badge */}
+                  {/* Icon + Category */}
                   <div className="flex items-start justify-between">
                     <span className="text-3xl">
                       {CATEGORY_ICONS[plugin.category] || "🔌"}
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      {hasUpdate && (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700">
-                          Update
-                        </span>
-                      )}
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                          CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {plugin.category}
-                      </span>
-                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                        CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
+                      }`}
+                    >
+                      {plugin.category}
+                    </span>
                   </div>
 
                   {/* Name + version */}
@@ -327,41 +272,18 @@ export default function MarketplacePage() {
                     </span>
                   </div>
 
-                  {/* Action buttons */}
-                  {isInstalled ? (
-                    <div className="space-y-2">
-                      {/* Installed badge */}
-                      <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-green-100 text-green-700 text-sm font-medium">
-                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                        Installed
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => setTab("installed")}
-                          className="flex-1 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
-                        >
-                          Manage
-                        </button>
-                        {hasUpdate && (
-                          <button
-                            onClick={() => openUpdateModal(plugin)}
-                            className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                          >
-                            Update to v{plugin.latestVersion}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => handleInstall(plugin)}
-                      className="w-full py-1.5 rounded-lg text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors"
-                    >
-                      Install
-                    </button>
-                  )}
+                  {/* Install button */}
+                  <button
+                    onClick={() => handleInstall(plugin)}
+                    disabled={isInstalled}
+                    className={`w-full py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                      isInstalled
+                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                        : "bg-brand-600 text-white hover:bg-brand-700"
+                    }`}
+                  >
+                    {isInstalled ? "Installed" : "Install"}
+                  </button>
                 </div>
               );
             })}
@@ -376,61 +298,7 @@ export default function MarketplacePage() {
       {/* ================================================================= */}
       {/* Installed Tab                                                     */}
       {/* ================================================================= */}
-      {tab === "installed" && (
-        <div className="space-y-3">
-          {installed.length === 0 && (
-            <p className="text-center text-gray-400 py-12 text-sm">
-              No plugins installed yet. Browse the marketplace to get started.
-            </p>
-          )}
-          {installed.map((plugin) => (
-            <div
-              key={plugin.plugin_id}
-              className="flex items-center gap-4 border border-gray-200 rounded-xl bg-white p-4 shadow-sm"
-            >
-              <span className="text-2xl">{CATEGORY_ICONS[plugin.category] || "🔌"}</span>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-gray-900">{plugin.name}</h3>
-                <p className="text-xs text-gray-500">{plugin.description}</p>
-              </div>
-              <span
-                className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                  CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
-                }`}
-              >
-                {plugin.category}
-              </span>
-
-              {/* Enable/Disable toggle */}
-              <button
-                onClick={() => handleToggle(plugin.plugin_id!)}
-                className={`relative w-10 h-5 rounded-full transition-colors ${
-                  plugin.enabled ? "bg-brand-600" : "bg-gray-300"
-                }`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                    plugin.enabled ? "translate-x-5" : ""
-                  }`}
-                />
-              </button>
-
-              {/* Configure */}
-              <button className="px-3 py-1 text-xs border border-gray-300 rounded-lg text-gray-600 hover:bg-gray-50">
-                Configure
-              </button>
-
-              {/* Uninstall */}
-              <button
-                onClick={() => handleUninstall(plugin.plugin_id!)}
-                className="px-3 py-1 text-xs border border-red-200 rounded-lg text-red-600 hover:bg-red-50"
-              >
-                Uninstall
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+      {tab === "installed" && <InstalledTab />}
 
       {/* ================================================================= */}
       {/* BYOM Tab                                                          */}
@@ -567,34 +435,6 @@ export default function MarketplacePage() {
             )}
           </div>
         </div>
-      )}
-
-      {/* Install / Update Modal */}
-      {installTarget && (
-        <InstallModal
-          isOpen={installModalOpen}
-          onClose={() => {
-            setInstallModalOpen(false);
-            setInstallTarget(null);
-            setUpdateTarget(null);
-          }}
-          pluginId={installTarget.plugin_id ?? installTarget.name}
-          pluginName={installTarget.name}
-          pluginDescription={installTarget.description}
-          pluginVersion={
-            updateTarget
-              ? (installTarget.latestVersion ?? installTarget.version)
-              : installTarget.version
-          }
-          pluginCategory={installTarget.category}
-          pluginAuthor={installTarget.author ?? "Unknown"}
-          updateFromVersion={
-            updateTarget
-              ? installed.find((i) => i.name === updateTarget.name)?.version
-              : undefined
-          }
-          onInstalled={handleInstallComplete}
-        />
       )}
     </div>
   );
