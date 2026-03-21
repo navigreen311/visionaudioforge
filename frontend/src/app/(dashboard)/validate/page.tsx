@@ -6,6 +6,7 @@ import Card from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import FileUpload from "@/components/ui/FileUpload";
+import ExplainabilityTabV2 from "@/components/validate/ExplainabilityTab";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -586,7 +587,7 @@ export default function ValidatePage() {
   const tabs = [
     { id: "calibration", label: "Calibration", content: <CalibrationTab /> },
     { id: "drift", label: "Drift Detection", content: <DriftTab /> },
-    { id: "explainability", label: "Explainability", content: <ExplainabilityTab /> },
+    { id: "explainability", label: "Explainability", content: <ExplainabilityTabV2 /> },
     { id: "model-cards", label: "Model Cards", content: <ModelCardsTab /> },
   ];
 

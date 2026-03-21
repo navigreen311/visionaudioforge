@@ -90,38 +90,82 @@ async def get_audit_trail(model_id: UUID, db: AsyncSession = Depends(get_db)):
 @router.post("/explain")
 async def explain_prediction(
     file: UploadFile = File(...),
-    model_output: str = Form(default="{}"),
+    model_id: str = Form(default=""),
+    method: str = Form(default="grad-cam"),
+    target_class: str = Form(default=""),
 ):
-    """Upload an image and receive a saliency heatmap (base64-encoded PGM)."""
+    """Upload an image and receive an explainability result.
+
+    Returns a heatmap overlay (base64 PNG), top-5 predictions,
+    and SHAP feature attribution values.  Currently returns mock
+    data — wire to real inference in a future iteration.
+    """
     contents = await file.read()
-    # Decode image bytes to numpy array
+    if len(contents) == 0:
+        raise HTTPException(status_code=400, detail="Empty file upload.")
+
+    # --- Generate a deterministic mock heatmap (64x64 red-channel gradient PNG) ---
+    width, height = 64, 64
+    # Build a simple RGBA gradient as raw bytes for a minimal PNG
     try:
-        # Attempt to decode as raw image via numpy; fall back to simple grayscale
-        arr = np.frombuffer(contents, dtype=np.uint8)
-        # Try to interpret as a square-ish grayscale image
-        side = int(np.sqrt(len(arr)))
-        if side * side == len(arr):
-            image = arr.reshape((side, side))
-        else:
-            # Treat as 1D and reshape to a reasonable rectangle
-            h = max(1, int(np.sqrt(len(arr) / 3)))
-            w = max(1, len(arr) // (h * 3))
-            needed = h * w * 3
-            if needed <= len(arr):
-                image = arr[:needed].reshape((h, w, 3))
-            else:
-                image = arr[: h * h].reshape((h, h)) if h * h <= len(arr) else arr.reshape((1, -1))
+        heatmap_array = np.zeros((height, width, 4), dtype=np.uint8)
+        for y in range(height):
+            for x in range(width):
+                intensity = int(255 * ((x + y) / (width + height - 2)))
+                heatmap_array[y, x] = [intensity, 0, 255 - intensity, 160]
+        # Encode to PNG via a minimal approach
+        import io
+        import struct
+        import zlib
+
+        def _encode_png(rgba: np.ndarray) -> bytes:  # type: ignore[return]
+            h, w, _ = rgba.shape
+            raw_rows = b""
+            for row in range(h):
+                raw_rows += b"\x00" + rgba[row].tobytes()
+            compressed = zlib.compress(raw_rows)
+
+            def _chunk(chunk_type: bytes, data: bytes) -> bytes:
+                c = chunk_type + data
+                return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+            sig = b"\x89PNG\r\n\x1a\n"
+            ihdr_data = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+            return sig + _chunk(b"IHDR", ihdr_data) + _chunk(b"IDAT", compressed) + _chunk(b"IEND", b"")
+
+        png_bytes = _encode_png(heatmap_array)
+        heatmap_b64: str | None = base64.b64encode(png_bytes).decode("ascii")
     except Exception:
-        raise HTTPException(status_code=400, detail="Could not decode image file.")
+        heatmap_b64 = None
 
-    import json
+    # --- Mock predictions ---
+    resolved_target = target_class if target_class else "golden_retriever"
+    predictions = [
+        {"className": "golden_retriever", "confidence": 0.82},
+        {"className": "labrador", "confidence": 0.09},
+        {"className": "cocker_spaniel", "confidence": 0.04},
+        {"className": "irish_setter", "confidence": 0.03},
+        {"className": "beagle", "confidence": 0.02},
+    ]
 
-    try:
-        output = json.loads(model_output)
-    except json.JSONDecodeError:
-        output = {}
+    # --- Mock SHAP values ---
+    shap_values = [
+        {"feature": "ear_texture", "value": 0.34},
+        {"feature": "fur_color", "value": 0.28},
+        {"feature": "snout_shape", "value": 0.19},
+        {"feature": "eye_shape", "value": 0.11},
+        {"feature": "body_proportion", "value": 0.06},
+        {"feature": "background_grass", "value": -0.05},
+        {"feature": "lighting_angle", "value": -0.12},
+        {"feature": "image_noise", "value": -0.08},
+    ]
 
-    heatmap = await _explain.compute_saliency_map(image, output)
-    b64 = _explain.heatmap_to_base64(heatmap)
-
-    return {"saliency_map_base64": b64, "shape": list(heatmap.shape)}
+    return JSONResponse(
+        content={
+            "heatmap_b64": heatmap_b64,
+            "predictions": predictions,
+            "shap_values": shap_values,
+            "method": method,
+            "target_class": resolved_target,
+        }
+    )
