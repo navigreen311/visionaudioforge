@@ -125,3 +125,41 @@ async def explain_prediction(
     b64 = _explain.heatmap_to_base64(heatmap)
 
     return {"saliency_map_base64": b64, "shape": list(heatmap.shape)}
+
+
+# ------------------------------------------------------------------
+# Model Card export stub
+# ------------------------------------------------------------------
+
+class ModelCardExportRequest(BaseModel):
+    """Payload for model-card export (mirrors frontend ModelCardData)."""
+    modelName: str = ""
+    version: str = ""
+    modelType: str = ""
+    architecture: str = ""
+    trainingDate: str = ""
+    framework: str = ""
+    license: str = ""
+    primaryUseCases: str = ""
+    outOfScope: str = ""
+    targetUsers: str = ""
+    metrics: list[dict] = Field(default_factory=list)
+    knownLimitations: str = ""
+    ethicalConsiderations: str = ""
+    biasFairness: str = ""
+    datasetName: str = ""
+    datasetSize: str = ""
+    datasetDescription: str = ""
+    preprocessingSteps: str = ""
+
+
+@router.post("/model-card/export")
+async def export_model_card(body: ModelCardExportRequest):
+    """Export a model card document. V1 stub — returns the card JSON back."""
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "message": "Model card export placeholder (V2 will generate PDF/HTML).",
+            "card": body.model_dump(),
+        }
+    )
