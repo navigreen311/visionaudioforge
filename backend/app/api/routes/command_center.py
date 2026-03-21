@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -36,13 +38,24 @@ class ShiftCreate(BaseModel):
     zone: str | None = None
 
 
+class ShiftStartRequest(BaseModel):
+    zone: str
+    operator: str
+
+
+class ShiftEndRequest(BaseModel):
+    shift_id: str
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
 _streams: dict[str, dict] = {}
 _layout: dict | None = None
 _shifts: list[dict] = []
+_active_shifts: dict[str, dict] = {}
 _stream_counter = 0
+_shift_counter = 0
 
 
 # ---------------------------------------------------------------------------
@@ -104,3 +117,54 @@ async def get_dashboard() -> dict[str, Any]:
         "active_shifts": len(_shifts),
         "status": "operational",
     }
+
+
+# ---------------------------------------------------------------------------
+# KPIs
+# ---------------------------------------------------------------------------
+
+@router.get("/kpis")
+async def get_kpis() -> dict[str, Any]:
+    """Return stub KPI metrics for the Command Center dashboard."""
+    return {
+        "avg_response_sec": 147,
+        "avg_response_delta_pct": -5.2,
+        "resolution_rate_pct": 84.3,
+        "resolution_rate_delta_pct": 2.1,
+        "false_alarm_rate_pct": 12.4,
+        "false_alarm_rate_delta_pct": -0.8,
+        "incidents_today": 7,
+        "incidents_today_delta": 3,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Shift start / end
+# ---------------------------------------------------------------------------
+
+@router.post("/shift/start")
+async def start_shift(body: ShiftStartRequest) -> dict[str, Any]:
+    """Start a new operator shift in a given zone."""
+    global _shift_counter
+    _shift_counter += 1
+    shift_id = f"shift-{_shift_counter:04d}"
+    started_at = datetime.now(timezone.utc).isoformat()
+    _active_shifts[shift_id] = {
+        "shift_id": shift_id,
+        "zone": body.zone,
+        "operator": body.operator,
+        "started_at": started_at,
+    }
+    return {"shift_id": shift_id, "started_at": started_at}
+
+
+@router.post("/shift/end")
+async def end_shift(body: ShiftEndRequest) -> dict[str, Any]:
+    """End an active shift and return duration."""
+    shift = _active_shifts.pop(body.shift_id, None)
+    if shift is None:
+        raise HTTPException(status_code=404, detail=f"Shift {body.shift_id} not found or already ended")
+    started = datetime.fromisoformat(shift["started_at"])
+    ended_at = datetime.now(timezone.utc)
+    duration_sec = int((ended_at - started).total_seconds())
+    return {"ended_at": ended_at.isoformat(), "duration_sec": duration_sec}
