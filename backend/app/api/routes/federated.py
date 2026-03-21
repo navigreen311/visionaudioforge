@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-import random
 import time
 import uuid
 from typing import Any
@@ -35,6 +33,13 @@ class JoinFederation(BaseModel):
 
 class StartRoundRequest(BaseModel):
     round_number: int | None = None
+
+
+class AddParticipantRequest(BaseModel):
+    site_id: str
+    site_name: str
+    location: str = ""
+    connection_url: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -116,56 +121,76 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Round history with mock data (FL4 / FL5 charts)
+# Participant management endpoints
 # ---------------------------------------------------------------------------
 
-class RoundDataResponse(BaseModel):
-    round_number: int
-    accuracy: float | None
-    loss: float | None
-    privacy_epsilon_spent: float
-    participants: int
-    duration_s: float | None
+@router.post("/federations/{federation_id}/participants")
+async def add_participant(
+    federation_id: str, body: AddParticipantRequest
+) -> dict[str, str | dict[str, str | float]]:
+    """Invite / add a participant site to a federation."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+
+    fed = _federations[federation_id]
+    # Check for duplicate site_id
+    for p in fed["participants"]:
+        if p["id"] == body.site_id:
+            raise HTTPException(
+                status_code=409, detail=f"Participant {body.site_id} already exists"
+            )
+
+    participant = {
+        "id": body.site_id,
+        "name": body.site_name,
+        "location": body.location,
+        "connection_url": body.connection_url,
+        "status": "idle",
+        "samples": 0,
+        "contribution_pct": 0.0,
+        "local_accuracy": 0.0,
+        "data_quality": 0.0,
+        "joined_at": time.time(),
+    }
+    fed["participants"].append(participant)
+
+    if len(fed["participants"]) >= fed["min_participants"]:
+        fed["status"] = "ready"
+
+    return {"federation_id": federation_id, "participant": participant}
 
 
-def _generate_mock_rounds(seed: str, count: int = 12) -> list[dict[str, Any]]:
-    """Generate deterministic mock round data for a given federation id."""
-    rng = random.Random(seed)
-    rounds: list[dict[str, Any]] = []
-    for i in range(1, count + 1):
-        # Accuracy climbs from ~55% towards ~93% with noise
-        base_acc = 55 + 38 * (1 - math.exp(-0.25 * i))
-        accuracy = round(min(base_acc + rng.gauss(0, 2.5), 99.5), 2)
+@router.delete("/federations/{federation_id}/participants/{site_id}")
+async def remove_participant(federation_id: str, site_id: str) -> dict[str, str]:
+    """Remove a participant site from a federation."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
 
-        # Loss drops from ~1.8 towards ~0.15
-        base_loss = 1.8 * math.exp(-0.3 * i) + 0.12
-        loss = round(max(base_loss + rng.gauss(0, 0.05), 0.01), 4)
+    fed = _federations[federation_id]
+    original_len = len(fed["participants"])
+    fed["participants"] = [p for p in fed["participants"] if p["id"] != site_id]
 
-        # Privacy epsilon per round: small value with slight variance
-        epsilon = round(0.4 + rng.uniform(-0.08, 0.12), 4)
+    if len(fed["participants"]) == original_len:
+        raise HTTPException(status_code=404, detail=f"Participant {site_id} not found")
 
-        participants = rng.choice([3, 4, 5])
-        duration = round(rng.uniform(8.0, 35.0), 1)
-
-        rounds.append({
-            "round_number": i,
-            "accuracy": accuracy,
-            "loss": loss,
-            "privacy_epsilon_spent": epsilon,
-            "participants": participants,
-            "duration_s": duration,
-        })
-    return rounds
+    return {"status": "removed", "site_id": site_id}
 
 
-@router.get("/federations/{federation_id}/rounds")
-async def get_federation_rounds(federation_id: str) -> list[dict[str, Any]]:
-    """Return per-round training metrics (mock data for now).
+@router.post("/federations/{federation_id}/participants/{site_id}/reconnect")
+async def reconnect_participant(federation_id: str, site_id: str) -> dict[str, str]:
+    """Attempt to reconnect a disconnected participant."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
 
-    Provides 12 rounds of accuracy, loss, and differential-privacy
-    epsilon spend for the FL4 (Accuracy/Loss) and FL5 (Privacy Budget)
-    charts.
-    """
-    # Return deterministic mock data keyed by federation_id so the same
-    # id always returns the same series.
-    return _generate_mock_rounds(seed=federation_id)
+    fed = _federations[federation_id]
+    for p in fed["participants"]:
+        if p["id"] == site_id:
+            if p.get("status") != "disconnected":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Participant {site_id} is not disconnected (status: {p.get('status')})",
+                )
+            p["status"] = "active"
+            return {"status": "reconnected", "site_id": site_id}
+
+    raise HTTPException(status_code=404, detail=f"Participant {site_id} not found")

@@ -1,29 +1,13 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import FederationSelector from "@/components/federated/FederationSelector";
-import TrainingControls from "@/components/federated/TrainingControls";
-import LoadingSpinner from "@/components/ui/LoadingSpinner";
-import Badge from "@/components/ui/Badge";
+import { useState } from "react";
+import ParticipantTable from "@/components/federated/ParticipantTable";
+import AddParticipantModal from "@/components/federated/AddParticipantModal";
+import type { FLParticipant } from "@/components/federated/ParticipantTable";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-type FederationStatus =
-  | "waiting"
-  | "ready"
-  | "training"
-  | "paused"
-  | "completed"
-  | "stopped";
-
-interface Participant {
-  id: string;
-  status: "active" | "idle" | "disconnected";
-  samplesContributed: number;
-  lastSeen: string;
-}
 
 interface RoundMetric {
   round: number;
@@ -35,32 +19,80 @@ interface RoundMetric {
 interface Federation {
   id: string;
   name: string;
-  model_id: string;
-  status: FederationStatus;
-  current_round: number;
-  total_rounds: number;
-  aggregation_strategy: string;
-  epsilon_spent: number;
-  epsilon_budget: number;
-  min_participants: number;
-  privacy_enabled: boolean;
-  participants: Participant[];
-  metrics_history: RoundMetric[];
-  created_at: number;
-}
-
-interface RegistryModel {
-  id: string;
-  name: string;
-  version: string;
-  backbone: string;
+  status: "created" | "training" | "stopped";
+  currentRound: number;
+  maxRounds: number;
+  aggregationMethod: string;
+  epsilonSpent: number;
+  epsilonBudget: number;
+  participants: FLParticipant[];
+  metricsHistory: RoundMetric[];
 }
 
 // ---------------------------------------------------------------------------
-// Sub-components (privacy, charts, tables)
+// Mock data
 // ---------------------------------------------------------------------------
 
-function PrivacyBudgetChart({ spent, budget }: { spent: number; budget: number }) {
+const MOCK_FEDERATION: Federation = {
+  id: "fed-001",
+  name: "Cross-Site Object Detection",
+  status: "training",
+  currentRound: 12,
+  maxRounds: 50,
+  aggregationMethod: "fedavg",
+  epsilonSpent: 0.24,
+  epsilonBudget: 1.0,
+  participants: [
+    {
+      id: "site-alpha",
+      name: "Alpha Campus",
+      status: "active",
+      samples: 12400,
+      contributionPct: 40.5,
+      localAccuracy: 0.912,
+      dataQuality: 0.95,
+    },
+    {
+      id: "site-beta",
+      name: "Beta Research Lab",
+      status: "active",
+      samples: 8900,
+      contributionPct: 29.1,
+      localAccuracy: 0.887,
+      dataQuality: 0.91,
+    },
+    {
+      id: "site-gamma",
+      name: "Gamma Clinic",
+      status: "idle",
+      samples: 6200,
+      contributionPct: 20.3,
+      localAccuracy: 0.845,
+      dataQuality: 0.78,
+    },
+    {
+      id: "site-delta",
+      name: "Delta Edge Node",
+      status: "disconnected",
+      samples: 3100,
+      contributionPct: 10.1,
+      localAccuracy: 0.791,
+      dataQuality: 0.62,
+    },
+  ],
+  metricsHistory: Array.from({ length: 12 }, (_, i) => ({
+    round: i + 1,
+    accuracy: 0.52 + i * 0.035 + Math.random() * 0.01,
+    loss: 1.8 - i * 0.12 + Math.random() * 0.05,
+    participants: i < 3 ? 2 : i < 8 ? 3 : 4,
+  })),
+};
+
+// ---------------------------------------------------------------------------
+// Sub-components
+// ---------------------------------------------------------------------------
+
+function PrivacyGauge({ spent, budget }: { spent: number; budget: number }) {
   const pct = Math.min((spent / budget) * 100, 100);
   const color =
     pct < 30 ? "bg-green-500" : pct < 70 ? "bg-yellow-500" : "bg-red-500";
@@ -74,10 +106,7 @@ function PrivacyBudgetChart({ spent, budget }: { spent: number; budget: number }
         <span className="text-gray-400 text-sm mb-1">/ {budget.toFixed(2)} epsilon</span>
       </div>
       <div className="w-full bg-gray-200 rounded-full h-3 mb-1">
-        <div
-          className={`${color} h-3 rounded-full transition-all`}
-          style={{ width: `${pct}%` }}
-        />
+        <div className={`${color} h-3 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
       <p className="text-xs text-gray-500 mt-1">
         Privacy level: <span className="font-semibold">{label}</span>
@@ -86,7 +115,7 @@ function PrivacyBudgetChart({ spent, budget }: { spent: number; budget: number }
   );
 }
 
-function AccuracyLossChart({ metrics }: { metrics: RoundMetric[] }) {
+function MetricsChart({ metrics }: { metrics: RoundMetric[] }) {
   if (metrics.length === 0) return null;
   const maxAcc = Math.max(...metrics.map((m) => m.accuracy));
   const chartH = 120;
@@ -102,7 +131,7 @@ function AccuracyLossChart({ metrics }: { metrics: RoundMetric[] }) {
               <div
                 className="w-full bg-brand-600 rounded-t"
                 style={{ height: h }}
-                title={`R${m.round}: acc ${(m.accuracy * 100).toFixed(1)}% | loss ${m.loss.toFixed(3)}`}
+                title={`R${m.round}: ${(m.accuracy * 100).toFixed(1)}%`}
               />
               <span className="text-[10px] text-gray-400 mt-1">{m.round}</span>
             </div>
@@ -114,262 +143,46 @@ function AccuracyLossChart({ metrics }: { metrics: RoundMetric[] }) {
   );
 }
 
-function ParticipantTable({ participants }: { participants: Participant[] }) {
-  const statusColor: Record<string, string> = {
-    active: "bg-green-100 text-green-800",
-    idle: "bg-yellow-100 text-yellow-800",
-    disconnected: "bg-red-100 text-red-800",
-  };
-
-  return (
-    <div className="rounded-lg border overflow-hidden">
-      <table className="min-w-full text-sm">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="text-left px-4 py-2 font-medium text-gray-500">Participant</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-500">Status</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Samples</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Last Seen</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {participants.map((p) => (
-            <tr key={p.id} className="hover:bg-gray-50">
-              <td className="px-4 py-2 font-mono text-xs">{p.id}</td>
-              <td className="px-4 py-2">
-                <span
-                  className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor[p.status]}`}
-                >
-                  {p.status}
-                </span>
-              </td>
-              <td className="px-4 py-2 text-right tabular-nums">
-                {p.samplesContributed.toLocaleString()}
-              </td>
-              <td className="px-4 py-2 text-right text-gray-500">{p.lastSeen}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function RoundHistoryTable({ metrics }: { metrics: RoundMetric[] }) {
-  if (metrics.length === 0) return null;
-
-  return (
-    <div className="rounded-lg border overflow-hidden">
-      <table className="min-w-full text-sm">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="text-left px-4 py-2 font-medium text-gray-500">Round</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Accuracy</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Loss</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Participants</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {[...metrics].reverse().map((m) => (
-            <tr key={m.round} className="hover:bg-gray-50">
-              <td className="px-4 py-2 font-mono text-xs">R{m.round}</td>
-              <td className="px-4 py-2 text-right tabular-nums">
-                {(m.accuracy * 100).toFixed(1)}%
-              </td>
-              <td className="px-4 py-2 text-right tabular-nums">{m.loss.toFixed(4)}</td>
-              <td className="px-4 py-2 text-right">{m.participants}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ContributionChart({ participants }: { participants: Participant[] }) {
-  const maxSamples = Math.max(...participants.map((p) => p.samplesContributed), 1);
-
-  return (
-    <div className="rounded-lg border p-4">
-      <h3 className="text-sm font-medium text-gray-500 mb-3">Contribution by Participant</h3>
-      <div className="space-y-2">
-        {participants.map((p) => {
-          const pct = (p.samplesContributed / maxSamples) * 100;
-          return (
-            <div key={p.id}>
-              <div className="flex justify-between text-xs mb-1">
-                <span className="font-mono">{p.id}</span>
-                <span className="tabular-nums">{p.samplesContributed.toLocaleString()}</span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-brand-500 h-2 rounded-full transition-all"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Mock data fallback
-// ---------------------------------------------------------------------------
-
-const MOCK_FEDERATION: Federation = {
-  id: "fed-001",
-  name: "Cross-Site Object Detection",
-  model_id: "model-abc-123",
-  status: "training",
-  current_round: 12,
-  total_rounds: 50,
-  aggregation_strategy: "fedavg",
-  epsilon_spent: 0.24,
-  epsilon_budget: 1.0,
-  min_participants: 2,
-  privacy_enabled: true,
-  participants: [
-    { id: "site-alpha", status: "active", samplesContributed: 12400, lastSeen: "2 min ago" },
-    { id: "site-beta", status: "active", samplesContributed: 8900, lastSeen: "1 min ago" },
-    { id: "site-gamma", status: "idle", samplesContributed: 6200, lastSeen: "15 min ago" },
-    { id: "site-delta", status: "disconnected", samplesContributed: 3100, lastSeen: "2 hr ago" },
-  ],
-  metrics_history: Array.from({ length: 12 }, (_, i) => ({
-    round: i + 1,
-    accuracy: 0.52 + i * 0.035 + Math.random() * 0.01,
-    loss: 1.8 - i * 0.12 + Math.random() * 0.05,
-    participants: i < 3 ? 2 : i < 8 ? 3 : 4,
-  })),
-  created_at: Date.now() / 1000 - 86400,
-};
-
-// ---------------------------------------------------------------------------
-// Status helpers
-// ---------------------------------------------------------------------------
-
-const STATUS_VARIANT: Record<string, string> = {
-  waiting: "neutral",
-  ready: "info",
-  training: "success",
-  paused: "warning",
-  completed: "info",
-  stopped: "error",
-};
-
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function FederatedPage() {
-  // Federation selector state
-  const [selectedFedId, setSelectedFedId] = useState<string | null>(null);
-  const [fed, setFed] = useState<Federation | null>(null);
-  const [loadingFed, setLoadingFed] = useState(false);
-
-  // Model selector state (FL1)
-  const [models, setModels] = useState<RegistryModel[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
-
-  // Create form state
+  const [fed, setFed] = useState<Federation>(MOCK_FEDERATION);
   const [formName, setFormName] = useState("");
   const [formModel, setFormModel] = useState("");
   const [formMethod, setFormMethod] = useState("fedavg");
-  const [formMinParticipants, setFormMinParticipants] = useState(2);
-  const [formPrivacyEnabled, setFormPrivacyEnabled] = useState(true);
-  const [formEpsilon, setFormEpsilon] = useState(1.0);
-  const [formMaxRounds, setFormMaxRounds] = useState(10);
+  const [showAddModal, setShowAddModal] = useState(false);
 
-  // -----------------------------------------------------------------------
-  // Fetch registry models (FL1)
-  // -----------------------------------------------------------------------
-  const fetchModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const res = await fetch("/api/registry/models/available");
-      if (!res.ok) throw new Error("Failed to fetch models");
-      const data: RegistryModel[] = await res.json();
-      setModels(data);
-    } catch {
-      // fallback to empty
-    } finally {
-      setLoadingModels(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchModels();
-  }, [fetchModels]);
-
-  // -----------------------------------------------------------------------
-  // Fetch selected federation detail
-  // -----------------------------------------------------------------------
-  const fetchFederation = useCallback(async (id: string) => {
-    setLoadingFed(true);
-    try {
-      const res = await fetch(`/api/federated/federations/${id}`);
-      if (!res.ok) throw new Error("Failed to fetch federation");
-      const data: Federation = await res.json();
-      setFed(data);
-    } catch {
-      // fall back to mock for demo
-      setFed(MOCK_FEDERATION);
-    } finally {
-      setLoadingFed(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (selectedFedId) {
-      fetchFederation(selectedFedId);
-    } else {
-      setFed(null);
-    }
-  }, [selectedFedId, fetchFederation]);
-
-  // -----------------------------------------------------------------------
-  // Create federation handler
-  // -----------------------------------------------------------------------
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
-    try {
-      const res = await fetch("/api/federated/federations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: formName,
-          model_id: formModel,
-          aggregation_strategy: formMethod,
-          min_participants: formMinParticipants,
-          rounds: formMaxRounds,
-          privacy_enabled: formPrivacyEnabled,
-          epsilon_budget: formEpsilon,
-        }),
-      });
-      if (!res.ok) throw new Error("Create failed");
-      const created: { id: string } = await res.json();
-      setSelectedFedId(created.id);
-      setFormName("");
-      setFormModel("");
-    } catch {
-      alert("Failed to create federation. Check backend connection.");
-    }
+    // In production: POST /api/federated/create
+    alert(`Would create federation "${formName}" with model ${formModel}`);
   };
 
-  // -----------------------------------------------------------------------
-  // Status change handler (from TrainingControls)
-  // -----------------------------------------------------------------------
-  const handleStatusChange = (newStatus: FederationStatus) => {
-    if (fed) {
-      setFed({ ...fed, status: newStatus });
-    }
+  const handleRetry = (siteId: string) => {
+    // In production: POST /api/federated/federations/{id}/participants/{site}/reconnect
+    setFed((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.id === siteId ? { ...p, status: "active" as const } : p
+      ),
+    }));
   };
 
-  // -----------------------------------------------------------------------
-  // Render
-  // -----------------------------------------------------------------------
+  const handleRemove = (siteId: string) => {
+    // In production: DELETE /api/federated/federations/{id}/participants/{site}
+    setFed((prev) => ({
+      ...prev,
+      participants: prev.participants.filter((p) => p.id !== siteId),
+    }));
+  };
+
+  const handleViewLogs = (siteId: string) => {
+    // In production: navigate to log viewer
+    alert(`View logs for ${siteId}`);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -380,204 +193,102 @@ export default function FederatedPage() {
         </p>
       </div>
 
-      {/* Federation Selector (FL2) */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <FederationSelector selectedId={selectedFedId} onSelect={setSelectedFedId} />
-        {fed && (
-          <div className="flex items-center gap-3">
-            <Badge variant={STATUS_VARIANT[fed.status] ?? "neutral"}>
-              {fed.status}
-            </Badge>
-            <TrainingControls
-              federationId={fed.id}
-              status={fed.status}
-              onStatusChange={handleStatusChange}
+      {/* Create Federation Form */}
+      <div className="rounded-lg border p-4">
+        <h2 className="font-semibold mb-3">Create Federation</h2>
+        <form onSubmit={handleCreate} className="flex flex-wrap gap-3 items-end">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Name</label>
+            <input
+              type="text"
+              value={formName}
+              onChange={(e) => setFormName(e.target.value)}
+              placeholder="My Federation"
+              className="border rounded px-3 py-1.5 text-sm w-56"
             />
           </div>
-        )}
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Model ID</label>
+            <input
+              type="text"
+              value={formModel}
+              onChange={(e) => setFormModel(e.target.value)}
+              placeholder="model-abc-123"
+              className="border rounded px-3 py-1.5 text-sm w-44"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Aggregation</label>
+            <select
+              value={formMethod}
+              onChange={(e) => setFormMethod(e.target.value)}
+              className="border rounded px-3 py-1.5 text-sm"
+            >
+              <option value="fedavg">FedAvg</option>
+              <option value="fedprox">FedProx</option>
+              <option value="trimmed_mean">Trimmed Mean</option>
+            </select>
+          </div>
+          <button
+            type="submit"
+            className="bg-brand-600 text-white rounded px-4 py-1.5 text-sm font-medium hover:bg-brand-700 transition-colors"
+          >
+            Create
+          </button>
+        </form>
       </div>
 
-      {/* Create Federation Form (visible when no federation selected) */}
-      {!selectedFedId && (
+      {/* Status Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="rounded-lg border p-4">
-          <h2 className="font-semibold mb-3">Create Federation</h2>
-          <form onSubmit={handleCreate} className="space-y-4">
-            <div className="flex flex-wrap gap-3 items-end">
-              {/* Name */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Name</label>
-                <input
-                  type="text"
-                  value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
-                  placeholder="My Federation"
-                  className="border rounded px-3 py-1.5 text-sm w-56"
-                  required
-                />
-              </div>
-
-              {/* Model Selector (FL1) -- dropdown instead of text input */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Model</label>
-                {loadingModels ? (
-                  <div className="flex items-center gap-2 border rounded px-3 py-1.5 text-sm w-56 text-gray-400">
-                    <LoadingSpinner size="sm" />
-                    Loading...
-                  </div>
-                ) : (
-                  <select
-                    value={formModel}
-                    onChange={(e) => setFormModel(e.target.value)}
-                    className="border rounded px-3 py-1.5 text-sm w-56"
-                    required
-                  >
-                    <option value="">Select a model...</option>
-                    {models.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} v{m.version} ({m.backbone})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-
-              {/* Aggregation */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Aggregation</label>
-                <select
-                  value={formMethod}
-                  onChange={(e) => setFormMethod(e.target.value)}
-                  className="border rounded px-3 py-1.5 text-sm"
-                >
-                  <option value="fedavg">FedAvg</option>
-                  <option value="fedprox">FedProx</option>
-                  <option value="trimmed_mean">Trimmed Mean</option>
-                </select>
-              </div>
-
-              {/* Min Participants */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Min Participants</label>
-                <input
-                  type="number"
-                  min={2}
-                  max={100}
-                  value={formMinParticipants}
-                  onChange={(e) => setFormMinParticipants(Number(e.target.value))}
-                  className="border rounded px-3 py-1.5 text-sm w-24"
-                />
-              </div>
-
-              {/* Max Rounds */}
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Max Rounds</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={formMaxRounds}
-                  onChange={(e) => setFormMaxRounds(Number(e.target.value))}
-                  className="border rounded px-3 py-1.5 text-sm w-24"
-                />
-              </div>
-            </div>
-
-            {/* Privacy row */}
-            <div className="flex items-center gap-4 flex-wrap">
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={formPrivacyEnabled}
-                  onChange={(e) => setFormPrivacyEnabled(e.target.checked)}
-                  className="rounded border-gray-300"
-                />
-                Differential Privacy
-              </label>
-
-              {formPrivacyEnabled && (
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-gray-500">Epsilon:</label>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={10}
-                    step={0.1}
-                    value={formEpsilon}
-                    onChange={(e) => setFormEpsilon(Number(e.target.value))}
-                    className="w-32"
-                  />
-                  <span className="text-sm font-mono w-12 text-right">{formEpsilon.toFixed(1)}</span>
-                </div>
-              )}
-            </div>
-
-            <button
-              type="submit"
-              className="bg-brand-600 text-white rounded px-4 py-1.5 text-sm font-medium hover:bg-brand-700 transition-colors"
-            >
-              Create Federation
-            </button>
-          </form>
+          <p className="text-xs text-gray-500">Status</p>
+          <p className="text-lg font-bold capitalize">{fed.status}</p>
         </div>
-      )}
-
-      {/* Federation Detail (when selected) */}
-      {selectedFedId && loadingFed && (
-        <div className="flex justify-center py-12">
-          <LoadingSpinner size="lg" />
+        <div className="rounded-lg border p-4">
+          <p className="text-xs text-gray-500">Round</p>
+          <p className="text-lg font-bold">
+            {fed.currentRound} / {fed.maxRounds}
+          </p>
         </div>
-      )}
+        <div className="rounded-lg border p-4">
+          <p className="text-xs text-gray-500">Participants</p>
+          <p className="text-lg font-bold">{fed.participants.length}</p>
+        </div>
+        <div className="rounded-lg border p-4">
+          <p className="text-xs text-gray-500">Aggregation</p>
+          <p className="text-lg font-bold uppercase">{fed.aggregationMethod}</p>
+        </div>
+      </div>
 
-      {selectedFedId && fed && !loadingFed && (
-        <>
-          {/* Status Overview */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="rounded-lg border p-4">
-              <p className="text-xs text-gray-500">Status</p>
-              <p className="text-lg font-bold capitalize">{fed.status}</p>
-            </div>
-            <div className="rounded-lg border p-4">
-              <p className="text-xs text-gray-500">Round</p>
-              <p className="text-lg font-bold">
-                {fed.current_round} / {fed.total_rounds}
-              </p>
-            </div>
-            <div className="rounded-lg border p-4">
-              <p className="text-xs text-gray-500">Participants</p>
-              <p className="text-lg font-bold">{fed.participants.length}</p>
-            </div>
-            <div className="rounded-lg border p-4">
-              <p className="text-xs text-gray-500">Aggregation</p>
-              <p className="text-lg font-bold uppercase">{fed.aggregation_strategy}</p>
-            </div>
-          </div>
+      {/* Privacy + Metrics row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <PrivacyGauge spent={fed.epsilonSpent} budget={fed.epsilonBudget} />
+        <MetricsChart metrics={fed.metricsHistory} />
+      </div>
 
-          {/* Privacy + Accuracy charts */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <PrivacyBudgetChart spent={fed.epsilon_spent} budget={fed.epsilon_budget} />
-            <AccuracyLossChart metrics={fed.metrics_history} />
-          </div>
+      {/* Participants — enhanced table */}
+      <div>
+        <h2 className="font-semibold mb-3">Participant Health</h2>
+        <ParticipantTable
+          federationId={fed.id}
+          participants={fed.participants}
+          onAddParticipant={() => setShowAddModal(true)}
+          onRetry={handleRetry}
+          onRemove={handleRemove}
+          onViewLogs={handleViewLogs}
+        />
+      </div>
 
-          {/* Contribution chart */}
-          {fed.participants.length > 0 && (
-            <ContributionChart participants={fed.participants} />
-          )}
-
-          {/* Participant Health */}
-          <div>
-            <h2 className="font-semibold mb-3">Participant Health</h2>
-            <ParticipantTable participants={fed.participants} />
-          </div>
-
-          {/* Round History */}
-          {fed.metrics_history.length > 0 && (
-            <div>
-              <h2 className="font-semibold mb-3">Round History</h2>
-              <RoundHistoryTable metrics={fed.metrics_history} />
-            </div>
-          )}
-        </>
-      )}
+      {/* Add Participant Modal */}
+      <AddParticipantModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        federationId={fed.id}
+        onParticipantAdded={() => {
+          // In production: re-fetch participants
+          setShowAddModal(false);
+        }}
+      />
     </div>
   );
 }
