@@ -8,6 +8,7 @@ import Badge from "@/components/ui/Badge";
 import DataTable from "@/components/ui/DataTable";
 import Modal from "@/components/ui/Modal";
 import EmptyState from "@/components/ui/EmptyState";
+import UsersTab from "@/components/settings/UsersTab";
 
 // --- General Tab ---
 function GeneralTab() {
@@ -146,60 +147,6 @@ function ApiKeysTab() {
           />
         </div>
       </Modal>
-    </div>
-  );
-}
-
-// --- Users Tab ---
-function UsersTab() {
-  const [users] = useState<
-    { email: string; role: string; lastLogin: string }[]
-  >([]);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex justify-between items-center">
-        <h3 className="text-lg font-semibold text-gray-900">Users</h3>
-        <Button>Invite User</Button>
-      </div>
-
-      {users.length === 0 ? (
-        <Card>
-          <EmptyState
-            title="No users yet"
-            description="Invite team members to collaborate in your workspace."
-          />
-        </Card>
-      ) : (
-        <Card>
-          <DataTable
-            columns={[
-              { key: "email", label: "Email", sortable: true },
-              {
-                key: "role",
-                label: "Role",
-                render: (v) => <Badge variant="info">{String(v)}</Badge>,
-              },
-              { key: "lastLogin", label: "Last Login", sortable: true },
-              {
-                key: "email",
-                label: "Actions",
-                render: () => (
-                  <div className="flex gap-2">
-                    <Button variant="ghost" size="sm">
-                      Change Role
-                    </Button>
-                    <Button variant="danger" size="sm">
-                      Remove
-                    </Button>
-                  </div>
-                ),
-              },
-            ]}
-            data={users}
-          />
-        </Card>
-      )}
     </div>
   );
 }
