@@ -1,10 +1,12 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
-import NewCaseModal, { NewCasePayload } from "@/components/investigate/NewCaseModal";
 import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
+import EvidenceTab, { CaseEvent } from "@/components/investigate/EvidenceTab";
+import PlaybackTab from "@/components/investigate/PlaybackTab";
+import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { TimelineEventData } from "@/components/investigate/TimelineEvent";
@@ -390,55 +392,33 @@ function ReportTab({ caseId }: { caseId: string }) {
   );
 }
 
-function SyncedPlaybackPanel() {
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration] = useState(120);
+// ---------------------------------------------------------------------------
+// Convert TimelineEventData -> CaseEvent for the new tabs
+// ---------------------------------------------------------------------------
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
+function toCaseEvent(event: TimelineEventData): CaseEvent {
+  const payload = (event.payload || {}) as Record<string, string>;
+  const typeMap: Record<string, CaseEvent["type"]> = {
+    camera: "camera",
+    audio: "audio",
+    alert: "alert",
+    note: "note",
+    detection: "detection",
+    evidence: "evidence",
   };
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-        Synced Playback
-      </h3>
-
-      {/* Video player placeholder */}
-      <div className="bg-black rounded-lg aspect-video flex items-center justify-center">
-        <span className="text-gray-400 text-sm">Video Player</span>
-      </div>
-
-      {/* Audio waveform placeholder */}
-      <div className="bg-gray-100 rounded-lg h-16 flex items-center justify-center">
-        <span className="text-gray-400 text-xs">Audio Waveform</span>
-      </div>
-
-      {/* Timeline scrubber */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-gray-500 w-10">{formatTime(currentTime)}</span>
-        <input
-          type="range"
-          min={0}
-          max={duration}
-          value={currentTime}
-          onChange={(e) => setCurrentTime(Number(e.target.value))}
-          className="flex-1"
-        />
-        <span className="text-xs text-gray-500 w-10">{formatTime(duration)}</span>
-      </div>
-
-      {/* Transcript scroll area */}
-      <div className="bg-gray-50 rounded-lg p-3 h-32 overflow-y-auto">
-        <h4 className="text-xs font-semibold text-gray-600 mb-2">Transcript</h4>
-        <p className="text-xs text-gray-400">
-          Transcript segments will appear here, synced to the current playback timestamp at {formatTime(currentTime)}.
-        </p>
-      </div>
-    </div>
-  );
+  return {
+    id: event.id,
+    type: typeMap[event.type] ?? "evidence",
+    summary:
+      payload.name || payload.content || payload.notes || `${event.type} event`,
+    timestamp: event.timestamp || new Date().toISOString(),
+    source: event.source,
+    thumbnailUrl: payload.thumbnail_url,
+    mediaUrl: payload.media_url,
+    mimeType: payload.mime_type,
+    fileSize: payload.file_size ? Number(payload.file_size) : undefined,
+    notes: payload.notes,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +445,9 @@ export default function InvestigatePage() {
 
   // New case modal
   const [showNewCase, setShowNewCase] = useState(false);
+  const [newCaseName, setNewCaseName] = useState("");
+  const [newCaseDesc, setNewCaseDesc] = useState("");
+  const [creating, setCreating] = useState(false);
 
   // Right panel tab
   const [activeTab, setActiveTab] = useState<TabKey>("evidence");
@@ -529,23 +512,26 @@ export default function InvestigatePage() {
     }
   }, [selectedCase, loadTimeline]);
 
-  // Create case via NewCaseModal
-  const handleCreateCase = useCallback(
-    async (payload: NewCasePayload) => {
+  // Create case
+  const handleCreateCase = async () => {
+    if (!newCaseName.trim()) return;
+    setCreating(true);
+    try {
       await axios.post(`${API_BASE}/api/investigate/cases`, {
-        name: payload.name,
-        description: payload.description,
-        priority: payload.priority,
-        status: payload.status,
-        assignee: payload.assignee,
-        tags: payload.tags,
+        name: newCaseName.trim(),
+        description: newCaseDesc.trim(),
         workspace_id: DEFAULT_WORKSPACE_ID,
       });
       setShowNewCase(false);
+      setNewCaseName("");
+      setNewCaseDesc("");
       await loadCases();
-    },
-    [loadCases]
-  );
+    } catch {
+      // Handle silently
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // Add note
   const handleAddNote = async (content: string) => {
@@ -596,6 +582,12 @@ export default function InvestigatePage() {
   // Filter checkpoint events for timeline markers
   const checkpoints = events.filter((e) => e.type === "checkpoint");
 
+  // Convert timeline events to CaseEvent format for Evidence/Playback tabs
+  const caseEvents: CaseEvent[] = useMemo(
+    () => events.map(toCaseEvent),
+    [events]
+  );
+
   const tabs: { key: TabKey; label: string }[] = [
     { key: "evidence", label: "Evidence" },
     { key: "playback", label: "Playback" },
@@ -607,27 +599,17 @@ export default function InvestigatePage() {
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
       {/* Left panel — Case list */}
-      <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white flex flex-col">
-        <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-gray-900">Investigate</h2>
-          <Button size="sm" onClick={() => setShowNewCase(true)}>
-            + New Case
-          </Button>
-        </div>
-        {casesLoading ? (
-          <div className="flex items-center justify-center py-12 flex-1">
-            <div className="animate-spin h-6 w-6 border-2 border-brand-600 border-t-transparent rounded-full" />
-          </div>
-        ) : (
-          <CaseList
-            cases={cases}
-            selectedId={selectedCase?.id || null}
-            onSelect={(c) => {
-              setSelectedCase(c);
-              setSelectedEvent(null);
-            }}
-          />
-        )}
+      <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white">
+        <CaseList
+          cases={cases}
+          selectedCaseId={selectedCase?.id || null}
+          onSelectCase={(c) => {
+            setSelectedCase(c);
+            setSelectedEvent(null);
+          }}
+          onNewCase={() => setShowNewCase(true)}
+          loading={casesLoading}
+        />
       </div>
 
       {/* Center — Timeline */}
@@ -679,7 +661,19 @@ export default function InvestigatePage() {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-4">
-          {activeTab === "evidence" && (
+          {activeTab === "evidence" && selectedCase && (
+            <EvidenceTab
+              caseId={selectedCase.id}
+              events={caseEvents}
+              onRemove={(eventId) => {
+                // Remove evidence from case via API
+                axios.delete(
+                  `${API_BASE}/api/investigate/cases/${selectedCase.id}/evidence/${eventId}`
+                ).then(() => loadTimeline()).catch(() => {});
+              }}
+            />
+          )}
+          {activeTab === "evidence" && !selectedCase && (
             <EvidencePanel
               event={selectedEvent}
               onAddNote={handleAddNote}
@@ -688,7 +682,14 @@ export default function InvestigatePage() {
             />
           )}
 
-          {activeTab === "playback" && <SyncedPlaybackPanel />}
+          {activeTab === "playback" && selectedCase && (
+            <PlaybackTab caseId={selectedCase.id} events={caseEvents} />
+          )}
+          {activeTab === "playback" && !selectedCase && (
+            <p className="text-sm text-gray-400 text-center mt-8">
+              Select a case to use synced playback.
+            </p>
+          )}
 
           {activeTab === "comments" && selectedCase && (
             <CommentsSection caseId={selectedCase.id} />
@@ -720,11 +721,53 @@ export default function InvestigatePage() {
       </div>
 
       {/* New Case Modal */}
-      <NewCaseModal
+      <Modal
         isOpen={showNewCase}
         onClose={() => setShowNewCase(false)}
-        onSubmit={handleCreateCase}
-      />
+        title="Create New Case"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowNewCase(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateCase}
+              loading={creating}
+              disabled={!newCaseName.trim()}
+            >
+              Create Case
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Case Name
+            </label>
+            <input
+              type="text"
+              value={newCaseName}
+              onChange={(e) => setNewCaseName(e.target.value)}
+              placeholder="e.g., Intrusion Investigation Alpha"
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:ring-2 focus:ring-brand-500 focus:border-brand-500"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Description
+            </label>
+            <textarea
+              value={newCaseDesc}
+              onChange={(e) => setNewCaseDesc(e.target.value)}
+              placeholder="Describe the investigation scope and objectives..."
+              rows={3}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm placeholder-gray-400 focus:ring-2 focus:ring-brand-500 focus:border-brand-500 resize-none"
+            />
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
