@@ -6,7 +6,7 @@ import Card from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import FileUpload from "@/components/ui/FileUpload";
-import ExplainabilityTabV2 from "@/components/validate/ExplainabilityTab";
+import ModelCardsTab from "@/components/validate/ModelCardsTab";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -39,18 +39,6 @@ interface DriftResult {
 interface FeatureAttribution {
   feature: string;
   importance: number;
-}
-
-interface ModelCard {
-  model_name: string;
-  version: string;
-  description: string;
-  metrics: Record<string, number>;
-  intended_use: string;
-  limitations: string;
-  training_data: string;
-  evaluation_results: Record<string, number>;
-  ethical_considerations: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -448,134 +436,8 @@ function ExplainabilityTab() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Model Cards Tab                                                    */
+/*  Model Cards Tab — extracted to @/components/validate/ModelCardsTab */
 /* ------------------------------------------------------------------ */
-
-function ModelCardsTab() {
-  const [modelId, setModelId] = useState("");
-  const [card, setCard] = useState<ModelCard | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Demo model card for display
-  const demoCard: ModelCard = {
-    model_name: "resnet50-detector",
-    version: "2.1.0",
-    description: "ResNet50-based object detector for industrial inspection.",
-    metrics: { accuracy: 0.94, f1: 0.91, precision: 0.93, recall: 0.89 },
-    intended_use: "Production inference on vision/audio data within the VisionAudioForge platform.",
-    limitations:
-      "Performance may degrade on out-of-distribution data. Evaluate calibration and drift before deploying to new domains.",
-    training_data: "Industrial inspection dataset v3 (50k images, 12 defect classes).",
-    evaluation_results: { accuracy: 0.94, f1: 0.91, precision: 0.93, recall: 0.89 },
-    ethical_considerations:
-      "Ensure representative evaluation across demographic groups. Monitor for fairness and bias before production deployment.",
-  };
-
-  const handleFetch = async () => {
-    if (!modelId.trim()) {
-      setCard(demoCard);
-      return;
-    }
-    setError(null);
-    setLoading(true);
-    try {
-      const resp = await fetch(`${API_BASE}/api/validate/model-card/${modelId}`);
-      if (resp.status === 501) {
-        // Stub endpoint — show demo card
-        setCard(demoCard);
-        setError("Model card endpoint returns stub (V2). Showing demo card.");
-        return;
-      }
-      if (!resp.ok) throw new Error(await resp.text());
-      setCard(await resp.json());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Request failed");
-      setCard(demoCard);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const displayCard = card ?? null;
-
-  return (
-    <div className="space-y-6">
-      <Card title="Select Model">
-        <div className="flex gap-3 items-end">
-          <div className="flex-1">
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Model ID (UUID) — leave blank for demo
-            </label>
-            <input
-              type="text"
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
-              value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-              placeholder="00000000-0000-0000-0000-000000000001"
-            />
-          </div>
-          <Button onClick={handleFetch} disabled={loading}>
-            {loading ? "Loading..." : "Load Model Card"}
-          </Button>
-        </div>
-        {error && <p className="mt-2 text-sm text-yellow-600">{error}</p>}
-      </Card>
-
-      {displayCard && (
-        <div className="space-y-4">
-          <Card title={`${displayCard.model_name} v${displayCard.version}`}>
-            <p className="text-sm text-gray-600">{displayCard.description}</p>
-          </Card>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Card title="Metrics">
-              <dl className="space-y-2">
-                {Object.entries(displayCard.metrics).map(([k, v]) => (
-                  <div key={k} className="flex justify-between">
-                    <dt className="text-sm font-medium text-gray-600 capitalize">{k}</dt>
-                    <dd className="text-sm font-semibold text-gray-900">
-                      {typeof v === "number" ? v.toFixed(4) : String(v)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </Card>
-
-            <Card title="Evaluation Results">
-              <dl className="space-y-2">
-                {Object.entries(displayCard.evaluation_results).map(([k, v]) => (
-                  <div key={k} className="flex justify-between">
-                    <dt className="text-sm font-medium text-gray-600 capitalize">{k}</dt>
-                    <dd className="text-sm font-semibold text-gray-900">
-                      {typeof v === "number" ? v.toFixed(4) : String(v)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </Card>
-          </div>
-
-          <Card title="Intended Use">
-            <p className="text-sm text-gray-600">{displayCard.intended_use}</p>
-          </Card>
-
-          <Card title="Limitations">
-            <p className="text-sm text-gray-600">{displayCard.limitations}</p>
-          </Card>
-
-          <Card title="Training Data">
-            <p className="text-sm text-gray-600">{displayCard.training_data}</p>
-          </Card>
-
-          <Card title="Ethical Considerations">
-            <p className="text-sm text-gray-600">{displayCard.ethical_considerations}</p>
-          </Card>
-        </div>
-      )}
-    </div>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Main Page                                                          */
@@ -587,7 +449,7 @@ export default function ValidatePage() {
   const tabs = [
     { id: "calibration", label: "Calibration", content: <CalibrationTab /> },
     { id: "drift", label: "Drift Detection", content: <DriftTab /> },
-    { id: "explainability", label: "Explainability", content: <ExplainabilityTabV2 /> },
+    { id: "explainability", label: "Explainability", content: <ExplainabilityTab /> },
     { id: "model-cards", label: "Model Cards", content: <ModelCardsTab /> },
   ];
 

@@ -3,7 +3,9 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import JSONResponse
 
 from app.core.deps import get_db
 from app.schemas.common import PaginatedResponse
@@ -87,3 +89,49 @@ async def rollback_model(
     db: AsyncSession = Depends(get_db),
 ):
     return await svc.rollback(db, model_id, body.to_version)
+
+
+# ------------------------------------------------------------------
+# Model Card attachment stub
+# ------------------------------------------------------------------
+
+class ModelCardPayload(BaseModel):
+    """Model card data attached to a registry model. Mirrors frontend schema."""
+    modelName: str = ""
+    version: str = ""
+    modelType: str = ""
+    architecture: str = ""
+    trainingDate: str = ""
+    framework: str = ""
+    license: str = ""
+    primaryUseCases: str = ""
+    outOfScope: str = ""
+    targetUsers: str = ""
+    metrics: list[dict] = Field(default_factory=list)
+    knownLimitations: str = ""
+    ethicalConsiderations: str = ""
+    biasFairness: str = ""
+    datasetName: str = ""
+    datasetSize: str = ""
+    datasetDescription: str = ""
+    preprocessingSteps: str = ""
+
+
+@router.patch("/models/{model_id}/model-card")
+async def update_model_card(
+    model_id: UUID,
+    body: ModelCardPayload,
+    db: AsyncSession = Depends(get_db),
+):
+    """Attach or update the model card for a registered model.
+
+    V1 stub — persists nothing yet but validates and echoes back.
+    """
+    return JSONResponse(
+        content={
+            "status": "ok",
+            "model_id": str(model_id),
+            "message": "Model card saved (stub — V2 will persist to DB).",
+            "card": body.model_dump(),
+        }
+    )

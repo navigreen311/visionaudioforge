@@ -4,8 +4,6 @@ model cards, audit trails, and explainability."""
 from __future__ import annotations
 
 import base64
-import random
-from typing import Optional
 from uuid import UUID
 
 import numpy as np
@@ -34,67 +32,13 @@ class CalibrationRequest(BaseModel):
     n_bins: int = Field(default=10, ge=2, le=100)
 
 
-class DriftFeatureResponse(BaseModel):
-    feature: str
-    reference_mean: float
-    current_mean: float
-    drift_score: float
-    status: str  # "stable" | "minor" | "major"
-    ref_distribution: list[float]
-    cur_distribution: list[float]
-
-
-class DriftAnalysisResponse(BaseModel):
-    overall_psi: float
-    status: str  # "stable" | "minor" | "major"
-    features: list[DriftFeatureResponse]
-    method: str
-    threshold: float
+class DriftRequest(BaseModel):
+    reference_stats: dict[str, dict]
+    current_stats: dict[str, dict]
 
 
 class UncertaintyRequest(BaseModel):
     predictions: list[list[float]]
-
-
-# ------------------------------------------------------------------
-# Helpers — mock drift data generator
-# ------------------------------------------------------------------
-
-def _generate_mock_drift_features(
-    feature_names: list[str],
-    threshold: float,
-) -> list[dict]:
-    """Return deterministic-looking mock drift data for each feature."""
-    features: list[dict] = []
-    rng = random.Random(42)
-
-    for name in feature_names:
-        ref_mean = round(rng.uniform(0.2, 0.8), 4)
-        shift = round(rng.uniform(-0.15, 0.25), 4)
-        cur_mean = round(ref_mean + shift, 4)
-        drift_score = round(abs(shift) * rng.uniform(1.5, 4.0), 4)
-
-        if drift_score >= threshold * 2:
-            status = "major"
-        elif drift_score >= threshold:
-            status = "minor"
-        else:
-            status = "stable"
-
-        ref_dist = [round(rng.gauss(ref_mean, 0.12), 4) for _ in range(50)]
-        cur_dist = [round(rng.gauss(cur_mean, 0.14), 4) for _ in range(50)]
-
-        features.append({
-            "feature": name,
-            "reference_mean": ref_mean,
-            "current_mean": cur_mean,
-            "drift_score": drift_score,
-            "status": status,
-            "ref_distribution": ref_dist,
-            "cur_distribution": cur_dist,
-        })
-
-    return features
 
 
 # ------------------------------------------------------------------
@@ -114,55 +58,10 @@ async def calibration_analysis(body: CalibrationRequest):
 
 
 @router.post("/drift")
-async def drift_detection(
-    reference_file: Optional[UploadFile] = File(None),
-    current_file: Optional[UploadFile] = File(None),
-    use_prod_data: Optional[str] = Form(None),
-    prod_window_days: Optional[str] = Form(None),
-    feature_names: Optional[str] = Form(None),
-    method: str = Form("psi"),
-    threshold: str = Form("0.1"),
-):
-    """Detect data drift between reference and current feature distributions.
-
-    Accepts CSV file uploads or production-data flag. Returns mock data
-    (V2 will integrate real statistical tests).
-    """
-    thresh = float(threshold)
-
-    if feature_names and feature_names.strip():
-        names = [n.strip() for n in feature_names.split(",") if n.strip()]
-    else:
-        names = [
-            "edge_density",
-            "color_histogram",
-            "brightness",
-            "contrast",
-            "texture_score",
-            "noise_level",
-            "sharpness",
-        ]
-
-    features = _generate_mock_drift_features(names, thresh)
-
-    overall_psi = round(
-        sum(f["drift_score"] for f in features) / max(len(features), 1), 4
-    )
-
-    if overall_psi >= thresh * 2:
-        overall_status = "major"
-    elif overall_psi >= thresh:
-        overall_status = "minor"
-    else:
-        overall_status = "stable"
-
-    return DriftAnalysisResponse(
-        overall_psi=overall_psi,
-        status=overall_status,
-        features=[DriftFeatureResponse(**f) for f in features],
-        method=method,
-        threshold=thresh,
-    )
+async def drift_detection(body: DriftRequest):
+    """Detect data drift between reference and current feature statistics."""
+    result = await _svc.drift_detection(body.reference_stats, body.current_stats)
+    return result
 
 
 @router.post("/uncertainty")
@@ -191,82 +90,76 @@ async def get_audit_trail(model_id: UUID, db: AsyncSession = Depends(get_db)):
 @router.post("/explain")
 async def explain_prediction(
     file: UploadFile = File(...),
-    model_id: str = Form(default=""),
-    method: str = Form(default="grad-cam"),
-    target_class: str = Form(default=""),
+    model_output: str = Form(default="{}"),
 ):
-    """Upload an image and receive an explainability result.
-
-    Returns a heatmap overlay (base64 PNG), top-5 predictions,
-    and SHAP feature attribution values.  Currently returns mock
-    data — wire to real inference in a future iteration.
-    """
+    """Upload an image and receive a saliency heatmap (base64-encoded PGM)."""
     contents = await file.read()
-    if len(contents) == 0:
-        raise HTTPException(status_code=400, detail="Empty file upload.")
-
-    # --- Generate a deterministic mock heatmap (64x64 red-channel gradient PNG) ---
-    width, height = 64, 64
-    # Build a simple RGBA gradient as raw bytes for a minimal PNG
+    # Decode image bytes to numpy array
     try:
-        heatmap_array = np.zeros((height, width, 4), dtype=np.uint8)
-        for y in range(height):
-            for x in range(width):
-                intensity = int(255 * ((x + y) / (width + height - 2)))
-                heatmap_array[y, x] = [intensity, 0, 255 - intensity, 160]
-        # Encode to PNG via a minimal approach
-        import io
-        import struct
-        import zlib
-
-        def _encode_png(rgba: np.ndarray) -> bytes:  # type: ignore[return]
-            h, w, _ = rgba.shape
-            raw_rows = b""
-            for row in range(h):
-                raw_rows += b"\x00" + rgba[row].tobytes()
-            compressed = zlib.compress(raw_rows)
-
-            def _chunk(chunk_type: bytes, data: bytes) -> bytes:
-                c = chunk_type + data
-                return struct.pack(">I", len(data)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
-
-            sig = b"\x89PNG\r\n\x1a\n"
-            ihdr_data = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
-            return sig + _chunk(b"IHDR", ihdr_data) + _chunk(b"IDAT", compressed) + _chunk(b"IEND", b"")
-
-        png_bytes = _encode_png(heatmap_array)
-        heatmap_b64: str | None = base64.b64encode(png_bytes).decode("ascii")
+        # Attempt to decode as raw image via numpy; fall back to simple grayscale
+        arr = np.frombuffer(contents, dtype=np.uint8)
+        # Try to interpret as a square-ish grayscale image
+        side = int(np.sqrt(len(arr)))
+        if side * side == len(arr):
+            image = arr.reshape((side, side))
+        else:
+            # Treat as 1D and reshape to a reasonable rectangle
+            h = max(1, int(np.sqrt(len(arr) / 3)))
+            w = max(1, len(arr) // (h * 3))
+            needed = h * w * 3
+            if needed <= len(arr):
+                image = arr[:needed].reshape((h, w, 3))
+            else:
+                image = arr[: h * h].reshape((h, h)) if h * h <= len(arr) else arr.reshape((1, -1))
     except Exception:
-        heatmap_b64 = None
+        raise HTTPException(status_code=400, detail="Could not decode image file.")
 
-    # --- Mock predictions ---
-    resolved_target = target_class if target_class else "golden_retriever"
-    predictions = [
-        {"className": "golden_retriever", "confidence": 0.82},
-        {"className": "labrador", "confidence": 0.09},
-        {"className": "cocker_spaniel", "confidence": 0.04},
-        {"className": "irish_setter", "confidence": 0.03},
-        {"className": "beagle", "confidence": 0.02},
-    ]
+    import json
 
-    # --- Mock SHAP values ---
-    shap_values = [
-        {"feature": "ear_texture", "value": 0.34},
-        {"feature": "fur_color", "value": 0.28},
-        {"feature": "snout_shape", "value": 0.19},
-        {"feature": "eye_shape", "value": 0.11},
-        {"feature": "body_proportion", "value": 0.06},
-        {"feature": "background_grass", "value": -0.05},
-        {"feature": "lighting_angle", "value": -0.12},
-        {"feature": "image_noise", "value": -0.08},
-    ]
+    try:
+        output = json.loads(model_output)
+    except json.JSONDecodeError:
+        output = {}
 
+    heatmap = await _explain.compute_saliency_map(image, output)
+    b64 = _explain.heatmap_to_base64(heatmap)
+
+    return {"saliency_map_base64": b64, "shape": list(heatmap.shape)}
+
+
+# ------------------------------------------------------------------
+# Model Card export stub
+# ------------------------------------------------------------------
+
+class ModelCardExportRequest(BaseModel):
+    """Payload for model-card export (mirrors frontend ModelCardData)."""
+    modelName: str = ""
+    version: str = ""
+    modelType: str = ""
+    architecture: str = ""
+    trainingDate: str = ""
+    framework: str = ""
+    license: str = ""
+    primaryUseCases: str = ""
+    outOfScope: str = ""
+    targetUsers: str = ""
+    metrics: list[dict] = Field(default_factory=list)
+    knownLimitations: str = ""
+    ethicalConsiderations: str = ""
+    biasFairness: str = ""
+    datasetName: str = ""
+    datasetSize: str = ""
+    datasetDescription: str = ""
+    preprocessingSteps: str = ""
+
+
+@router.post("/model-card/export")
+async def export_model_card(body: ModelCardExportRequest):
+    """Export a model card document. V1 stub — returns the card JSON back."""
     return JSONResponse(
         content={
-            "heatmap_b64": heatmap_b64,
-            "predictions": predictions,
-            "shap_values": shap_values,
-            "method": method,
-            "target_class": resolved_target,
+            "status": "ok",
+            "message": "Model card export placeholder (V2 will generate PDF/HTML).",
+            "card": body.model_dump(),
         }
     )
