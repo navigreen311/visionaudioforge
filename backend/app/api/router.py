@@ -42,6 +42,7 @@ from app.api.routes import (
     validation,
     verticals,
     vision,
+    settings_extra,
     workspaces,
 )
 
@@ -89,3 +90,4 @@ api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
 api_router.include_router(developer.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(settings_extra.router)
