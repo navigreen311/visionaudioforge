@@ -6,6 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -407,11 +408,26 @@ async def generate_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
 async def export_report(
     case_id: UUID, body: ExportReportRequest, db: AsyncSession = Depends(get_db)
 ):
-    """Export a report in the specified format (markdown or json)."""
+    """Export a report in the specified format (markdown, json, or pdf stub).
+
+    When format is 'pdf', returns a text/plain stub indicating that full PDF
+    generation is not yet implemented.
+    """
     try:
         content = await report_service.export_report(db, case_id, format=body.format)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+    # PDF stub: return plain text instead of JSON
+    if body.format == "pdf":
+        return PlainTextResponse(
+            content=content,
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f'attachment; filename="report_{case_id}.txt"'
+            },
+        )
+
     return {"content": content, "format": body.format}
 
 

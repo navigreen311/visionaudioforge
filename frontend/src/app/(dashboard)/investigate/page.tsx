@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
 import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
-import EvidenceTab, { CaseEvent } from "@/components/investigate/EvidenceTab";
-import PlaybackTab from "@/components/investigate/PlaybackTab";
+import ReportTab from "@/components/investigate/ReportTab";
+import type { Comment as ReportComment, Approval as ReportApproval } from "@/components/investigate/ReportTab";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -44,14 +44,6 @@ interface ApprovalItem {
   approver_id: string;
   reason: string;
   timestamp: string;
-}
-
-interface ReportData {
-  title: string;
-  sections: { heading: string; content: string }[];
-  evidence_refs: { id: string; asset_ids: string[]; notes: string }[];
-  timeline_summary: string;
-  generated_at: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,151 +266,57 @@ function ApprovalSection({ caseId }: { caseId: string }) {
   );
 }
 
-function ReportTab({ caseId }: { caseId: string }) {
-  const [report, setReport] = useState<ReportData | null>(null);
-  const [exportContent, setExportContent] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const [signing, setSigning] = useState(false);
-  const [signResult, setSignResult] = useState<{ hash: string; signed_at: string } | null>(null);
+// ReportTab is now imported from @/components/investigate/ReportTab
 
-  const generateReport = async () => {
-    setGenerating(true);
-    try {
-      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report`);
-      setReport(resp.data);
-      setExportContent(null);
-      setSignResult(null);
-    } catch {
-      // Handle silently
-    } finally {
-      setGenerating(false);
-    }
-  };
+function SyncedPlaybackPanel() {
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration] = useState(120);
 
-  const handleExport = async (format: string) => {
-    try {
-      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report/export`, {
-        format,
-      });
-      setExportContent(resp.data.content);
-    } catch {
-      // Handle silently
-    }
-  };
-
-  const handleSign = async () => {
-    if (!confirm("Are you sure you want to sign this report? This action creates a permanent audit record.")) return;
-    setSigning(true);
-    try {
-      const resp = await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/report/sign`, {
-        user_id: "current-user",
-      });
-      setSignResult(resp.data);
-    } catch {
-      // Handle silently
-    } finally {
-      setSigning(false);
-    }
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-          Report
-        </h3>
-        <Button size="sm" onClick={generateReport} loading={generating}>
-          Generate Draft
-        </Button>
+    <div className="space-y-3">
+      <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
+        Synced Playback
+      </h3>
+
+      {/* Video player placeholder */}
+      <div className="bg-black rounded-lg aspect-video flex items-center justify-center">
+        <span className="text-gray-400 text-sm">Video Player</span>
       </div>
 
-      {report && (
-        <div className="space-y-3">
-          {/* Report preview */}
-          <div className="bg-white border border-gray-200 rounded-lg p-4 max-h-80 overflow-y-auto">
-            <h2 className="text-lg font-bold text-gray-900 mb-2">{report.title}</h2>
-            <p className="text-xs text-gray-400 mb-4">Generated: {report.generated_at}</p>
-            {report.sections.map((section, i) => (
-              <div key={i} className="mb-3">
-                <h4 className="text-sm font-semibold text-gray-800 mb-1">{section.heading}</h4>
-                <p className="text-sm text-gray-600 whitespace-pre-wrap">{section.content}</p>
-              </div>
-            ))}
-          </div>
+      {/* Audio waveform placeholder */}
+      <div className="bg-gray-100 rounded-lg h-16 flex items-center justify-center">
+        <span className="text-gray-400 text-xs">Audio Waveform</span>
+      </div>
 
-          {/* Export buttons */}
-          <div className="flex gap-2">
-            <Button size="sm" variant="secondary" onClick={() => handleExport("markdown")}>
-              Export Markdown
-            </Button>
-            <Button size="sm" variant="secondary" onClick={() => handleExport("json")}>
-              Export JSON
-            </Button>
-            <Button size="sm" onClick={handleSign} loading={signing}>
-              Sign Report
-            </Button>
-          </div>
+      {/* Timeline scrubber */}
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-gray-500 w-10">{formatTime(currentTime)}</span>
+        <input
+          type="range"
+          min={0}
+          max={duration}
+          value={currentTime}
+          onChange={(e) => setCurrentTime(Number(e.target.value))}
+          className="flex-1"
+        />
+        <span className="text-xs text-gray-500 w-10">{formatTime(duration)}</span>
+      </div>
 
-          {/* Export content preview */}
-          {exportContent && (
-            <div className="bg-gray-50 rounded-lg p-3 max-h-48 overflow-y-auto">
-              <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono">
-                {exportContent}
-              </pre>
-            </div>
-          )}
-
-          {/* Signature result */}
-          {signResult && (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-              <p className="text-sm text-green-800 font-medium">Report signed successfully</p>
-              <p className="text-xs text-green-600 mt-1">
-                Signed at: {signResult.signed_at}
-              </p>
-              <p className="text-xs text-green-600 font-mono">
-                Hash: {signResult.hash}
-              </p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {!report && (
+      {/* Transcript scroll area */}
+      <div className="bg-gray-50 rounded-lg p-3 h-32 overflow-y-auto">
+        <h4 className="text-xs font-semibold text-gray-600 mb-2">Transcript</h4>
         <p className="text-xs text-gray-400">
-          Click &quot;Generate Draft&quot; to auto-generate a report from case data.
+          Transcript segments will appear here, synced to the current playback timestamp at {formatTime(currentTime)}.
         </p>
-      )}
+      </div>
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Convert TimelineEventData -> CaseEvent for the new tabs
-// ---------------------------------------------------------------------------
-
-function toCaseEvent(event: TimelineEventData): CaseEvent {
-  const payload = (event.payload || {}) as Record<string, string>;
-  const typeMap: Record<string, CaseEvent["type"]> = {
-    camera: "camera",
-    audio: "audio",
-    alert: "alert",
-    note: "note",
-    detection: "detection",
-    evidence: "evidence",
-  };
-  return {
-    id: event.id,
-    type: typeMap[event.type] ?? "evidence",
-    summary:
-      payload.name || payload.content || payload.notes || `${event.type} event`,
-    timestamp: event.timestamp || new Date().toISOString(),
-    source: event.source,
-    thumbnailUrl: payload.thumbnail_url,
-    mediaUrl: payload.media_url,
-    mimeType: payload.mime_type,
-    fileSize: payload.file_size ? Number(payload.file_size) : undefined,
-    notes: payload.notes,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +349,33 @@ export default function InvestigatePage() {
 
   // Right panel tab
   const [activeTab, setActiveTab] = useState<TabKey>("evidence");
+
+  // Report tab data
+  const [reportComments, setReportComments] = useState<ReportComment[]>([]);
+  const [reportApprovals, setReportApprovals] = useState<ReportApproval[]>([]);
+
+  // Load comments for report
+  const loadReportComments = useCallback(async (caseId: string) => {
+    try {
+      const resp = await axios.get(`${API_BASE}/api/investigate/cases/${caseId}/comments`);
+      setReportComments(resp.data);
+    } catch {
+      setReportComments([]);
+    }
+  }, []);
+
+  // Load approvals for report
+  const loadReportApprovals = useCallback(async (caseId: string) => {
+    try {
+      const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
+        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+      });
+      const filtered = (resp.data as ReportApproval[]).filter((a) => a.case_id === caseId);
+      setReportApprovals(filtered);
+    } catch {
+      setReportApprovals([]);
+    }
+  }, []);
 
   // Load cases
   const loadCases = useCallback(async () => {
@@ -509,8 +434,10 @@ export default function InvestigatePage() {
   useEffect(() => {
     if (selectedCase) {
       loadTimeline();
+      loadReportComments(selectedCase.id);
+      loadReportApprovals(selectedCase.id);
     }
-  }, [selectedCase, loadTimeline]);
+  }, [selectedCase, loadTimeline, loadReportComments, loadReportApprovals]);
 
   // Create case
   const handleCreateCase = async () => {
@@ -581,12 +508,6 @@ export default function InvestigatePage() {
 
   // Filter checkpoint events for timeline markers
   const checkpoints = events.filter((e) => e.type === "checkpoint");
-
-  // Convert timeline events to CaseEvent format for Evidence/Playback tabs
-  const caseEvents: CaseEvent[] = useMemo(
-    () => events.map(toCaseEvent),
-    [events]
-  );
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "evidence", label: "Evidence" },
@@ -661,19 +582,7 @@ export default function InvestigatePage() {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-4">
-          {activeTab === "evidence" && selectedCase && (
-            <EvidenceTab
-              caseId={selectedCase.id}
-              events={caseEvents}
-              onRemove={(eventId) => {
-                // Remove evidence from case via API
-                axios.delete(
-                  `${API_BASE}/api/investigate/cases/${selectedCase.id}/evidence/${eventId}`
-                ).then(() => loadTimeline()).catch(() => {});
-              }}
-            />
-          )}
-          {activeTab === "evidence" && !selectedCase && (
+          {activeTab === "evidence" && (
             <EvidencePanel
               event={selectedEvent}
               onAddNote={handleAddNote}
@@ -682,14 +591,7 @@ export default function InvestigatePage() {
             />
           )}
 
-          {activeTab === "playback" && selectedCase && (
-            <PlaybackTab caseId={selectedCase.id} events={caseEvents} />
-          )}
-          {activeTab === "playback" && !selectedCase && (
-            <p className="text-sm text-gray-400 text-center mt-8">
-              Select a case to use synced playback.
-            </p>
-          )}
+          {activeTab === "playback" && <SyncedPlaybackPanel />}
 
           {activeTab === "comments" && selectedCase && (
             <CommentsSection caseId={selectedCase.id} />
@@ -710,7 +612,13 @@ export default function InvestigatePage() {
           )}
 
           {activeTab === "report" && selectedCase && (
-            <ReportTab caseId={selectedCase.id} />
+            <ReportTab
+              caseId={selectedCase.id}
+              caseData={selectedCase}
+              events={events}
+              comments={reportComments}
+              approvals={reportApprovals}
+            />
           )}
           {activeTab === "report" && !selectedCase && (
             <p className="text-sm text-gray-400 text-center mt-8">
