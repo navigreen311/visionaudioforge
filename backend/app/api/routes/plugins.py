@@ -30,6 +30,19 @@ class PluginExecute(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class PluginReview(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    text: str = Field(min_length=20)
+
+
+class WidgetGenerateRequest(BaseModel):
+    widget_type: str
+    theme: str = "dark"
+    width: int = 480
+    height: int = 320
+    refresh_interval: int = 5
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
@@ -114,3 +127,51 @@ async def marketplace_featured() -> list[dict]:
         {"name": "Video Summarizer", "description": "AI video summarization", "downloads": 980},
         {"name": "Data Augmentor", "description": "Smart data augmentation", "downloads": 2100},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Review endpoint
+# ---------------------------------------------------------------------------
+_reviews: dict[str, list[dict[str, Any]]] = {}
+
+
+@router.post("/{plugin_id}/reviews")
+async def submit_review(plugin_id: str, body: PluginReview) -> dict[str, Any]:
+    """Submit a review for a plugin."""
+    review = {
+        "id": str(uuid.uuid4()),
+        "plugin_id": plugin_id,
+        "rating": body.rating,
+        "text": body.text,
+        "created_at": time.time(),
+    }
+    _reviews.setdefault(plugin_id, []).append(review)
+    return review
+
+
+@router.get("/{plugin_id}/reviews")
+async def list_reviews(plugin_id: str) -> list[dict[str, Any]]:
+    """List reviews for a plugin."""
+    return _reviews.get(plugin_id, [])
+
+
+# ---------------------------------------------------------------------------
+# Widget embed generation
+# ---------------------------------------------------------------------------
+
+@router.post("/widgets/generate")
+async def generate_widget(body: WidgetGenerateRequest) -> dict[str, Any]:
+    """Generate an embeddable widget token and URL."""
+    token = str(uuid.uuid4())
+    url = f"https://app.vaf.io/embed/{body.widget_type}?token={token}"
+    return {
+        "widget_type": body.widget_type,
+        "token": token,
+        "embed_url": url,
+        "config": {
+            "theme": body.theme,
+            "width": body.width,
+            "height": body.height,
+            "refresh_interval": body.refresh_interval,
+        },
+    }

@@ -1463,3 +1463,58 @@ export async function getTimelineFeed(): Promise<TimelineEvent[]> {
   return data;
 }
 
+// ---------------------------------------------------------------------------
+// Settings — API Keys
+// ---------------------------------------------------------------------------
+
+export interface APIKeyScope {
+  module: string;
+  permissions: string[];
+}
+
+export interface APIKeyRead {
+  id: string;
+  name: string;
+  key_prefix: string;
+  scopes: APIKeyScope[];
+  created_at: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  is_active: boolean;
+}
+
+export interface APIKeyCreatePayload {
+  name: string;
+  scopes: APIKeyScope[];
+  expires_in_days: number | null;
+}
+
+export interface APIKeyCreated {
+  id: string;
+  name: string;
+  key: string;
+  scopes: APIKeyScope[];
+  created_at: string;
+  expires_at: string | null;
+}
+
+export async function listAPIKeys(): Promise<APIKeyRead[]> {
+  const { data } = await api.get("/api/settings/api-keys", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createAPIKey(payload: APIKeyCreatePayload): Promise<APIKeyCreated> {
+  const { data } = await api.post("/api/settings/api-keys", payload, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function revokeAPIKey(keyId: string): Promise<void> {
+  await api.delete(`/api/settings/api-keys/${keyId}`, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+}
+
