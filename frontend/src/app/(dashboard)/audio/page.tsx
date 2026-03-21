@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -9,6 +9,22 @@ import AudioUploadPlayer from "@/components/audio/AudioUploadPlayer";
 import SpectrogramDisplay from "@/components/audio/SpectrogramDisplay";
 import AugmentationBuilder from "@/components/audio/AugmentationBuilder";
 import LiveMicVisualizer from "@/components/audio/LiveMicVisualizer";
+import AudioPlayer from "@/components/audio/AudioPlayer";
+import LiveMicSpectrogram from "@/components/audio/LiveMicSpectrogram";
+import SpectrogramViewer, {
+  type SpectrogramParams,
+} from "@/components/audio/SpectrogramViewer";
+import MFCCHeatmap, {
+  type MFCCReanalyzeParams,
+} from "@/components/audio/MFCCHeatmap";
+import AugmentationStudio, {
+  type AugmentConfig,
+} from "@/components/audio/AugmentationStudio";
+import TranscriptionPanel from "@/components/audio/TranscriptionPanel";
+import AudioExportPanel from "@/components/audio/AudioExportPanel";
+import AudioHistory, {
+  type AudioHistoryEntry,
+} from "@/components/audio/AudioHistory";
 import {
   analyzeAudio,
   augmentAudio,
@@ -26,7 +42,11 @@ import {
 // Spectral Analysis Tab
 // ---------------------------------------------------------------------------
 
-function SpectralAnalysisTab() {
+function SpectralAnalysisTab({
+  onFileUploaded,
+}: {
+  onFileUploaded: (file: File) => void;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [operations, setOperations] = useState<Set<string>>(
     new Set(["stft", "mel", "mfcc", "waveform"]),
@@ -42,6 +62,11 @@ function SpectralAnalysisTab() {
       else next.add(op);
       return next;
     });
+  };
+
+  const handleFileSelected = (f: File | null) => {
+    setFile(f);
+    if (f) onFileUploaded(f);
   };
 
   const handleAnalyze = async () => {
@@ -60,6 +85,38 @@ function SpectralAnalysisTab() {
     }
   };
 
+  const handleSpectrogramReanalyze = async (params: SpectrogramParams) => {
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await analyzeAudio(file, Array.from(operations));
+      setResult(data);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Re-analysis failed. Please try again.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMFCCReanalyze = async (params: MFCCReanalyzeParams) => {
+    if (!file) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await analyzeAudio(file, ["mfcc"]);
+      setResult((prev) => (prev ? { ...prev, mfcc: data.mfcc } : data));
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "MFCC re-analysis failed.",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const OPS = [
     { id: "stft", label: "STFT" },
     { id: "mel", label: "MEL Spectrogram" },
@@ -70,7 +127,7 @@ function SpectralAnalysisTab() {
   return (
     <div className="space-y-6">
       <Card title="Upload Audio">
-        <AudioUploadPlayer file={file} onFileSelected={setFile} />
+        <AudioUploadPlayer file={file} onFileSelected={handleFileSelected} />
       </Card>
 
       <Card title="Analysis Options">
@@ -145,22 +202,57 @@ function SpectralAnalysisTab() {
 
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
             {result.stft?.image && (
-              <SpectrogramDisplay title="STFT Spectrogram" imageBase64={result.stft.image} />
+              <div className="space-y-4">
+                <SpectrogramDisplay title="STFT Spectrogram" imageBase64={result.stft.image} />
+                <SpectrogramViewer
+                  spectrogramB64={result.stft.image}
+                  type="stft"
+                  onReanalyze={handleSpectrogramReanalyze}
+                />
+              </div>
             )}
             {result.mel?.image && (
-              <SpectrogramDisplay title="MEL Spectrogram" imageBase64={result.mel.image} />
+              <div className="space-y-4">
+                <SpectrogramDisplay title="MEL Spectrogram" imageBase64={result.mel.image} />
+                <SpectrogramViewer
+                  spectrogramB64={result.mel.image}
+                  type="mel"
+                  onReanalyze={handleSpectrogramReanalyze}
+                />
+              </div>
             )}
             {result.mfcc?.image && (
-              <SpectrogramDisplay
-                title="MFCC Heatmap"
-                imageBase64={result.mfcc.image}
-                coefficients={result.mfcc.coefficients}
-              />
+              <div className="space-y-4">
+                <SpectrogramDisplay
+                  title="MFCC Heatmap"
+                  imageBase64={result.mfcc.image}
+                  coefficients={result.mfcc.coefficients}
+                />
+                <MFCCHeatmap
+                  mfccData={{
+                    image_b64: result.mfcc.image,
+                    coefficients: (result.mfcc.coefficients ?? []).map(
+                      (c: { index: number; mean: number; std: number; values: number[] } | number[], i: number) =>
+                        Array.isArray(c)
+                          ? { index: i, mean: 0, std: 0, values: c }
+                          : c
+                    ),
+                  }}
+                  onReanalyze={handleMFCCReanalyze}
+                />
+              </div>
             )}
             {result.waveform?.image && (
               <SpectrogramDisplay title="Waveform" imageBase64={result.waveform.image} />
             )}
           </div>
+
+          {/* Export Panel - shown when results exist */}
+          <AudioExportPanel
+            analysisResults={result as unknown as Record<string, unknown>}
+            spectrogramB64={result.stft?.image ?? result.mel?.image ?? null}
+            audioFile={file}
+          />
         </div>
       )}
     </div>
@@ -171,7 +263,11 @@ function SpectralAnalysisTab() {
 // Augmentation Tab
 // ---------------------------------------------------------------------------
 
-function AugmentationTab() {
+function AugmentationTab({
+  onFileUploaded,
+}: {
+  onFileUploaded: (file: File) => void;
+}) {
   const [file, setFile] = useState<File | null>(null);
   const [config, setConfig] = useState<AugmentationConfig>({});
   const handleConfigChange = (newConfig: { preset?: string; steps?: AugmentationStep[] }) => {
@@ -180,6 +276,11 @@ function AugmentationTab() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AugmentationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const handleFileSelected = (f: File | null) => {
+    setFile(f);
+    if (f) onFileUploaded(f);
+  };
 
   const handleAugment = async () => {
     if (!file) return;
@@ -198,12 +299,47 @@ function AugmentationTab() {
     }
   };
 
+  const handleStudioAugment = useCallback((augConfig: AugmentConfig) => {
+    // Convert AugmentConfig to AugmentationConfig steps and trigger augmentation
+    const steps: AugmentationStep[] = [];
+    if (augConfig.whiteNoise.enabled) {
+      steps.push({ name: "white_noise", params: { snr_db: augConfig.whiteNoise.snrDb } });
+    }
+    if (augConfig.pinkNoise.enabled) {
+      steps.push({ name: "pink_noise", params: { amplitude: augConfig.pinkNoise.amplitude } });
+    }
+    if (augConfig.timeStretch.enabled) {
+      steps.push({ name: "time_stretch", params: { rate: augConfig.timeStretch.rate } });
+    }
+    if (augConfig.pitchShift.enabled) {
+      steps.push({ name: "pitch_shift", params: { semitones: augConfig.pitchShift.semitones } });
+    }
+    if (augConfig.timeShift.enabled) {
+      steps.push({ name: "time_shift", params: { shift_pct: augConfig.timeShift.shiftPct } });
+    }
+    if (augConfig.frequencyMask.enabled) {
+      steps.push({ name: "frequency_mask", params: { mask_size_pct: augConfig.frequencyMask.maskSizePct } });
+    }
+    if (steps.length > 0 && file) {
+      setConfig({ steps });
+      // Trigger augmentation with the studio config
+      setLoading(true);
+      setError(null);
+      augmentAudio(file, { steps })
+        .then((data) => setResult(data))
+        .catch((err) =>
+          setError(err instanceof Error ? err.message : "Augmentation failed."),
+        )
+        .finally(() => setLoading(false));
+    }
+  }, [file]);
+
   const hasConfig = !!(config.preset || (config.steps && config.steps.length > 0));
 
   return (
     <div className="space-y-6">
       <Card title="Upload Audio">
-        <AudioUploadPlayer file={file} onFileSelected={setFile} />
+        <AudioUploadPlayer file={file} onFileSelected={handleFileSelected} />
       </Card>
 
       <Card title="Augmentation Pipeline">
@@ -218,6 +354,15 @@ function AugmentationTab() {
           </Button>
         </div>
       </Card>
+
+      {/* Advanced Augmentation Studio */}
+      <AugmentationStudio
+        originalFile={file}
+        onAugment={handleStudioAugment}
+        augmentedAudioB64={result?.audio_base64 ?? null}
+        originalSpectrogramB64={null}
+        augmentedSpectrogramB64={null}
+      />
 
       {error && (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
@@ -275,11 +420,34 @@ function AugmentationTab() {
 }
 
 // ---------------------------------------------------------------------------
-// Live Mic Tab
+// Live Mic Tab (original)
 // ---------------------------------------------------------------------------
 
 function LiveMicTab() {
-  return <LiveMicVisualizer />;
+  return (
+    <div className="space-y-6">
+      <LiveMicVisualizer />
+      <Card title="Live Spectrogram">
+        <LiveMicSpectrogram />
+      </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Transcription Tab
+// ---------------------------------------------------------------------------
+
+function TranscriptionTab({
+  sharedFile,
+}: {
+  sharedFile: File | null;
+}) {
+  return (
+    <div className="space-y-6">
+      <TranscriptionPanel audioFile={sharedFile} />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -499,22 +667,43 @@ function CallIntelligenceTab() {
 
 export default function AudioPage() {
   const [activeTab, setActiveTab] = useState("spectral");
+  const [sharedFile, setSharedFile] = useState<File | null>(null);
+
+  const handleFileUploaded = useCallback((file: File) => {
+    setSharedFile(file);
+  }, []);
+
+  const handleHistoryRestore = useCallback((entry: AudioHistoryEntry) => {
+    // When restoring from history, switch to the relevant tab
+    if (entry.operationType === "augmentation") {
+      setActiveTab("augmentation");
+    } else if (entry.operationType === "transcription") {
+      setActiveTab("transcription");
+    } else {
+      setActiveTab("spectral");
+    }
+  }, []);
 
   const tabs = [
     {
       id: "spectral",
       label: "Spectral Analysis",
-      content: <SpectralAnalysisTab />,
+      content: <SpectralAnalysisTab onFileUploaded={handleFileUploaded} />,
     },
     {
       id: "augmentation",
       label: "Augmentation",
-      content: <AugmentationTab />,
+      content: <AugmentationTab onFileUploaded={handleFileUploaded} />,
     },
     {
       id: "live-mic",
       label: "Live Mic",
       content: <LiveMicTab />,
+    },
+    {
+      id: "transcription",
+      label: "Transcription",
+      content: <TranscriptionTab sharedFile={sharedFile} />,
     },
     {
       id: "call-intelligence",
@@ -532,7 +721,16 @@ export default function AudioPage() {
           visualization powered by Librosa.
         </p>
       </div>
+
+      {/* Persistent Audio Player - shown when a file has been uploaded */}
+      {sharedFile && (
+        <AudioPlayer file={sharedFile} />
+      )}
+
       <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+
+      {/* Audio History - always visible at the bottom */}
+      <AudioHistory onRestore={handleHistoryRestore} />
     </div>
   );
 }

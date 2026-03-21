@@ -1,24 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
-import LoadingSpinner from "@/components/ui/LoadingSpinner";
 import ImageUploadPreview from "@/components/vision/ImageUploadPreview";
-import DualFrameUpload from "@/components/vision/DualFrameUpload";
-import DetectionOverlay from "@/components/vision/DetectionOverlay";
 import StatsPanel from "@/components/vision/StatsPanel";
+import VisionSplitPane from "@/components/vision/VisionSplitPane";
+import BeforeAfterViewer from "@/components/vision/BeforeAfterViewer";
+import OperationsPanel, { type OperationParams } from "@/components/vision/OperationsPanel";
+import RGBHistogram from "@/components/vision/RGBHistogram";
+import ProcessingHistory, { type HistoryEntry, saveToHistory } from "@/components/vision/ProcessingHistory";
+import ExportPanel from "@/components/vision/ExportPanel";
+import OpticalFlowTabComponent from "@/components/vision/OpticalFlowTab";
+import DetectionTabComponent from "@/components/vision/DetectionTab";
+import OCRTabComponent from "@/components/vision/OCRTab";
 import {
   analyzeImage,
-  computeOpticalFlow,
-  detectObjects,
-  extractText,
   analyzeErrors,
   type VisionAnalyzeResult,
-  type OpticalFlowResult,
-  type DetectResult,
-  type OCRResult,
   type ErrorAnalysisResult,
 } from "@/lib/api";
 
@@ -28,11 +28,6 @@ import {
 
 function PreprocessingTab() {
   const [file, setFile] = useState<File | null>(null);
-  const [normalize, setNormalize] = useState<string>("");
-  const [colorSpace, setColorSpace] = useState<string>("");
-  const [edgeDetection, setEdgeDetection] = useState<string>("");
-  const [resizeW, setResizeW] = useState("");
-  const [resizeH, setResizeH] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<VisionAnalyzeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,567 +40,148 @@ function PreprocessingTab() {
     setError(null);
   };
 
-  const handleAnalyze = async () => {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const operations: Record<string, unknown> = {};
-      if (normalize) operations.normalize = normalize;
-      if (colorSpace) operations.color_space = colorSpace;
-      if (edgeDetection) operations.edge_detection = edgeDetection;
-      if (resizeW && resizeH) {
-        operations.resize = { width: parseInt(resizeW), height: parseInt(resizeH) };
+  const handleAnalyze = useCallback(
+    async (params: OperationParams) => {
+      if (!file) return;
+      setLoading(true);
+      setError(null);
+      try {
+        // Convert OperationParams to the flat Record<string, unknown> the API expects
+        const operations: Record<string, unknown> = {};
+        for (const step of params.operations) {
+          operations[step.op] = step.params;
+        }
+        operations.output_format = params.outputFormat;
+        operations.jpeg_quality = params.jpegQuality;
+        operations.include_stats = params.includeStats;
+
+        const res = await analyzeImage(file, operations);
+        setResult(res);
+
+        // Save to processing history
+        const thumbnail =
+          res.processed_image
+            ? `data:image/png;base64,${res.processed_image}`
+            : originalPreview ?? "";
+        saveToHistory({
+          id: `preprocess-${Date.now()}`,
+          thumbnail,
+          operationType: params.operations.map((o) => o.op).join(", ") || "Preprocessing",
+          timestamp: new Date().toISOString(),
+          inputImage: originalPreview ?? undefined,
+          results: res as unknown as Record<string, unknown>,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : "Analysis failed";
+        setError(msg);
+      } finally {
+        setLoading(false);
       }
-      const res = await analyzeImage(file, operations);
-      setResult(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Analysis failed";
-      setError(msg);
-    } finally {
-      setLoading(false);
+    },
+    [file, originalPreview],
+  );
+
+  const handleRestore = useCallback((entry: HistoryEntry) => {
+    if (entry.results) {
+      setResult(entry.results as unknown as VisionAnalyzeResult);
     }
-  };
+    if (entry.inputImage) {
+      setOriginalPreview(entry.inputImage);
+    }
+  }, []);
+
+  const processedSrc = result?.processed_image
+    ? `data:image/png;base64,${result.processed_image}`
+    : undefined;
 
   return (
-    <div className="space-y-6">
-      <Card title="Image Upload">
-        <ImageUploadPreview label="Upload an image to preprocess" onFile={handleFile} />
-      </Card>
-
-      <Card title="Operations">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Normalize
-            </label>
-            <select
-              value={normalize}
-              onChange={(e) => setNormalize(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            >
-              <option value="">None</option>
-              <option value="min_max">Min-Max</option>
-              <option value="z_score">Z-Score</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Color Space
-            </label>
-            <select
-              value={colorSpace}
-              onChange={(e) => setColorSpace(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            >
-              <option value="">Original</option>
-              <option value="rgb">RGB</option>
-              <option value="hsv">HSV</option>
-              <option value="lab">LAB</option>
-              <option value="gray">Grayscale</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Edge Detection
-            </label>
-            <select
-              value={edgeDetection}
-              onChange={(e) => setEdgeDetection(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            >
-              <option value="">None</option>
-              <option value="canny">Canny</option>
-              <option value="sobel">Sobel</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Resize (W x H)
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                value={resizeW}
-                onChange={(e) => setResizeW(e.target.value)}
-                placeholder="W"
-                className="w-20 rounded-lg border border-gray-300 px-2 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              />
-              <span className="text-gray-400">x</span>
-              <input
-                type="number"
-                value={resizeH}
-                onChange={(e) => setResizeH(e.target.value)}
-                placeholder="H"
-                className="w-20 rounded-lg border border-gray-300 px-2 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-4">
-          <Button onClick={handleAnalyze} loading={loading} disabled={!file}>
-            Analyze
-          </Button>
-        </div>
-      </Card>
-
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-4">
-          <Card title="Before / After">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <div>
-                <p className="mb-2 text-sm font-medium text-gray-600">Original</p>
-                {originalPreview && (
-                  <img
-                    src={originalPreview}
-                    alt="Original"
-                    className="max-h-72 rounded border border-gray-200 object-contain"
-                  />
-                )}
-              </div>
-              <div>
-                <p className="mb-2 text-sm font-medium text-gray-600">Processed</p>
-                {result.processed_image && (
-                  <img
-                    src={`data:image/png;base64,${result.processed_image}`}
-                    alt="Processed"
-                    className="max-h-72 rounded border border-gray-200 object-contain"
-                  />
-                )}
-              </div>
-            </div>
+    <VisionSplitPane
+      left={
+        <div className="space-y-6">
+          <Card title="Image Upload">
+            <ImageUploadPreview label="Upload an image to preprocess" onFile={handleFile} />
           </Card>
 
-          {result.stats && (
-            <StatsPanel
-              title="Image Statistics"
-              stats={[
-                { label: "Shape", value: result.stats.shape.join(" x ") },
-                { label: "Dtype", value: result.stats.dtype },
-                ...result.stats.mean.map((m: number, i: number) => ({
-                  label: `Mean Ch${i}`,
-                  value: m,
-                })),
-                ...result.stats.std.map((s: number, i: number) => ({
-                  label: `Std Ch${i}`,
-                  value: s,
-                })),
-              ]}
-            />
+          <OperationsPanel onAnalyze={handleAnalyze} isAnalyzing={loading} />
+
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {error}
+            </div>
           )}
 
-          <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
-          </p>
+          <ProcessingHistory onRestore={handleRestore} />
         </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Optical Flow Tab
-// ---------------------------------------------------------------------------
-
-function OpticalFlowTab() {
-  const [frame1, setFrame1] = useState<File | null>(null);
-  const [frame2, setFrame2] = useState<File | null>(null);
-  const [method, setMethod] = useState<"lucas_kanade" | "farneback">("farneback");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<OpticalFlowResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [preview1, setPreview1] = useState<string | null>(null);
-  const [preview2, setPreview2] = useState<string | null>(null);
-
-  const handleFrame1 = (f: File) => {
-    setFrame1(f);
-    setPreview1(URL.createObjectURL(f));
-    setResult(null);
-  };
-  const handleFrame2 = (f: File) => {
-    setFrame2(f);
-    setPreview2(URL.createObjectURL(f));
-    setResult(null);
-  };
-
-  const handleCompute = async () => {
-    if (!frame1 || !frame2) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await computeOpticalFlow(frame1, frame2, method);
-      setResult(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Optical flow failed";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card title="Upload Two Frames">
-        <DualFrameUpload onFrame1={handleFrame1} onFrame2={handleFrame2} />
-      </Card>
-
-      <Card title="Method">
-        <div className="flex items-center gap-6">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="flow-method"
-              checked={method === "lucas_kanade"}
-              onChange={() => setMethod("lucas_kanade")}
-              className="text-brand-600 focus:ring-brand-500"
+      }
+      right={
+        result ? (
+          <div className="space-y-4">
+            <BeforeAfterViewer
+              originalSrc={originalPreview ?? undefined}
+              processedSrc={processedSrc}
+              stats={
+                result.stats
+                  ? {
+                      min: result.stats.mean?.[0] != null ? Math.min(...result.stats.mean) : 0,
+                      max: result.stats.mean?.[0] != null ? Math.max(...result.stats.mean) : 0,
+                      mean:
+                        result.stats.mean?.length > 0
+                          ? result.stats.mean.reduce((a: number, b: number) => a + b, 0) /
+                            result.stats.mean.length
+                          : 0,
+                      std:
+                        result.stats.std?.length > 0
+                          ? result.stats.std.reduce((a: number, b: number) => a + b, 0) /
+                            result.stats.std.length
+                          : 0,
+                    }
+                  : undefined
+              }
             />
-            Lucas-Kanade
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="radio"
-              name="flow-method"
-              checked={method === "farneback"}
-              onChange={() => setMethod("farneback")}
-              className="text-brand-600 focus:ring-brand-500"
-            />
-            Farneback
-          </label>
-        </div>
 
-        <div className="mt-4">
-          <Button onClick={handleCompute} loading={loading} disabled={!frame1 || !frame2}>
-            Compute Flow
-          </Button>
-        </div>
-      </Card>
-
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-4">
-          <Card title="Results">
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div>
-                <p className="mb-2 text-sm font-medium text-gray-600">Frame 1</p>
-                {preview1 && (
-                  <img
-                    src={preview1}
-                    alt="Frame 1"
-                    className="max-h-56 rounded border border-gray-200 object-contain"
-                  />
-                )}
-              </div>
-              <div>
-                <p className="mb-2 text-sm font-medium text-gray-600">Frame 2</p>
-                {preview2 && (
-                  <img
-                    src={preview2}
-                    alt="Frame 2"
-                    className="max-h-56 rounded border border-gray-200 object-contain"
-                  />
-                )}
-              </div>
-              <div>
-                <p className="mb-2 text-sm font-medium text-gray-600">Motion Heatmap</p>
-                {result.visualization && (
-                  <img
-                    src={`data:image/png;base64,${result.visualization}`}
-                    alt="Motion heatmap"
-                    className="max-h-56 rounded border border-gray-200 object-contain"
-                  />
-                )}
-              </div>
-            </div>
-          </Card>
-
-          {result.stats && (
-            <StatsPanel
-              title="Flow Statistics"
-              stats={[
-                { label: "Mean Magnitude", value: result.stats.mean_magnitude },
-                { label: "Max Magnitude", value: result.stats.max_magnitude },
-                { label: "Motion Area %", value: `${result.stats.motion_area_pct.toFixed(2)}%` },
-              ]}
-            />
-          )}
-
-          <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Detection Tab
-// ---------------------------------------------------------------------------
-
-function DetectionTab() {
-  const [file, setFile] = useState<File | null>(null);
-  const [confidence, setConfidence] = useState(0.5);
-  const [classFilter, setClassFilter] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<DetectResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleDetect = async () => {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await detectObjects(
-        file,
-        confidence,
-        classFilter.trim() || undefined,
-      );
-      setResult(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Detection failed";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card title="Image Upload">
-        <ImageUploadPreview
-          label="Upload an image for object detection"
-          onFile={(f) => {
-            setFile(f);
-            setResult(null);
-            setError(null);
-          }}
-        />
-      </Card>
-
-      <Card title="Detection Settings">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Confidence Threshold: {confidence.toFixed(2)}
-            </label>
-            <input
-              type="range"
-              min={0.1}
-              max={1.0}
-              step={0.05}
-              value={confidence}
-              onChange={(e) => setConfidence(parseFloat(e.target.value))}
-              className="w-full accent-brand-600"
-            />
-            <div className="flex justify-between text-xs text-gray-400">
-              <span>0.1</span>
-              <span>1.0</span>
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-700">
-              Class Filter (comma-separated IDs)
-            </label>
-            <input
-              type="text"
-              value={classFilter}
-              onChange={(e) => setClassFilter(e.target.value)}
-              placeholder="e.g. 0,1,2"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            />
-          </div>
-        </div>
-
-        <div className="mt-4">
-          <Button onClick={handleDetect} loading={loading} disabled={!file}>
-            Detect
-          </Button>
-        </div>
-      </Card>
-
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-4">
-          <Card title={`Detections (${result.count})`}>
-            {result.visualization && (
-              <img
-                src={`data:image/png;base64,${result.visualization}`}
-                alt="Detections"
-                className="max-w-full rounded border border-gray-200"
+            {result.stats && (
+              <StatsPanel
+                title="Image Statistics"
+                stats={[
+                  { label: "Shape", value: result.stats.shape.join(" x ") },
+                  { label: "Dtype", value: result.stats.dtype },
+                  ...result.stats.mean.map((m: number, i: number) => ({
+                    label: `Mean Ch${i}`,
+                    value: m,
+                  })),
+                  ...result.stats.std.map((s: number, i: number) => ({
+                    label: `Std Ch${i}`,
+                    value: s,
+                  })),
+                ]}
               />
             )}
-          </Card>
 
-          {result.detections.length > 0 && (
-            <Card title="Detection List">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase text-gray-500">
-                      <th className="px-3 py-2">Class</th>
-                      <th className="px-3 py-2">Confidence</th>
-                      <th className="px-3 py-2">Bounding Box (x, y, w, h)</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {result.detections.map((d, i) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-3 py-2 font-medium text-gray-900">
-                          {d.class_name ?? d.label}
-                        </td>
-                        <td className="px-3 py-2 text-gray-600">
-                          {(d.confidence * 100).toFixed(1)}%
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-500">
-                          {d.bbox?.join(", ")}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
-
-          <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// OCR Tab
-// ---------------------------------------------------------------------------
-
-function OCRTab() {
-  const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<OCRResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [imgSrc, setImgSrc] = useState<string | null>(null);
-
-  const handleFile = (f: File) => {
-    setFile(f);
-    setImgSrc(URL.createObjectURL(f));
-    setResult(null);
-    setError(null);
-  };
-
-  const handleExtract = async () => {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await extractText(file);
-      setResult(res);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "OCR failed";
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card title="Image Upload">
-        <ImageUploadPreview label="Upload an image for text extraction" onFile={handleFile} />
-      </Card>
-
-      <div>
-        <Button onClick={handleExtract} loading={loading} disabled={!file}>
-          Extract Text
-        </Button>
-      </div>
-
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="space-y-4">
-          {imgSrc && result.blocks.length > 0 && (
-            <Card title="Text Regions">
-              <DetectionOverlay
-                imageSrc={imgSrc}
-                boxes={result.blocks.map((b: { text: string; confidence: number; bbox: number[] }) => ({
-                  label: b.text.slice(0, 20),
-                  confidence: b.confidence,
-                  bbox: b.bbox,
-                }))}
+            {result.histogram && (
+              <RGBHistogram
+                histogram={result.histogram as { r: number[]; g: number[]; b: number[] }}
               />
-            </Card>
-          )}
+            )}
 
-          <Card title="Extracted Text">
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-4 text-sm text-gray-800">
-              {result.full_text || "(no text found)"}
-            </pre>
-          </Card>
+            <ExportPanel
+              isVisible={true}
+              processedImageB64={result.processed_image}
+              results={result as unknown as Record<string, unknown>}
+            />
 
-          {result.blocks.length > 0 && (
-            <Card title="Text Blocks">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 text-left text-xs font-medium uppercase text-gray-500">
-                      <th className="px-3 py-2">Text</th>
-                      <th className="px-3 py-2">Confidence</th>
-                      <th className="px-3 py-2">BBox</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {result.blocks.map((b: { text: string; confidence: number; bbox: number[] }, i: number) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-3 py-2 text-gray-900">{b.text}</td>
-                        <td className="px-3 py-2 text-gray-600">
-                          {(b.confidence * 100).toFixed(1)}%
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs text-gray-500">
-                          {b.bbox.join(", ")}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
-
-          <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
-          </p>
-        </div>
-      )}
-    </div>
+            <p className="text-xs text-gray-500">
+              Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
+            </p>
+          </div>
+        ) : null
+      }
+    />
   );
 }
+
+// ---------------------------------------------------------------------------
+// Optical Flow, Detection, OCR — use dedicated component implementations
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Error Analysis Tab
@@ -841,9 +417,9 @@ export default function VisionPage() {
 
   const tabContent: Record<string, React.ReactNode> = {
     preprocessing: <PreprocessingTab />,
-    "optical-flow": <OpticalFlowTab />,
-    detection: <DetectionTab />,
-    ocr: <OCRTab />,
+    "optical-flow": <OpticalFlowTabComponent />,
+    detection: <DetectionTabComponent />,
+    ocr: <OCRTabComponent />,
     "error-analysis": <ErrorAnalysisTab />,
   };
 
