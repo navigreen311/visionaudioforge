@@ -15,6 +15,12 @@ class DatasetCreate(BaseModel):
     workspace_id: uuid.UUID
 
 
+class DatasetSplitInfo(BaseModel):
+    train: int = 0
+    val: int = 0
+    test: int = 0
+
+
 class DatasetRead(BaseModel):
     id: uuid.UUID
     name: str
@@ -23,6 +29,8 @@ class DatasetRead(BaseModel):
     sample_count: int = 0
     size_bytes: int = 0
     version: int = 1
+    split: DatasetSplitInfo = DatasetSplitInfo()
+    class_counts: dict[str, int] = {}
     stats: dict[str, Any] | None = None
     class_counts: dict[str, int] | None = None
     split: dict[str, int] | None = None

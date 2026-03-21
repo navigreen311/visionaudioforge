@@ -540,11 +540,22 @@ export async function startTraining(experimentId: string): Promise<Experiment> {
 // Datasets API
 // ---------------------------------------------------------------------------
 
+export interface DatasetSplit {
+  train: number;
+  val: number;
+  test: number;
+}
+
 export interface Dataset {
   id: string;
   name: string;
+  modality: string;
   format: string;
   sample_count: number;
+  size_bytes: number;
+  version: number;
+  split: DatasetSplit;
+  class_counts: Record<string, number>;
   workspace_id: string;
   created_at: string;
   updated_at: string;
