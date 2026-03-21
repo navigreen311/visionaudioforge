@@ -1,8 +1,6 @@
 """Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
 
 import uuid
-from datetime import datetime, timezone
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -27,6 +25,7 @@ conversation_mgr = ConversationManager()
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 
+
 class ChatRequest(BaseModel):
     message: str
     agent_id: str | None = None
@@ -43,6 +42,10 @@ class ChatResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     name: str
     agent_type: str = "copilot"
+    skill_pack: str = "general"
+    description: str = ""
+    auto_patrol: bool = False
+    workspace_scope: str = "all"
     workspace_id: str | None = None
 
 
@@ -50,7 +53,23 @@ class AgentOut(BaseModel):
     id: str
     name: str
     agent_type: str
+    skill_pack: str
     status: str
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class AgentDetailOut(BaseModel):
+    id: str
+    name: str
+    agent_type: str
+    skill_pack: str
+    status: str
+    description: str
+    auto_patrol: bool
+    workspace_scope: str
     created_at: str
 
     class Config:
@@ -68,40 +87,10 @@ class MemoryOut(BaseModel):
         from_attributes = True
 
 
-class ConversationMessageIn(BaseModel):
-    role: Literal["user", "assistant", "tool"]
-    content: str
-    timestamp: str
-    tool_name: str | None = None
-
-
-class SaveConversationRequest(BaseModel):
-    summary: str
-    skill_pack: str = "general"
-    messages: list[ConversationMessageIn] = Field(default_factory=list)
-
-
-class ConversationSummaryOut(BaseModel):
-    id: str
-    summary: str
-    skill_pack: str
-    message_count: int
-    created_at: str
-    updated_at: str
-
-
-class ConversationDetailOut(BaseModel):
-    id: str
-    summary: str
-    skill_pack: str
-    messages: list[ConversationMessageIn]
-    created_at: str
-    updated_at: str
-
-
 # ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
+
 
 @router.post("/chat", response_model=ChatResponse)
 async def agent_chat(
@@ -116,7 +105,7 @@ async def agent_chat(
     memory_strings = [m.content for m in memories_list]
 
     # Collect streamed tokens
-    full_response = []
+    full_response: list[str] = []
     async for event in copilot_service.chat(
         message=body.message,
         workspace_id="default",
@@ -148,6 +137,7 @@ async def agent_chat(
 # Agent CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("")
 async def list_agents(
     db: AsyncSession = Depends(get_db),
@@ -161,11 +151,38 @@ async def list_agents(
             "id": str(a.id),
             "name": a.name,
             "agent_type": a.agent_type,
+            "skill_pack": (a.config or {}).get("skill_pack", "general"),
             "status": a.status,
             "created_at": a.created_at.isoformat() if a.created_at else "",
         }
         for a in agents
     ]
+
+
+@router.get("/{agent_id}")
+async def get_agent(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single agent by ID with full detail."""
+    stmt = select(Agent).where(Agent.id == agent_id)
+    result = await db.execute(stmt)
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    cfg: dict = agent.config or {}
+    return {
+        "id": str(agent.id),
+        "name": agent.name,
+        "agent_type": agent.agent_type,
+        "skill_pack": cfg.get("skill_pack", "general"),
+        "status": agent.status,
+        "description": cfg.get("description", ""),
+        "auto_patrol": cfg.get("auto_patrol", False),
+        "workspace_scope": cfg.get("workspace_scope", "all"),
+        "created_at": agent.created_at.isoformat() if agent.created_at else "",
+    }
 
 
 @router.post("", status_code=201)
@@ -181,104 +198,35 @@ async def create_agent(
         agent_type=body.agent_type,
         status="idle",
         workspace_id=workspace_id,
-        config={},
+        config={
+            "skill_pack": body.skill_pack,
+            "description": body.description,
+            "auto_patrol": body.auto_patrol,
+            "workspace_scope": body.workspace_scope,
+        },
     )
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
 
+    cfg: dict = agent.config or {}
     return {
         "id": str(agent.id),
         "name": agent.name,
         "agent_type": agent.agent_type,
+        "skill_pack": cfg.get("skill_pack", "general"),
         "status": agent.status,
+        "description": cfg.get("description", ""),
+        "auto_patrol": cfg.get("auto_patrol", False),
+        "workspace_scope": cfg.get("workspace_scope", "all"),
         "created_at": agent.created_at.isoformat() if agent.created_at else "",
     }
 
 
 # ---------------------------------------------------------------------------
-# Conversations (AG5) — stub endpoints
-# IMPORTANT: These MUST be registered before /{agent_id} routes to avoid
-# FastAPI matching "conversations" as an agent_id path parameter.
-# ---------------------------------------------------------------------------
-
-# In-memory store (stub — replace with DB persistence)
-_conversations_store: dict[str, dict[str, object]] = {}
-
-
-@router.get("/conversations", response_model=list[ConversationSummaryOut])
-async def list_conversations():
-    """List all saved conversations (newest first)."""
-    items = sorted(
-        _conversations_store.values(),
-        key=lambda c: str(c.get("updated_at", "")),
-        reverse=True,
-    )
-    return [
-        ConversationSummaryOut(
-            id=str(c["id"]),
-            summary=str(c["summary"]),
-            skill_pack=str(c["skill_pack"]),
-            message_count=len(c.get("messages", [])),  # type: ignore[arg-type]
-            created_at=str(c["created_at"]),
-            updated_at=str(c["updated_at"]),
-        )
-        for c in items
-    ]
-
-
-@router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
-async def get_conversation(conversation_id: str):
-    """Load a specific conversation with its messages."""
-    conv = _conversations_store.get(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return ConversationDetailOut(
-        id=str(conv["id"]),
-        summary=str(conv["summary"]),
-        skill_pack=str(conv["skill_pack"]),
-        messages=conv.get("messages", []),  # type: ignore[arg-type]
-        created_at=str(conv["created_at"]),
-        updated_at=str(conv["updated_at"]),
-    )
-
-
-@router.post("/conversations", response_model=ConversationSummaryOut, status_code=201)
-async def save_conversation(body: SaveConversationRequest):
-    """Save a conversation (creates a new entry)."""
-    conv_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    entry = {
-        "id": conv_id,
-        "summary": body.summary,
-        "skill_pack": body.skill_pack,
-        "messages": [m.model_dump() for m in body.messages],
-        "created_at": now,
-        "updated_at": now,
-    }
-    _conversations_store[conv_id] = entry
-    return ConversationSummaryOut(
-        id=conv_id,
-        summary=body.summary,
-        skill_pack=body.skill_pack,
-        message_count=len(body.messages),
-        created_at=now,
-        updated_at=now,
-    )
-
-
-@router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
-    """Delete a saved conversation."""
-    if conversation_id not in _conversations_store:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    del _conversations_store[conversation_id]
-    return {"deleted": True, "id": conversation_id}
-
-
-# ---------------------------------------------------------------------------
 # Memory management
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{agent_id}/memory")
 async def list_memories(
@@ -326,6 +274,7 @@ async def delete_memory(
 # Conversation history
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{agent_id}/history")
 async def get_conversation_history(
     agent_id: str,
@@ -350,6 +299,7 @@ async def clear_conversation_history(
 # ---------------------------------------------------------------------------
 # Patrol mode
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{agent_id}/patrol/start")
 async def start_patrol(
@@ -397,6 +347,7 @@ async def get_patrol_report(
 # ---------------------------------------------------------------------------
 # Patrol quick-check stub (AG4)
 # ---------------------------------------------------------------------------
+
 
 class PatrolCheckResponse(BaseModel):
     findings: list[str]
