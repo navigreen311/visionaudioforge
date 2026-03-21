@@ -4,6 +4,10 @@ import React, { useCallback, useRef, useState } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 
+/* ------------------------------------------------------------------ */
+/* Public types                                                        */
+/* ------------------------------------------------------------------ */
+
 export interface SpectrogramParams {
   n_fft: number;
   hop_length: number;
@@ -20,11 +24,10 @@ export interface SpectrogramStats {
 }
 
 interface SpectrogramViewerProps {
-  imageSrc: string | null;
+  spectrogramB64?: string;
+  type: "stft" | "mel";
+  stats?: SpectrogramStats;
   onReanalyze: (params: SpectrogramParams) => void;
-  stats?: SpectrogramStats | null;
-  /** When true, shows the n_mels dropdown (for Mel spectrogram tab) */
-  showMelControls?: boolean;
 }
 
 const N_FFT_OPTIONS = [512, 1024, 2048, 4096] as const;
@@ -39,36 +42,55 @@ const N_MELS_OPTIONS = [32, 64, 128, 256] as const;
 const MIN_SCALE = 0.5;
 const MAX_SCALE = 5;
 
+/* ------------------------------------------------------------------ */
+/* Component                                                           */
+/* ------------------------------------------------------------------ */
+
 export default function SpectrogramViewer({
-  imageSrc,
-  onReanalyze,
+  spectrogramB64,
+  type,
   stats,
-  showMelControls = false,
+  onReanalyze,
 }: SpectrogramViewerProps) {
-  // Transform state
+  // Transform state (pan / zoom)
   const [scale, setScale] = useState(1);
   const [translate, setTranslate] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const translateStart = useRef({ x: 0, y: 0 });
 
+  // Hover tooltip
+  const [tooltip, setTooltip] = useState<{
+    x: number;
+    y: number;
+    time: number;
+    freq: number;
+    db: number;
+  } | null>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
   // Controls state
   const [nFft, setNFft] = useState<number>(2048);
   const [hopLength, setHopLength] = useState<number>(512);
-  const [window, setWindow] = useState<SpectrogramParams["window"]>("hann");
+  const [windowFn, setWindowFn] = useState<SpectrogramParams["window"]>("hann");
   const [nMels, setNMels] = useState<number>(128);
 
-  const containerRef = useRef<HTMLDivElement>(null);
+  const showMelControls = type === "mel";
+  const imageSrc = spectrogramB64
+    ? spectrogramB64.startsWith("data:")
+      ? spectrogramB64
+      : `data:image/png;base64,${spectrogramB64}`
+    : null;
 
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? -0.15 : 0.15;
-      setScale((prev) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, prev + delta)));
-    },
-    [],
-  );
+  /* ----- Zoom (mouse wheel on frequency axis) ----- */
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.15 : 0.15;
+    setScale((prev) => Math.min(MAX_SCALE, Math.max(MIN_SCALE, prev + delta)));
+  }, []);
 
+  /* ----- Drag to pan ----- */
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (e.button !== 0) return;
@@ -81,41 +103,82 @@ export default function SpectrogramViewer({
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - dragStart.current.x;
-      const dy = e.clientY - dragStart.current.y;
-      setTranslate({
-        x: translateStart.current.x + dx,
-        y: translateStart.current.y + dy,
+      if (isDragging) {
+        const dx = e.clientX - dragStart.current.x;
+        const dy = e.clientY - dragStart.current.y;
+        setTranslate({
+          x: translateStart.current.x + dx,
+          y: translateStart.current.y + dy,
+        });
+        setTooltip(null);
+        return;
+      }
+
+      // Hover tooltip: approximate time/freq/dB from mouse position
+      if (!imageRef.current || !containerRef.current || !stats) return;
+      const imgRect = imageRef.current.getBoundingClientRect();
+      const relX = (e.clientX - imgRect.left) / imgRect.width;
+      const relY = (e.clientY - imgRect.top) / imgRect.height;
+
+      if (relX < 0 || relX > 1 || relY < 0 || relY > 1) {
+        setTooltip(null);
+        return;
+      }
+
+      const maxFreq =
+        type === "mel"
+          ? (nMels / 128) * 8000
+          : (nFft / 2) * (44100 / nFft); // approximate Nyquist
+
+      const approxTime = relX * stats.duration;
+      const approxFreq = (1 - relY) * maxFreq;
+      const approxDb =
+        stats.db_max - relY * (stats.db_max - stats.db_min);
+
+      const containerRect = containerRef.current.getBoundingClientRect();
+      setTooltip({
+        x: e.clientX - containerRect.left,
+        y: e.clientY - containerRect.top,
+        time: approxTime,
+        freq: approxFreq,
+        db: approxDb,
       });
     },
-    [isDragging],
+    [isDragging, stats, type, nFft, nMels],
   );
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
   }, []);
 
+  const handleMouseLeave = useCallback(() => {
+    setIsDragging(false);
+    setTooltip(null);
+  }, []);
+
+  /* ----- Double-click reset ----- */
   const handleDoubleClick = useCallback(() => {
     setScale(1);
     setTranslate({ x: 0, y: 0 });
   }, []);
 
+  /* ----- Re-analyze ----- */
   const handleReanalyze = useCallback(() => {
     const params: SpectrogramParams = {
       n_fft: nFft,
       hop_length: hopLength,
-      window,
+      window: windowFn,
     };
     if (showMelControls) {
       params.n_mels = nMels;
     }
     onReanalyze(params);
-  }, [nFft, hopLength, window, nMels, showMelControls, onReanalyze]);
+  }, [nFft, hopLength, windowFn, nMels, showMelControls, onReanalyze]);
 
+  /* ----- Empty state ----- */
   if (!imageSrc) {
     return (
-      <Card title="Spectrogram Viewer">
+      <Card title={type === "mel" ? "Mel Spectrogram Viewer" : "STFT Spectrogram Viewer"}>
         <div className="flex flex-col items-center justify-center py-16 text-gray-400">
           <svg
             className="mb-3 h-12 w-12"
@@ -138,7 +201,7 @@ export default function SpectrogramViewer({
   }
 
   return (
-    <Card title="Spectrogram Viewer">
+    <Card title={type === "mel" ? "Mel Spectrogram Viewer" : "STFT Spectrogram Viewer"}>
       <div className="space-y-4">
         {/* Controls row */}
         <div className="flex flex-wrap items-end gap-3">
@@ -156,8 +219,8 @@ export default function SpectrogramViewer({
           />
           <SelectControl
             label="Window"
-            value={window}
-            onChange={(v) => setWindow(v as SpectrogramParams["window"])}
+            value={windowFn}
+            onChange={(v) => setWindowFn(v as SpectrogramParams["window"])}
             options={WINDOW_OPTIONS.map((o) => ({ label: o.label, value: o.value }))}
           />
           {showMelControls && (
@@ -184,7 +247,7 @@ export default function SpectrogramViewer({
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
           onDoubleClick={handleDoubleClick}
         >
           <div
@@ -196,16 +259,33 @@ export default function SpectrogramViewer({
             className="flex h-full w-full items-center justify-center"
           >
             <img
+              ref={imageRef}
               src={imageSrc}
-              alt="Spectrogram"
+              alt={type === "mel" ? "Mel Spectrogram" : "STFT Spectrogram"}
               className="max-h-full max-w-full object-contain select-none"
               draggable={false}
             />
           </div>
 
+          {/* Hover tooltip */}
+          {tooltip && (
+            <div
+              className="pointer-events-none absolute z-20 rounded bg-black/80 px-2.5 py-1.5 text-xs text-white whitespace-nowrap"
+              style={{
+                left: tooltip.x + 12,
+                top: tooltip.y - 8,
+              }}
+            >
+              <div>Time: {tooltip.time.toFixed(3)}s</div>
+              <div>Freq: {tooltip.freq.toFixed(0)} Hz</div>
+              <div>~{tooltip.db.toFixed(1)} dB</div>
+            </div>
+          )}
+
           {/* Zoom indicator */}
           <div className="absolute bottom-2 right-2 rounded bg-black/60 px-2 py-0.5 text-xs text-white tabular-nums">
-            {Math.round(scale * 100)}% &middot; scroll to zoom &middot; double-click to reset
+            {Math.round(scale * 100)}% &middot; scroll to zoom &middot; double-click to
+            reset
           </div>
         </div>
 
