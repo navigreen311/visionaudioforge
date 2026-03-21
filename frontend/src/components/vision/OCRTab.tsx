@@ -17,7 +17,7 @@ const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
   { value: "de", label: "German" },
 ];
 
-interface OCRBlock {
+interface OCRWord {
   text: string;
   confidence: number;
   bbox: number[]; // [x, y, w, h]
@@ -25,9 +25,10 @@ interface OCRBlock {
 
 interface OCRResponse {
   text: string;
-  blocks: OCRBlock[];
-  detected_language?: string;
-  [key: string]: unknown;
+  words: OCRWord[];
+  language?: string;
+  confidence?: number;
+  processing_time_ms?: number;
 }
 
 interface OCRMetrics {
@@ -39,30 +40,53 @@ interface OCRMetrics {
 
 function computeMetrics(result: OCRResponse): OCRMetrics {
   const words = result.text.trim().split(/\s+/).filter(Boolean);
+  const filteredWords = result.words ?? [];
   const avgConf =
-    result.blocks.length > 0
-      ? result.blocks.reduce((sum, b) => sum + b.confidence, 0) / result.blocks.length
-      : 0;
+    filteredWords.length > 0
+      ? filteredWords.reduce((sum, b) => sum + b.confidence, 0) / filteredWords.length
+      : result.confidence ?? 0;
 
   return {
     wordCount: words.length,
     charCount: result.text.length,
-    detectedLanguage: result.detected_language ?? "unknown",
+    detectedLanguage: result.language ?? "unknown",
     avgConfidence: avgConf,
   };
 }
 
-export default function OCRTab() {
-  const [file, setFile] = useState<File | null>(null);
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
+interface OCRTabProps {
+  imageSrc?: string;
+  imageFile?: File;
+}
+
+export default function OCRTab({ imageSrc: externalSrc, imageFile: externalFile }: OCRTabProps) {
+  const [file, setFile] = useState<File | null>(externalFile ?? null);
+  const [imageSrc, setImageSrc] = useState<string | null>(externalSrc ?? null);
   const [language, setLanguage] = useState<Language>("auto");
   const [outputFormat, setOutputFormat] = useState<OutputFormat>("plain");
   const [confidenceFilter, setConfidenceFilter] = useState(60);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<OCRResponse | null>(null);
+  const [copied, setCopied] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  // Sync external props
+  useEffect(() => {
+    if (externalFile) {
+      setFile(externalFile);
+      setImageSrc(URL.createObjectURL(externalFile));
+      setResult(null);
+    }
+  }, [externalFile]);
+
+  useEffect(() => {
+    if (externalSrc) {
+      setImageSrc(externalSrc);
+      setResult(null);
+    }
+  }, [externalSrc]);
 
   const handleFile = useCallback((f: File) => {
     setFile(f);
@@ -84,14 +108,33 @@ export default function OCRTab() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("language", language);
-      formData.append("output_format", outputFormat);
-      formData.append("confidence_filter", String(confidenceFilter / 100));
 
-      const { data } = await api.post<OCRResponse>("/api/vision/ocr", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setResult(data);
+      // Backend uses Query parameters
+      const params = new URLSearchParams();
+      params.set("language", language === "auto" ? "auto" : language);
+      params.set("output_format", outputFormat === "plain" ? "text" : "json");
+      params.set("confidence_filter", String(confidenceFilter / 100));
+
+      const { data } = await api.post<OCRResponse>(
+        `/api/vision/ocr?${params.toString()}`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+
+      // Normalize response: backend returns { text, words, language, confidence }
+      const normalized: OCRResponse = {
+        text: data.text ?? "",
+        words: (data.words ?? []).map((w) => ({
+          text: w.text,
+          confidence: w.confidence,
+          bbox: w.bbox,
+        })),
+        language: data.language,
+        confidence: data.confidence,
+        processing_time_ms: data.processing_time_ms,
+      };
+
+      setResult(normalized);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "OCR extraction failed.";
@@ -116,18 +159,18 @@ export default function OCRTab() {
       canvas.height = img.naturalHeight;
       ctx.drawImage(img, 0, 0);
 
-      const filtered = result.blocks.filter(
+      const filtered = (result.words ?? []).filter(
         (b) => b.confidence >= confidenceFilter / 100,
       );
 
-      filtered.forEach((block) => {
-        const [x, y, w, h] = block.bbox;
+      filtered.forEach((word) => {
+        const [x, y, w, h] = word.bbox;
 
         ctx.strokeStyle = "#3b82f6";
         ctx.lineWidth = 2;
         ctx.strokeRect(x, y, w, h);
 
-        const confLabel = `${(block.confidence * 100).toFixed(0)}%`;
+        const confLabel = `${(word.confidence * 100).toFixed(0)}%`;
         ctx.font = "12px sans-serif";
         const textW = ctx.measureText(confLabel).width;
         ctx.fillStyle = "rgba(59, 130, 246, 0.85)";
@@ -144,9 +187,30 @@ export default function OCRTab() {
     }
   }, [result, imageSrc, outputFormat, confidenceFilter]);
 
+  const handleCopyText = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback for non-secure contexts
+      const textarea = document.createElement("textarea");
+      textarea.value = result.text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
   const metrics = result ? computeMetrics(result) : null;
-  const filteredBlocks = result
-    ? result.blocks.filter((b) => b.confidence >= confidenceFilter / 100)
+  const filteredWords = result
+    ? (result.words ?? []).filter((b) => b.confidence >= confidenceFilter / 100)
     : [];
 
   return (
@@ -200,9 +264,12 @@ export default function OCRTab() {
         </div>
 
         <div>
-          <label className="mb-1 block text-xs text-gray-500">
-            Confidence Filter: {confidenceFilter}%
-          </label>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs text-gray-500">Confidence Filter</label>
+            <span className="inline-flex items-center rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">
+              {confidenceFilter}%
+            </span>
+          </div>
           <input
             type="range"
             min={0}
@@ -241,7 +308,15 @@ export default function OCRTab() {
       {/* Results */}
       {result && (
         <div className="space-y-4">
-          <h3 className="text-sm font-semibold text-gray-700">Results</h3>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-700">Results</h3>
+            <button
+              onClick={handleCopyText}
+              className="rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50"
+            >
+              {copied ? "Copied!" : "Copy Text"}
+            </button>
+          </div>
 
           {/* Metrics row */}
           {metrics && (
@@ -279,7 +354,7 @@ export default function OCRTab() {
 
           {outputFormat === "json" && (
             <pre className="max-h-96 overflow-auto rounded-lg border border-gray-300 bg-gray-900 p-4 text-sm text-green-400">
-              <code>{JSON.stringify(filteredBlocks, null, 2)}</code>
+              <code>{JSON.stringify(filteredWords, null, 2)}</code>
             </pre>
           )}
 

@@ -98,16 +98,24 @@ export interface OpticalFlowResult {
 
 export interface DetectResult {
   detections: Array<{
-    label: string;
+    label?: string;
+    class_name?: string;
+    class_id?: number;
     confidence: number;
     bbox: [number, number, number, number];
   }>;
+  count: number;
+  image_b64?: string;
+  processing_time_ms?: number;
   [key: string]: unknown;
 }
 
 export interface OCRResult {
   text: string;
-  blocks: Array<{ text: string; confidence: number; bbox: number[] }>;
+  words: Array<{ text: string; confidence: number; bbox: number[] }>;
+  language?: string;
+  confidence?: number;
+  processing_time_ms?: number;
   [key: string]: unknown;
 }
 
@@ -149,22 +157,38 @@ export async function detectObjects(
   file: File,
   confidence?: number,
   classFilter?: string,
+  iouThreshold?: number,
+  maxDetections?: number,
 ): Promise<DetectResult> {
   const formData = new FormData();
   formData.append("file", file);
-  if (confidence !== undefined) formData.append("confidence", String(confidence));
-  if (classFilter) formData.append("class_filter", classFilter);
+  const params: Record<string, string | number> = {};
+  if (confidence !== undefined) params.confidence = confidence;
+  if (iouThreshold !== undefined) params.iou_threshold = iouThreshold;
+  if (maxDetections !== undefined) params.max_detections = maxDetections;
+  if (classFilter) params.classes = classFilter;
   const { data } = await api.post("/api/vision/detect", formData, {
     headers: { "Content-Type": "multipart/form-data" },
+    params,
   });
   return data;
 }
 
-export async function extractText(file: File): Promise<OCRResult> {
+export async function extractText(
+  file: File,
+  language?: string,
+  outputFormat?: string,
+  confidenceFilter?: number,
+): Promise<OCRResult> {
   const formData = new FormData();
   formData.append("file", file);
+  const params: Record<string, string | number> = {};
+  if (language) params.language = language;
+  if (outputFormat) params.output_format = outputFormat;
+  if (confidenceFilter !== undefined) params.confidence_filter = confidenceFilter;
   const { data } = await api.post("/api/vision/ocr", formData, {
     headers: { "Content-Type": "multipart/form-data" },
+    params,
   });
   return data;
 }
