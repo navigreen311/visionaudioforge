@@ -1,5 +1,7 @@
 """API routes for the Evaluation Lab — benchmarks, tournament, threshold analysis, scorecards."""
 
+import random
+import time
 import uuid
 from typing import Any
 
@@ -137,6 +139,43 @@ async def threshold_analysis(body: ThresholdRequest) -> list[ThresholdPoint]:
         body.predictions, body.ground_truth, body.thresholds
     )
     return [ThresholdPoint(**r) for r in results]
+
+
+class BenchmarkRunRequest(BaseModel):
+    """Standalone benchmark run — create + execute in one call."""
+
+    model_config = {"protected_namespaces": ()}
+    name: str
+    dataset_id: str
+    model_ids: list[str] = Field(..., min_length=2, max_length=10)
+    metrics: list[str] = Field(default_factory=lambda: ["accuracy", "precision", "recall", "f1"])
+    workspace_id: str | None = None
+
+
+@router.post("/benchmark", response_model=BenchmarkRunOut)
+async def run_benchmark_standalone(body: BenchmarkRunRequest) -> BenchmarkRunOut:
+    """Create and run a benchmark in a single call, returning mock results."""
+    start = time.monotonic()
+
+    # Generate deterministic-ish mock scores per model per metric
+    results: dict[str, dict[str, float]] = {}
+    for model_id in body.model_ids:
+        seed = hash(model_id + body.dataset_id) & 0xFFFFFFFF
+        rng = random.Random(seed)
+        scores: dict[str, float] = {}
+        for metric in body.metrics:
+            scores[metric] = round(rng.uniform(0.55, 0.98), 4)
+        results[model_id] = scores
+
+    # Rank by average score descending
+    def avg_score(mid: str) -> float:
+        vals = results[mid].values()
+        return sum(vals) / len(vals) if vals else 0.0
+
+    ranking = sorted(body.model_ids, key=avg_score, reverse=True)
+    duration_ms = round((time.monotonic() - start) * 1000, 2)
+
+    return BenchmarkRunOut(results=results, ranking=ranking, duration_ms=duration_ms)
 
 
 @router.get("/scorecard/{model_id}", response_model=ScorecardOut)
