@@ -1,10 +1,27 @@
-/** Shared types for federated learning charts. */
+/** Shared types for federated learning components. */
+
+export type RoundStatus = "complete" | "partial" | "failed";
+
+export interface SiteUpdate {
+  siteId: string;
+  samplesUsed: number;
+  localLoss: number;
+  localAccuracy: number;
+  uploadDuration: number;
+}
 
 export interface RoundData {
-  round_number: number;
-  accuracy: number | null;
-  loss: number | null;
-  privacy_epsilon_spent: number;
+  round: number;
   participants: number;
-  duration_s: number | null;
+  accuracy: number;
+  loss: number;
+  epsilonSpent: number;
+  durationSeconds: number;
+  status: RoundStatus;
+  siteUpdates: SiteUpdate[];
+}
+
+export interface ParticipantInfo {
+  id: string;
+  label: string;
 }

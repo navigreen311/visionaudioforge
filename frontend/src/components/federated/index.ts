@@ -1,3 +1,3 @@
-export { default as AccuracyLossChart } from "./AccuracyLossChart";
-export { default as PrivacyBudgetChart } from "./PrivacyBudgetChart";
-export type { RoundData } from "./types";
+export { default as RoundHistoryTable } from "./RoundHistoryTable";
+export { default as ContributionChart } from "./ContributionChart";
+export type { RoundData, RoundStatus, SiteUpdate, ParticipantInfo } from "./types";
