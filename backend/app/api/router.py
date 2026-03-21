@@ -23,6 +23,7 @@ from app.api.routes import (
     investigation,
     investigation_mock,
     knowledge_graph,
+    memory,
     metrics,
     mobile,
     observability,
@@ -73,6 +74,7 @@ api_router.include_router(integrations.router)
 api_router.include_router(observability.router)
 api_router.include_router(runtime.router)
 api_router.include_router(knowledge_graph.router)
+api_router.include_router(memory.router)
 api_router.include_router(semantic_memory.router)
 api_router.include_router(command_center.router)
 api_router.include_router(simulation.router)
