@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
 import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
+import EvidenceTab, { CaseEvent } from "@/components/investigate/EvidenceTab";
+import PlaybackTab from "@/components/investigate/PlaybackTab";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -390,55 +392,33 @@ function ReportTab({ caseId }: { caseId: string }) {
   );
 }
 
-function SyncedPlaybackPanel() {
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration] = useState(120);
+// ---------------------------------------------------------------------------
+// Convert TimelineEventData -> CaseEvent for the new tabs
+// ---------------------------------------------------------------------------
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, "0")}`;
+function toCaseEvent(event: TimelineEventData): CaseEvent {
+  const payload = (event.payload || {}) as Record<string, string>;
+  const typeMap: Record<string, CaseEvent["type"]> = {
+    camera: "camera",
+    audio: "audio",
+    alert: "alert",
+    note: "note",
+    detection: "detection",
+    evidence: "evidence",
   };
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">
-        Synced Playback
-      </h3>
-
-      {/* Video player placeholder */}
-      <div className="bg-black rounded-lg aspect-video flex items-center justify-center">
-        <span className="text-gray-400 text-sm">Video Player</span>
-      </div>
-
-      {/* Audio waveform placeholder */}
-      <div className="bg-gray-100 rounded-lg h-16 flex items-center justify-center">
-        <span className="text-gray-400 text-xs">Audio Waveform</span>
-      </div>
-
-      {/* Timeline scrubber */}
-      <div className="flex items-center gap-3">
-        <span className="text-xs text-gray-500 w-10">{formatTime(currentTime)}</span>
-        <input
-          type="range"
-          min={0}
-          max={duration}
-          value={currentTime}
-          onChange={(e) => setCurrentTime(Number(e.target.value))}
-          className="flex-1"
-        />
-        <span className="text-xs text-gray-500 w-10">{formatTime(duration)}</span>
-      </div>
-
-      {/* Transcript scroll area */}
-      <div className="bg-gray-50 rounded-lg p-3 h-32 overflow-y-auto">
-        <h4 className="text-xs font-semibold text-gray-600 mb-2">Transcript</h4>
-        <p className="text-xs text-gray-400">
-          Transcript segments will appear here, synced to the current playback timestamp at {formatTime(currentTime)}.
-        </p>
-      </div>
-    </div>
-  );
+  return {
+    id: event.id,
+    type: typeMap[event.type] ?? "evidence",
+    summary:
+      payload.name || payload.content || payload.notes || `${event.type} event`,
+    timestamp: event.timestamp || new Date().toISOString(),
+    source: event.source,
+    thumbnailUrl: payload.thumbnail_url,
+    mediaUrl: payload.media_url,
+    mimeType: payload.mime_type,
+    fileSize: payload.file_size ? Number(payload.file_size) : undefined,
+    notes: payload.notes,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -602,6 +582,12 @@ export default function InvestigatePage() {
   // Filter checkpoint events for timeline markers
   const checkpoints = events.filter((e) => e.type === "checkpoint");
 
+  // Convert timeline events to CaseEvent format for Evidence/Playback tabs
+  const caseEvents: CaseEvent[] = useMemo(
+    () => events.map(toCaseEvent),
+    [events]
+  );
+
   const tabs: { key: TabKey; label: string }[] = [
     { key: "evidence", label: "Evidence" },
     { key: "playback", label: "Playback" },
@@ -675,7 +661,19 @@ export default function InvestigatePage() {
 
         {/* Tab content */}
         <div className="flex-1 overflow-y-auto p-4">
-          {activeTab === "evidence" && (
+          {activeTab === "evidence" && selectedCase && (
+            <EvidenceTab
+              caseId={selectedCase.id}
+              events={caseEvents}
+              onRemove={(eventId) => {
+                // Remove evidence from case via API
+                axios.delete(
+                  `${API_BASE}/api/investigate/cases/${selectedCase.id}/evidence/${eventId}`
+                ).then(() => loadTimeline()).catch(() => {});
+              }}
+            />
+          )}
+          {activeTab === "evidence" && !selectedCase && (
             <EvidencePanel
               event={selectedEvent}
               onAddNote={handleAddNote}
@@ -684,7 +682,14 @@ export default function InvestigatePage() {
             />
           )}
 
-          {activeTab === "playback" && <SyncedPlaybackPanel />}
+          {activeTab === "playback" && selectedCase && (
+            <PlaybackTab caseId={selectedCase.id} events={caseEvents} />
+          )}
+          {activeTab === "playback" && !selectedCase && (
+            <p className="text-sm text-gray-400 text-center mt-8">
+              Select a case to use synced playback.
+            </p>
+          )}
 
           {activeTab === "comments" && selectedCase && (
             <CommentsSection caseId={selectedCase.id} />
