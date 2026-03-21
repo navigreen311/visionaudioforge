@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 
-import NodeConfig from "@/components/pipeline/NodeConfig";
+import NodeConfigPanel from "@/components/pipeline/NodeConfigPanel";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
 
@@ -253,6 +253,17 @@ export default function PipelinePage() {
     [setNodes],
   );
 
+  const handleRemoveNode = useCallback(
+    (nodeId: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+      setEdges((eds) =>
+        eds.filter((e) => e.source !== nodeId && e.target !== nodeId),
+      );
+      setSelectedNode(null);
+    },
+    [setNodes, setEdges],
+  );
+
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
       {/* Toolbar */}
@@ -322,7 +333,11 @@ export default function PipelinePage() {
           nodesState={[nodes, setNodes, onNodesChange]}
           edgesState={[edges, setEdges, onEdgesChange]}
         />
-        <NodeConfig node={selectedNode} onUpdate={handleNodeParamsUpdate} />
+        <NodeConfigPanel
+          selectedNode={selectedNode}
+          onConfigChange={handleNodeParamsUpdate}
+          onRemove={handleRemoveNode}
+        />
 
         {/* Templates side panel */}
         {showTemplatesPanel && (
