@@ -1,11 +1,14 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useCallback } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import FileUpload from "@/components/ui/FileUpload";
+import DriftDetectionTab from "@/components/validate/DriftDetectionTab";
+import CalibrationResults from "@/components/validate/CalibrationResults";
+import ReliabilityDiagram from "@/components/validate/ReliabilityDiagram";
+import ConfidenceHistogram from "@/components/validate/ConfidenceHistogram";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -26,13 +29,12 @@ interface CalibrationResult {
   ece: number;
   mce: number;
   is_calibrated: boolean;
-}
-
-interface DriftResult {
-  drift_detected: boolean;
-  drift_score: number;
-  drifted_features: string[];
-  recommendation: string;
+  /* Extended metrics (populated by enhanced endpoint) */
+  accuracy?: number;
+  precision?: number;
+  recall?: number;
+  f1?: number;
+  auc_roc?: number;
 }
 
 interface FeatureAttribution {
@@ -147,158 +149,31 @@ function CalibrationTab() {
 
       {result && (
         <>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Card title="ECE">
-              <p className="text-3xl font-bold text-gray-900">{result.ece.toFixed(4)}</p>
-              <p className="text-sm text-gray-500">Expected Calibration Error</p>
-            </Card>
-            <Card title="MCE">
-              <p className="text-3xl font-bold text-gray-900">{result.mce.toFixed(4)}</p>
-              <p className="text-sm text-gray-500">Max Calibration Error</p>
-            </Card>
-            <Card title="Status">
-              <Badge variant={result.is_calibrated ? "success" : "warning"}>
-                {result.is_calibrated ? "Well Calibrated" : "Needs Calibration"}
-              </Badge>
-            </Card>
-          </div>
+          {/* VA1 — 6 stat cards row */}
+          <CalibrationResults
+            results={{
+              bins: result.bins,
+              ece: result.ece,
+              mce: result.mce,
+              is_calibrated: result.is_calibrated,
+              accuracy: result.accuracy,
+              precision: result.precision,
+              recall: result.recall,
+              f1: result.f1,
+              auc_roc: result.auc_roc,
+            }}
+          />
 
+          {/* Reliability Diagram (SVG 300x300) */}
           <Card title="Reliability Diagram">
-            <div className="flex items-end gap-1" style={{ height: 220 }}>
-              {result.bins.map((bin, i) => {
-                const maxH = 200;
-                const confH = bin.avg_confidence * maxH;
-                const accH = bin.accuracy * maxH;
-                return (
-                  <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
-                    <div className="w-full flex items-end gap-px" style={{ height: maxH }}>
-                      <div
-                        className="flex-1 bg-blue-300 rounded-t"
-                        style={{ height: confH }}
-                        title={`Confidence: ${bin.avg_confidence.toFixed(2)}`}
-                      />
-                      <div
-                        className="flex-1 bg-green-500 rounded-t"
-                        style={{ height: accH }}
-                        title={`Accuracy: ${bin.accuracy.toFixed(2)}`}
-                      />
-                    </div>
-                    <span className="text-[10px] text-gray-400">
-                      {bin.bin_start.toFixed(1)}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1">
-                <span className="inline-block h-3 w-3 rounded bg-blue-300" /> Confidence
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="inline-block h-3 w-3 rounded bg-green-500" /> Accuracy
-              </span>
-            </div>
+            <ReliabilityDiagram bins={result.bins} />
+          </Card>
+
+          {/* Confidence Histogram (SVG 400x200) */}
+          <Card title="Confidence Distribution">
+            <ConfidenceHistogram bins={result.bins} />
           </Card>
         </>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Drift Detection Tab                                                */
-/* ------------------------------------------------------------------ */
-
-function DriftTab() {
-  const [result, setResult] = useState<DriftResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [refText, setRefText] = useState(
-    '{"feature_a": {"mean": 0.5, "std": 0.1}, "feature_b": {"mean": 10.0, "std": 1.0}}'
-  );
-  const [curText, setCurText] = useState(
-    '{"feature_a": {"mean": 0.55, "std": 0.1}, "feature_b": {"mean": 10.5, "std": 1.0}}'
-  );
-
-  const handleDetect = async () => {
-    setError(null);
-    try {
-      const reference_stats = JSON.parse(refText);
-      const current_stats = JSON.parse(curText);
-      setLoading(true);
-      const resp = await fetch(`${API_BASE}/api/validate/drift`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_stats, current_stats }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      setResult(await resp.json());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Invalid JSON or request failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card title="Feature Statistics">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Reference Stats (JSON)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-              rows={5}
-              value={refText}
-              onChange={(e) => setRefText(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Current Stats (JSON)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-              rows={5}
-              value={curText}
-              onChange={(e) => setCurText(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="mt-4">
-          <Button onClick={handleDetect} disabled={loading}>
-            {loading ? "Detecting..." : "Run Drift Detection"}
-          </Button>
-        </div>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-      </Card>
-
-      {result && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Card title="Drift Score">
-            <p className="text-3xl font-bold text-gray-900">{result.drift_score.toFixed(4)}</p>
-            <Badge variant={result.drift_detected ? "error" : "success"}>
-              {result.drift_detected ? "Drift Detected" : "No Drift"}
-            </Badge>
-          </Card>
-          <Card title="Details">
-            {result.drifted_features.length > 0 ? (
-              <ul className="space-y-1">
-                {result.drifted_features.map((f) => (
-                  <li key={f} className="flex items-center gap-2 text-sm">
-                    <span className="inline-block h-2 w-2 rounded-full bg-red-500" />
-                    <span className="font-medium text-red-700">{f}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-gray-500">All features within expected range.</p>
-            )}
-            <p className="mt-3 text-sm text-gray-600">{result.recommendation}</p>
-          </Card>
-        </div>
       )}
     </div>
   );
@@ -577,15 +452,116 @@ function ModelCardsTab() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Export Report Floating Button (VA5)                                 */
+/* ------------------------------------------------------------------ */
+
+interface ExportMenuProps {
+  onExportPdf: () => void;
+  onExportJson: () => void;
+  onCopySummary: () => void;
+}
+
+function ExportReportButton({ onExportPdf, onExportJson, onCopySummary }: ExportMenuProps) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const toggle = useCallback(() => setOpen((prev) => !prev), []);
+
+  return (
+    <div ref={menuRef} className="fixed bottom-6 right-6 z-50">
+      {open && (
+        <div className="mb-2 flex flex-col gap-1 rounded-lg border border-gray-200 bg-white p-2 shadow-lg">
+          <button
+            onClick={() => { onExportPdf(); setOpen(false); }}
+            className="flex items-center gap-2 rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Download PDF
+          </button>
+          <button
+            onClick={() => { onExportJson(); setOpen(false); }}
+            className="flex items-center gap-2 rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Download JSON
+          </button>
+          <button
+            onClick={() => { onCopySummary(); setOpen(false); }}
+            className="flex items-center gap-2 rounded px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Copy Summary
+          </button>
+        </div>
+      )}
+      <button
+        onClick={toggle}
+        className="flex h-14 w-14 items-center justify-center rounded-full bg-blue-600 text-white shadow-lg transition-transform hover:scale-105 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+        aria-label="Export Report"
+        title="Export Report"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          className="h-6 w-6"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+          strokeWidth={2}
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"
+          />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Page                                                          */
 /* ------------------------------------------------------------------ */
 
 export default function ValidatePage() {
   const [activeTab, setActiveTab] = useState("calibration");
 
+  /* ---- Export handlers (VA5) ---- */
+  const handleExportPdf = useCallback(() => {
+    window.print();
+  }, []);
+
+  const handleExportJson = useCallback(() => {
+    const payload = {
+      exported_at: new Date().toISOString(),
+      active_tab: activeTab,
+      note: "Full export requires backend report generation (V2).",
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `validate-report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [activeTab]);
+
+  const handleCopySummary = useCallback(async () => {
+    const summary = `Validate & Trust Report\nTab: ${activeTab}\nExported: ${new Date().toISOString()}`;
+    try {
+      await navigator.clipboard.writeText(summary);
+    } catch {
+      const textArea = document.createElement("textarea");
+      textArea.value = summary;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+    }
+  }, [activeTab]);
+
   const tabs = [
     { id: "calibration", label: "Calibration", content: <CalibrationTab /> },
-    { id: "drift", label: "Drift Detection", content: <DriftTab /> },
+    { id: "drift", label: "Drift Detection", content: <DriftDetectionTab /> },
     { id: "explainability", label: "Explainability", content: <ExplainabilityTab /> },
     { id: "model-cards", label: "Model Cards", content: <ModelCardsTab /> },
   ];
@@ -599,6 +575,13 @@ export default function ValidatePage() {
         </p>
       </div>
       <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+
+      {/* VA5 — Floating Export Report button */}
+      <ExportReportButton
+        onExportPdf={handleExportPdf}
+        onExportJson={handleExportJson}
+        onCopySummary={handleCopySummary}
+      />
     </div>
   );
 }
