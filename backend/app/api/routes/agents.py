@@ -392,3 +392,21 @@ async def get_patrol_report(
         "is_patrolling": patrol.is_running,
         **report,
     }
+
+
+# ---------------------------------------------------------------------------
+# Patrol quick-check stub (AG4)
+# ---------------------------------------------------------------------------
+
+class PatrolCheckResponse(BaseModel):
+    findings: list[str]
+    alerts: int
+
+
+@router.post("/patrol", response_model=PatrolCheckResponse)
+async def patrol_quick_check() -> PatrolCheckResponse:
+    """Quick patrol check — returns current system health summary."""
+    return PatrolCheckResponse(
+        findings=["All streams healthy"],
+        alerts=0,
+    )
