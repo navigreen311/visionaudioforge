@@ -1,5 +1,8 @@
 """Observability routes — SRE dashboard, SLA, alert fatigue analytics."""
 
+import random
+import uuid as _uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -53,6 +56,112 @@ async def error_taxonomy(
 async def queue_metrics():
     """Celery / task-queue metrics."""
     return await SREDashboardService.get_queue_metrics()
+
+
+# ------------------------------------------------------------------
+# OB5 — Per-pipeline breakdown (mock data)
+# ------------------------------------------------------------------
+
+_PIPELINE_NAMES = [
+    "Vision Detect",
+    "Audio Transform",
+    "Feature Extraction",
+    "Model Training",
+    "Data Ingestion",
+    "Export Pipeline",
+]
+
+_PIPELINE_STATUSES = ["running", "healthy", "degraded", "failed", "inactive"]
+
+
+@router.get("/pipelines")
+async def list_pipelines() -> dict:
+    """Return per-pipeline health rows for the Pipeline Health Table (OB5)."""
+    now = datetime.now(timezone.utc)
+    pipelines: list[dict] = []
+    for name in _PIPELINE_NAMES:
+        status = random.choice(_PIPELINE_STATUSES)
+        runs_24h = random.randint(0, 320)
+        success_rate = round(random.uniform(0.7, 1.0), 4) if runs_24h > 0 else 0.0
+        pipelines.append(
+            {
+                "id": str(_uuid.uuid5(_uuid.NAMESPACE_DNS, name)),
+                "name": name,
+                "status": status,
+                "runs24h": runs_24h,
+                "successRate": success_rate,
+                "avgDurationMs": round(random.uniform(800, 30000), 2),
+                "lastRun": (
+                    now - timedelta(minutes=random.randint(1, 1440))
+                ).isoformat(),
+                "enabled": status != "inactive",
+            }
+        )
+    return {"pipelines": pipelines}
+
+
+# ------------------------------------------------------------------
+# OB6 — Error taxonomy rows (mock data)
+# ------------------------------------------------------------------
+
+_ERROR_TYPES = [
+    {
+        "errorType": "ValidationError",
+        "endpoints": ["/api/vision/detect", "/api/pipeline/run"],
+        "stack": 'File "app/api/routes/vision.py", line 42, in detect\n    raise ValidationError("Invalid image format")',
+    },
+    {
+        "errorType": "TimeoutError",
+        "endpoints": ["/api/audio/transform"],
+        "stack": 'File "app/services/audio.py", line 118, in transform\n    raise TimeoutError("Upstream model timeout after 30s")',
+    },
+    {
+        "errorType": "InternalServerError",
+        "endpoints": ["/api/pipeline/run", "/api/vision/detect"],
+        "stack": 'File "app/core/runner.py", line 55, in execute\n    raise RuntimeError("Unexpected null tensor")',
+    },
+    {
+        "errorType": "NotFoundError",
+        "endpoints": ["/api/assets/download"],
+        "stack": 'File "app/api/routes/assets.py", line 28, in download\n    raise HTTPException(404, "Asset not found")',
+    },
+    {
+        "errorType": "RateLimitExceeded",
+        "endpoints": ["/api/search/query", "/api/agents/chat"],
+        "stack": 'File "app/middleware/rate_limit.py", line 14, in __call__\n    raise RateLimitExceeded("429 Too Many Requests")',
+    },
+]
+
+
+@router.get("/errors/taxonomy")
+async def error_taxonomy_rows(
+    hours: int = Query(24, ge=1, le=720),
+) -> dict:
+    """Return detailed error taxonomy rows for the Error Taxonomy Table (OB6)."""
+    now = datetime.now(timezone.utc)
+    rows: list[dict] = []
+    for et in _ERROR_TYPES:
+        count = random.randint(1, 45)
+        rows.append(
+            {
+                "id": str(_uuid.uuid5(_uuid.NAMESPACE_DNS, et["errorType"])),
+                "errorType": et["errorType"],
+                "count": count,
+                "lastSeen": (
+                    now - timedelta(minutes=random.randint(1, hours * 60))
+                ).isoformat(),
+                "trend": {
+                    "values": [random.randint(0, count) for _ in range(7)],
+                },
+                "affectedEndpoints": et["endpoints"],
+                "detail": {
+                    "traceIds": [str(_uuid.uuid4()) for _ in range(random.randint(1, 4))],
+                    "stackExcerpt": et["stack"],
+                },
+            }
+        )
+    rows.sort(key=lambda r: r["count"], reverse=True)
+    return {"errors": rows}
 
 
 # ------------------------------------------------------------------
