@@ -9,6 +9,7 @@ from app.api.routes import (
     auth,
     capture,
     command_center,
+    dashboard,
     datasets,
     developer,
     edge,
@@ -81,3 +82,4 @@ api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
 api_router.include_router(developer.router)
+api_router.include_router(dashboard.router)
