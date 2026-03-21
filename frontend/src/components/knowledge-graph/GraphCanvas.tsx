@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
+import type { PathHighlight } from "./PathFinder";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,6 +148,7 @@ interface GraphCanvasProps {
   edges: GraphEdge[];
   selectedNodeId?: string | null;
   highlightedNodeId?: string | null;
+  pathHighlight?: PathHighlight | null;
   onNodeClick?: (node: GraphNode) => void;
   width?: number;
   height?: number;
@@ -157,6 +159,7 @@ export default function GraphCanvas({
   edges,
   selectedNodeId,
   highlightedNodeId,
+  pathHighlight,
   onNodeClick,
   width = 800,
   height = 600,
@@ -213,6 +216,10 @@ export default function GraphCanvas({
         if (!source || !target) return null;
         const mx = (source.x + target.x) / 2;
         const my = (source.y + target.y) / 2;
+
+        const isPathEdge = pathHighlight?.edgeIds.has(edge.id) ?? false;
+        const dimmed = pathHighlight && !isPathEdge;
+
         return (
           <g key={edge.id}>
             <line
@@ -220,18 +227,19 @@ export default function GraphCanvas({
               y1={source.y}
               x2={target.x}
               y2={target.y}
-              stroke="#4b5563"
-              strokeWidth={1.5}
-              opacity={0.6}
+              stroke={isPathEdge ? "#f59e0b" : "#4b5563"}
+              strokeWidth={isPathEdge ? 3 : 1.5}
+              opacity={dimmed ? 0.15 : isPathEdge ? 1 : 0.6}
             />
             {edge.relationship && (
               <text
                 x={mx}
                 y={my - 6}
-                fill="#9ca3af"
+                fill={isPathEdge ? "#fbbf24" : "#9ca3af"}
                 fontSize={9}
                 textAnchor="middle"
                 pointerEvents="none"
+                opacity={dimmed ? 0.2 : 1}
               >
                 {edge.relationship}
               </text>
@@ -244,23 +252,26 @@ export default function GraphCanvas({
       {simNodesRef.current.map((node) => {
         const isSelected = node.id === selectedNodeId;
         const isHighlighted = node.id === highlightedNodeId;
-        const radius = isSelected ? 18 : isHighlighted ? 16 : 12;
-        const color = getNodeColor(node.type);
+        const isPathNode = pathHighlight?.nodeIds.has(node.id) ?? false;
+        const dimmed = pathHighlight && !isPathNode;
+        const radius = isPathNode ? 16 : isSelected ? 18 : isHighlighted ? 16 : 12;
+        const color = isPathNode ? "#f59e0b" : getNodeColor(node.type);
 
         return (
           <g
             key={node.id}
             onClick={() => onNodeClick?.(node)}
             className="cursor-pointer"
+            opacity={dimmed ? 0.2 : 1}
           >
             {/* Highlight ring */}
-            {(isSelected || isHighlighted) && (
+            {(isSelected || isHighlighted || isPathNode) && (
               <circle
                 cx={node.x}
                 cy={node.y}
                 r={radius + 4}
                 fill="none"
-                stroke={isSelected ? "#fbbf24" : "#60a5fa"}
+                stroke={isPathNode ? "#fbbf24" : isSelected ? "#fbbf24" : "#60a5fa"}
                 strokeWidth={2}
                 opacity={0.8}
               />
@@ -277,7 +288,7 @@ export default function GraphCanvas({
             <text
               x={node.x}
               y={node.y + radius + 14}
-              fill="#e5e7eb"
+              fill={isPathNode ? "#fbbf24" : "#e5e7eb"}
               fontSize={10}
               textAnchor="middle"
               pointerEvents="none"

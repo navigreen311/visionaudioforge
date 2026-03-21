@@ -110,6 +110,67 @@ async def get_neighbors(node_id: str) -> dict[str, Any]:
     return {"node_id": node_id, "neighbors": neighbors}
 
 
+@router.get("/path")
+async def find_shortest_path(
+    from_node: str = Query(..., alias="from", description="Source node ID"),
+    to_node: str = Query(..., alias="to", description="Target node ID"),
+) -> dict[str, Any]:
+    """Find the shortest path between two nodes (BFS).
+
+    Returns a mock 2-hop path as a stub when nodes are not in the store,
+    or performs real BFS when the nodes exist.
+    """
+    # If both nodes exist in our store, do real BFS
+    if from_node in _nodes and to_node in _nodes:
+        # Build adjacency list
+        adj: dict[str, list[str]] = {nid: [] for nid in _nodes}
+        for e in _edges:
+            src, tgt = e["source_id"], e["target_id"]
+            if src in adj and tgt in adj:
+                adj[src].append(tgt)
+                adj[tgt].append(src)
+
+        # BFS
+        visited: set[str] = {from_node}
+        parent: dict[str, str] = {}
+        queue: list[str] = [from_node]
+        found = False
+
+        while queue:
+            current = queue.pop(0)
+            for neighbor in adj.get(current, []):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    parent[neighbor] = current
+                    if neighbor == to_node:
+                        found = True
+                        break
+                    queue.append(neighbor)
+            if found:
+                break
+
+        if not found:
+            raise HTTPException(status_code=404, detail="No path found")
+
+        # Reconstruct path
+        path: list[str] = []
+        cur = to_node
+        while cur != from_node:
+            path.append(cur)
+            cur = parent[cur]
+        path.append(from_node)
+        path.reverse()
+
+        return {"path": path, "hops": len(path) - 1}
+
+    # Stub: return mock 2-hop path for demo
+    mid = "mid-stub"
+    return {
+        "path": [from_node, mid, to_node],
+        "hops": 2,
+    }
+
+
 @router.post("/scene-extract")
 async def scene_extract(body: SceneExtractRequest) -> dict[str, Any]:
     """Extract entities and relations from a scene description."""
