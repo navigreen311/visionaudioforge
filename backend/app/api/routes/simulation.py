@@ -5,9 +5,11 @@ from __future__ import annotations
 import random
 import time
 import uuid
-from typing import Any, Literal
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
@@ -16,22 +18,6 @@ router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
-
-class EdgeCaseRequest(BaseModel):
-    id: str
-    name: str
-    category: Literal["Vision", "Audio", "System"]
-    custom: bool = False
-    modification_type: str | None = None
-    intensity: float | None = None
-
-
-class EdgeCaseResponse(BaseModel):
-    status: Literal["pass", "fail", "degraded"]
-    scoreBefore: float
-    scoreAfter: float
-    confidenceDrop: float
-
 
 class ScenarioGenerate(BaseModel):
     name: str
@@ -122,48 +108,113 @@ async def get_report(simulation_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Edge-case testing (stub)
+# Run History & PDF Report endpoints (SI5)
 # ---------------------------------------------------------------------------
 
-@router.post("/edge-case", response_model=EdgeCaseResponse)
-async def run_edge_case(body: EdgeCaseRequest) -> EdgeCaseResponse:
-    """Run an edge-case scenario and return a simulated pass/fail/degraded result."""
-    score_before = round(random.uniform(0.80, 0.98), 4)
+def _build_stub_runs() -> list[dict[str, Any]]:
+    """Return deterministic stub data for the run history table."""
+    now = datetime.now(timezone.utc)
+    run_types: list[str] = ["scenario", "stress", "edge-case"]
+    severities: list[str] = ["info", "warning", "error", "critical"]
+    stubs: list[dict[str, Any]] = []
+    for i in range(8):
+        rid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"stub-run-{i}"))
+        rtype = run_types[i % len(run_types)]
+        score = max(0, min(100, 60 + (i * 7) % 41))
+        created = (now - timedelta(days=i, hours=i * 3)).isoformat()
+        event_count = 3 + i
+        events = [
+            {
+                "timestamp": (
+                    now - timedelta(days=i, hours=i * 3, minutes=j * 2)
+                ).isoformat(),
+                "type": "pipeline_event",
+                "message": f"Event {j + 1} for run {i + 1}",
+                "severity": severities[j % len(severities)],
+            }
+            for j in range(event_count)
+        ]
+        stubs.append(
+            {
+                "id": rid,
+                "name": f"Run {i + 1} — {rtype.replace('-', ' ').title()}",
+                "type": rtype,
+                "score": score,
+                "events": event_count,
+                "duration_seconds": 30 + i * 15,
+                "created_at": created,
+                "status": "completed" if i != 2 else "failed",
+                "event_log": events,
+            }
+        )
+    return stubs
 
-    # Harder edge cases get worse scores on average
-    difficulty: dict[str, float] = {
-        "low-light": 0.15,
-        "heavy-occlusion": 0.25,
-        "motion-blur": 0.12,
-        "extreme-crowd": 0.30,
-        "background-noise": 0.10,
-        "silent-audio": 0.08,
-        "very-long-audio": 0.05,
-        "adversarial-image": 0.35,
-        "out-of-distribution": 0.28,
-        "network-dropout": 0.20,
-    }
-    base_drop = difficulty.get(body.id, 0.18)
 
-    # Custom intensity amplifies the drop
-    if body.custom and body.intensity is not None:
-        base_drop = base_drop * (body.intensity / 50.0)
+@router.get("/runs")
+async def list_runs() -> list[dict[str, Any]]:
+    """Return all simulation runs (stub data + any runs from in-memory store)."""
+    runs: list[dict[str, Any]] = _build_stub_runs()
+    # Append any runs created via /run endpoint
+    for sim_id, sim in _simulations.items():
+        scenario = _scenarios.get(sim["scenario_id"], {})
+        runs.append(
+            {
+                "id": sim_id,
+                "name": scenario.get("name", f"Run {sim_id[:8]}"),
+                "type": scenario.get("type", "scenario"),
+                "score": round(random.uniform(50, 100)),
+                "events": 0,
+                "duration_seconds": int(
+                    sim.get("results", {}).get("duration_seconds", 60)
+                ),
+                "created_at": datetime.fromtimestamp(
+                    sim.get("started_at", time.time()), tz=timezone.utc
+                ).isoformat(),
+                "status": sim.get("status", "completed"),
+                "event_log": [],
+            }
+        )
+    return runs
 
-    drop = round(base_drop + random.uniform(-0.05, 0.05), 4)
-    drop = max(0.0, min(drop, score_before))
-    score_after = round(score_before - drop, 4)
-    confidence_drop = round((drop / score_before) * 100, 1) if score_before > 0 else 0.0
 
-    if confidence_drop < 10:
-        status: Literal["pass", "fail", "degraded"] = "pass"
-    elif confidence_drop < 25:
-        status = "degraded"
-    else:
-        status = "fail"
+@router.post("/runs/{run_id}/report")
+async def export_run_report(run_id: str) -> JSONResponse:
+    """Generate a report for a simulation run (stub — returns JSON payload).
 
-    return EdgeCaseResponse(
-        status=status,
-        scoreBefore=score_before,
-        scoreAfter=score_after,
-        confidenceDrop=confidence_drop,
-    )
+    In production this would generate a PDF.  For now returns a JSON
+    report with Content-Type application/json so the frontend can
+    handle the download.
+    """
+    # Look in dynamic store first
+    sim = _simulations.get(run_id)
+    if sim:
+        scenario = _scenarios.get(sim["scenario_id"], {})
+        return JSONResponse(
+            {
+                "report": {
+                    "run_id": run_id,
+                    "name": scenario.get("name", "unknown"),
+                    "status": sim["status"],
+                    "results": sim["results"],
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            }
+        )
+    # Check stub runs
+    for stub in _build_stub_runs():
+        if stub["id"] == run_id:
+            return JSONResponse(
+                {
+                    "report": {
+                        "run_id": run_id,
+                        "name": stub["name"],
+                        "type": stub["type"],
+                        "score": stub["score"],
+                        "events": stub["events"],
+                        "duration_seconds": stub["duration_seconds"],
+                        "status": stub["status"],
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                }
+            )
+    raise HTTPException(status_code=404, detail="Run not found")
