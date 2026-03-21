@@ -231,6 +231,12 @@ async def create_checkpoint(
     return _serialize_event(checkpoint)
 
 
+@router.get("/cases/{case_id}/approvals")
+async def get_case_approvals(case_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get all approval requests for a specific case."""
+    return await collaboration_service.get_case_approvals(db, case_id)
+
+
 @router.post("/cases/{case_id}/approval", status_code=201)
 async def create_approval(
     case_id: UUID, body: CreateApprovalRequest, db: AsyncSession = Depends(get_db)
