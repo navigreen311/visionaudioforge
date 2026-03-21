@@ -186,22 +186,30 @@ export default function MicrophoneVisualizer({
     const lvlCtx = lvlCanvas.getContext("2d");
     if (!waveCtx || !lvlCtx) return;
 
-    const bufferLength = analyser.fftSize;
+    // Capture references into local constants so the inner render closure
+    // does not need non-null assertions on every animation frame.
+    const _analyser = analyser;
+    const _waveCanvas = waveCanvas;
+    const _lvlCanvas = lvlCanvas;
+    const _waveCtx = waveCtx;
+    const _lvlCtx = lvlCtx;
+
+    const bufferLength = _analyser.fftSize;
     const timeDomain = new Float32Array(bufferLength);
 
     function render() {
       rafRef.current = requestAnimationFrame(render);
-      analyser!.getFloatTimeDomainData(timeDomain);
+      _analyser.getFloatTimeDomainData(timeDomain);
 
       // --- Oscilloscope waveform ---
-      const w = waveCanvas!.width;
-      const h = waveCanvas!.height;
-      waveCtx!.fillStyle = "#111827";
-      waveCtx!.fillRect(0, 0, w, h);
+      const w = _waveCanvas.width;
+      const h = _waveCanvas.height;
+      _waveCtx.fillStyle = "#111827";
+      _waveCtx.fillRect(0, 0, w, h);
 
-      waveCtx!.lineWidth = 2;
-      waveCtx!.strokeStyle = "#3b82f6";
-      waveCtx!.beginPath();
+      _waveCtx.lineWidth = 2;
+      _waveCtx.strokeStyle = "#3b82f6";
+      _waveCtx.beginPath();
 
       const sliceWidth = w / bufferLength;
       let x = 0;
@@ -209,21 +217,21 @@ export default function MicrophoneVisualizer({
         const v = timeDomain[i];
         const y = ((v + 1) / 2) * h;
         if (i === 0) {
-          waveCtx!.moveTo(x, y);
+          _waveCtx.moveTo(x, y);
         } else {
-          waveCtx!.lineTo(x, y);
+          _waveCtx.lineTo(x, y);
         }
         x += sliceWidth;
       }
-      waveCtx!.stroke();
+      _waveCtx.stroke();
 
       // Center line
-      waveCtx!.strokeStyle = "rgba(255,255,255,0.15)";
-      waveCtx!.lineWidth = 1;
-      waveCtx!.beginPath();
-      waveCtx!.moveTo(0, h / 2);
-      waveCtx!.lineTo(w, h / 2);
-      waveCtx!.stroke();
+      _waveCtx.strokeStyle = "rgba(255,255,255,0.15)";
+      _waveCtx.lineWidth = 1;
+      _waveCtx.beginPath();
+      _waveCtx.moveTo(0, h / 2);
+      _waveCtx.lineTo(w, h / 2);
+      _waveCtx.stroke();
 
       // --- dB level bar ---
       let rms = 0;
@@ -245,10 +253,10 @@ export default function MicrophoneVisualizer({
         }
       }
 
-      const lw = lvlCanvas!.width;
-      const lh = lvlCanvas!.height;
-      lvlCtx!.fillStyle = "#1f2937";
-      lvlCtx!.fillRect(0, 0, lw, lh);
+      const lw = _lvlCanvas.width;
+      const lh = _lvlCanvas.height;
+      _lvlCtx.fillStyle = "#1f2937";
+      _lvlCtx.fillRect(0, 0, lw, lh);
 
       const normalised = (clampedDb - DB_MIN) / (DB_MAX - DB_MIN);
       const barHeight = normalised * lh;
@@ -261,41 +269,41 @@ export default function MicrophoneVisualizer({
       // Green zone
       const greenBarH = Math.min(barHeight, greenH);
       if (greenBarH > 0) {
-        lvlCtx!.fillStyle = "#22c55e";
-        lvlCtx!.fillRect(0, lh - greenBarH, lw, greenBarH);
+        _lvlCtx.fillStyle = "#22c55e";
+        _lvlCtx.fillRect(0, lh - greenBarH, lw, greenBarH);
       }
 
       // Amber zone
       if (barHeight > greenH) {
         const aH = Math.min(barHeight - greenH, amberH - greenH);
         if (aH > 0) {
-          lvlCtx!.fillStyle = "#f59e0b";
-          lvlCtx!.fillRect(0, lh - greenH - aH, lw, aH);
+          _lvlCtx.fillStyle = "#f59e0b";
+          _lvlCtx.fillRect(0, lh - greenH - aH, lw, aH);
         }
       }
 
       // Red zone
       if (barHeight > amberH) {
         const rH = barHeight - amberH;
-        lvlCtx!.fillStyle = "#ef4444";
-        lvlCtx!.fillRect(0, barY, lw, rH);
+        _lvlCtx.fillStyle = "#ef4444";
+        _lvlCtx.fillRect(0, barY, lw, rH);
       }
 
       // Peak indicator line
       const peakNorm = (peakDbRef.current - DB_MIN) / (DB_MAX - DB_MIN);
       const peakY = lh - peakNorm * lh;
-      lvlCtx!.strokeStyle = "#ffffff";
-      lvlCtx!.lineWidth = 2;
-      lvlCtx!.beginPath();
-      lvlCtx!.moveTo(0, peakY);
-      lvlCtx!.lineTo(lw, peakY);
-      lvlCtx!.stroke();
+      _lvlCtx.strokeStyle = "#ffffff";
+      _lvlCtx.lineWidth = 2;
+      _lvlCtx.beginPath();
+      _lvlCtx.moveTo(0, peakY);
+      _lvlCtx.lineTo(lw, peakY);
+      _lvlCtx.stroke();
 
       // dB label
-      lvlCtx!.fillStyle = "#e5e7eb";
-      lvlCtx!.font = "11px monospace";
-      lvlCtx!.textAlign = "center";
-      lvlCtx!.fillText(`${clampedDb.toFixed(1)} dB`, lw / 2, lh - 4);
+      _lvlCtx.fillStyle = "#e5e7eb";
+      _lvlCtx.font = "11px monospace";
+      _lvlCtx.textAlign = "center";
+      _lvlCtx.fillText(`${clampedDb.toFixed(1)} dB`, lw / 2, lh - 4);
     }
 
     render();
