@@ -1,5 +1,8 @@
 """Observability routes — SRE dashboard, SLA, alert fatigue analytics."""
 
+import math
+import random
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -101,3 +104,48 @@ async def alert_fatigue(
 ):
     """Analyse alert fatigue for a workspace."""
     return await AlertAnalytics.analyze_alert_fatigue(db, workspace_id, days=days)
+
+
+# ------------------------------------------------------------------
+# Latency history (mock)
+# ------------------------------------------------------------------
+
+RANGE_HOURS = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
+
+
+@router.get("/latency-history")
+async def latency_history(
+    range: str = Query("24h", description="Preset range: 1h, 6h, 24h, 7d"),
+    from_dt: Optional[str] = Query(None, alias="from", description="ISO start (custom range)"),
+    to_dt: Optional[str] = Query(None, alias="to", description="ISO end (custom range)"),
+) -> dict:
+    """Return mock latency time-series with 24 data points."""
+    hours = RANGE_HOURS.get(range, 24)
+
+    if from_dt and to_dt:
+        try:
+            start = datetime.fromisoformat(from_dt)
+            end = datetime.fromisoformat(to_dt)
+            hours = max(1, int((end - start).total_seconds() / 3600))
+        except ValueError:
+            pass
+
+    now = datetime.now(timezone.utc)
+    points = 24
+    step = timedelta(hours=hours) / points
+
+    rng = random.Random(42)  # deterministic seed for stable demo data
+    data = []
+    for i in range(points):
+        ts = now - timedelta(hours=hours) + step * i
+        base_avg = 120 + 30 * math.sin(i * 0.5) + rng.gauss(0, 10)
+        base_p99 = base_avg * (1.8 + rng.gauss(0, 0.15))
+        data.append(
+            {
+                "timestamp": ts.isoformat(),
+                "avg_ms": round(max(10, base_avg), 1),
+                "p99_ms": round(max(20, base_p99), 1),
+            }
+        )
+
+    return {"range": range, "points": points, "data": data}
