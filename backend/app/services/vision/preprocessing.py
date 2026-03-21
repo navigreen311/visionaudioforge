@@ -5,6 +5,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from app.services.vision.vision_service import VisionService
+
 
 class ImagePreprocessor:
     """OOP pipeline for image normalization, color conversion, and processing."""
@@ -192,7 +194,12 @@ class ImagePreprocessor:
             normalize (method: min_max | z_score | per_channel),
             color_space (from, to), histogram_equalization,
             edge_detection (method, low, high),
-            resize (width, height, maintain_aspect)
+            resize (width, height, maintain_aspect),
+            blur (method: gaussian | median | bilateral, kernel_size),
+            brightness (value: -100..100),
+            contrast (factor: 0.1..3.0),
+            rotation (angle: int degrees),
+            flip (mode: none | h | v | both)
         """
         result = image.copy()
         for step in steps:
@@ -235,6 +242,32 @@ class ImagePreprocessor:
                 width=params["width"],
                 height=params["height"],
                 maintain_aspect=params.get("maintain_aspect", True),
+            )
+        elif op == "blur":
+            return VisionService.blur(
+                image,
+                method=params.get("method", "gaussian"),
+                kernel_size=params.get("kernel_size", 5),
+            )
+        elif op == "brightness":
+            return VisionService.adjust_brightness(
+                image,
+                value=int(params.get("value", 0)),
+            )
+        elif op == "contrast":
+            return VisionService.adjust_contrast(
+                image,
+                factor=float(params.get("factor", 1.0)),
+            )
+        elif op == "rotation":
+            return VisionService.rotate(
+                image,
+                angle=int(params.get("angle", 0)),
+            )
+        elif op == "flip":
+            return VisionService.flip(
+                image,
+                mode=params.get("mode", "none"),
             )
         else:
             raise ValueError(f"Unknown pipeline operation: {op}")
