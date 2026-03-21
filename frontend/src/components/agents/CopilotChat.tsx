@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble from "./MessageBubble";
-import StarterPrompts from "./StarterPrompts";
-import AttachmentInput, { type Attachment } from "./AttachmentInput";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 interface Message {
   id: string;
@@ -18,25 +20,71 @@ interface Message {
 interface CopilotChatProps {
   agentId: string;
   skillPack: string;
+  /** WebSocket URL — used for WS-based streaming (legacy). */
   wsUrl: string;
+  /** HTTP endpoint for SSE streaming (preferred). Defaults to /api/agents/chat/stream */
+  httpStreamUrl?: string;
   /** If set, this message is auto-filled and submitted on mount. */
   initialMessage?: string;
+  /** Preferred transport. Defaults to "http". */
+  transport?: "http" | "ws";
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function generateId(): string {
+  return crypto.randomUUID();
+}
+
+function timestamp(): string {
+  return new Date().toLocaleTimeString();
+}
+
+// ---------------------------------------------------------------------------
+// Typing Indicator
+// ---------------------------------------------------------------------------
+
+function TypingIndicator() {
+  return (
+    <div className="flex items-center gap-2 py-2 px-4">
+      <div className="flex items-center gap-1">
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0ms]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]" />
+        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]" />
+      </div>
+      <span className="text-sm text-gray-400">Copilot is thinking...</span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main Component
+// ---------------------------------------------------------------------------
 
 export default function CopilotChat({
   agentId,
   skillPack,
   wsUrl,
+  httpStreamUrl = "/api/agents/chat/stream",
   initialMessage,
+  transport = "http",
 }: CopilotChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
-  const [attachment, setAttachment] = useState<Attachment | null>(null);
+
+  // Refs
   const wsRef = useRef<WebSocket | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const streamBufferRef = useRef("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // -----------------------------------------------------------------------
+  // Auto-scroll
+  // -----------------------------------------------------------------------
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -45,6 +93,196 @@ export default function CopilotChat({
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
+
+  // -----------------------------------------------------------------------
+  // Cleanup AbortController on unmount
+  // -----------------------------------------------------------------------
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      wsRef.current?.close();
+    };
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // Stop generating
+  // -----------------------------------------------------------------------
+
+  const stopGenerating = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    wsRef.current?.close();
+    setIsStreaming(false);
+    setActiveTool(null);
+    streamBufferRef.current = "";
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // HTTP SSE streaming via fetch + ReadableStream
+  // -----------------------------------------------------------------------
+
+  const sendViaHttp = useCallback(
+    async (messageText: string) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      streamBufferRef.current = "";
+
+      try {
+        const res = await fetch(httpStreamUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: messageText,
+            agent_id: agentId,
+            skill_pack: skillPack,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let partialLine = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          partialLine += chunk;
+
+          // Split by newlines to process SSE lines
+          const lines = partialLine.split("\n");
+          // Keep the last incomplete line for the next iteration
+          partialLine = lines.pop() ?? "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith("data: ")) continue;
+
+            const payload = trimmed.slice(6); // Remove "data: "
+
+            // End signal
+            if (payload === "[DONE]") {
+              setIsStreaming(false);
+              setActiveTool(null);
+              streamBufferRef.current = "";
+              return;
+            }
+
+            try {
+              const data = JSON.parse(payload) as {
+                type: string;
+                content?: string;
+                tool?: string;
+                input?: Record<string, unknown>;
+                result?: unknown;
+              };
+
+              if (data.type === "token" && data.content) {
+                streamBufferRef.current += data.content;
+                const buffered = streamBufferRef.current;
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  const last = updated[updated.length - 1];
+                  if (last && last.role === "assistant") {
+                    updated[updated.length - 1] = { ...last, content: buffered };
+                  } else {
+                    updated.push({
+                      id: generateId(),
+                      role: "assistant",
+                      content: buffered,
+                      timestamp: timestamp(),
+                    });
+                  }
+                  return updated;
+                });
+              } else if (data.type === "tool_use" || data.type === "tool_use_start") {
+                setActiveTool(data.tool ?? null);
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: generateId(),
+                    role: "tool",
+                    content: `Using tool: ${data.tool}...`,
+                    timestamp: timestamp(),
+                    toolName: data.tool,
+                  },
+                ]);
+              } else if (data.type === "tool_result") {
+                setActiveTool(null);
+                setMessages((prev) => {
+                  const updated = [...prev];
+                  for (let i = updated.length - 1; i >= 0; i--) {
+                    if (
+                      updated[i].role === "tool" &&
+                      updated[i].toolName === data.tool &&
+                      !updated[i].toolResult
+                    ) {
+                      updated[i] = {
+                        ...updated[i],
+                        content: `Tool: ${data.tool} - completed`,
+                        toolInput: data.input,
+                        toolResult:
+                          typeof data.result === "string"
+                            ? data.result
+                            : JSON.stringify(data.result),
+                      };
+                      break;
+                    }
+                  }
+                  return updated;
+                });
+              } else if (data.type === "error") {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: generateId(),
+                    role: "assistant",
+                    content: `Error: ${data.content ?? "Unknown error"}`,
+                    timestamp: timestamp(),
+                  },
+                ]);
+              }
+            } catch {
+              // Skip malformed JSON lines
+            }
+          }
+        }
+
+        // Stream ended without [DONE]
+        setIsStreaming(false);
+        setActiveTool(null);
+        streamBufferRef.current = "";
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === "AbortError") {
+          // User cancelled — no error message needed
+          return;
+        }
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "assistant",
+            content: `Connection error: ${err instanceof Error ? err.message : "Unknown error"}`,
+            timestamp: timestamp(),
+          },
+        ]);
+        setIsStreaming(false);
+        setActiveTool(null);
+        streamBufferRef.current = "";
+      }
+    },
+    [httpStreamUrl, agentId, skillPack],
+  );
+
+  // -----------------------------------------------------------------------
+  // WebSocket transport (legacy)
+  // -----------------------------------------------------------------------
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return wsRef.current;
@@ -57,20 +295,18 @@ export default function CopilotChat({
 
       if (data.type === "token") {
         streamBufferRef.current += data.content;
+        const buffered = streamBufferRef.current;
         setMessages((prev) => {
           const updated = [...prev];
           const last = updated[updated.length - 1];
           if (last && last.role === "assistant") {
-            updated[updated.length - 1] = {
-              ...last,
-              content: streamBufferRef.current,
-            };
+            updated[updated.length - 1] = { ...last, content: buffered };
           } else {
             updated.push({
-              id: crypto.randomUUID(),
+              id: generateId(),
               role: "assistant",
-              content: streamBufferRef.current,
-              timestamp: new Date().toLocaleTimeString(),
+              content: buffered,
+              timestamp: timestamp(),
             });
           }
           return updated;
@@ -80,26 +316,31 @@ export default function CopilotChat({
         setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: generateId(),
             role: "tool",
             content: `Using tool: ${data.tool}...`,
-            timestamp: new Date().toLocaleTimeString(),
+            timestamp: timestamp(),
             toolName: data.tool,
           },
         ]);
       } else if (data.type === "tool_result") {
         setActiveTool(null);
-        // Show tool result inline
         setMessages((prev) => {
           const updated = [...prev];
-          // Find the last tool message and update it with result
           for (let i = updated.length - 1; i >= 0; i--) {
-            if (updated[i].role === "tool" && updated[i].toolName === data.tool && !updated[i].toolResult) {
+            if (
+              updated[i].role === "tool" &&
+              updated[i].toolName === data.tool &&
+              !updated[i].toolResult
+            ) {
               updated[i] = {
                 ...updated[i],
                 content: `Tool: ${data.tool} - completed`,
                 toolInput: data.input,
-                toolResult: typeof data.result === "string" ? data.result : JSON.stringify(data.result),
+                toolResult:
+                  typeof data.result === "string"
+                    ? data.result
+                    : JSON.stringify(data.result),
               };
               break;
             }
@@ -117,10 +358,10 @@ export default function CopilotChat({
         setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: generateId(),
             role: "assistant",
             content: `Error: ${data.content}`,
-            timestamp: new Date().toLocaleTimeString(),
+            timestamp: timestamp(),
           },
         ]);
       }
@@ -134,56 +375,76 @@ export default function CopilotChat({
     return ws;
   }, [wsUrl]);
 
+  // -----------------------------------------------------------------------
+  // Send message (dispatch to transport)
+  // -----------------------------------------------------------------------
+
   const sendMessage = useCallback(
     (overrideText?: string) => {
-      const trimmed = (overrideText ?? input).trim();
-      if (!trimmed || isStreaming) return;
+      const text = overrideText ?? input.trim();
+      if (!text || isStreaming) return;
 
       const userMsg: Message = {
-        id: crypto.randomUUID(),
+        id: generateId(),
         role: "user",
-        content: attachment
-          ? `${trimmed} [${attachment.type}: ${attachment.file.name}]`
-          : trimmed,
-        timestamp: new Date().toLocaleTimeString(),
+        content: text,
+        timestamp: timestamp(),
       };
       setMessages((prev) => [...prev, userMsg]);
-      setInput("");
+      if (!overrideText) setInput("");
       setIsStreaming(true);
       streamBufferRef.current = "";
 
-      const currentAttachment = attachment;
-      setAttachment(null);
-
-      const ws = connectWs();
-      const sendPayload = () => {
-        const payload: Record<string, unknown> = {
-          message: trimmed,
-          agent_id: agentId,
-          skill_pack: skillPack,
-        };
-        if (currentAttachment) {
-          payload.attachment = {
-            filename: currentAttachment.file.name,
-            mime_type: currentAttachment.file.type,
-            type: currentAttachment.type,
-            base64: currentAttachment.base64,
-          };
-        }
-        ws!.send(JSON.stringify(payload));
-      };
-
-      if (ws!.readyState === WebSocket.OPEN) {
-        sendPayload();
+      if (transport === "http") {
+        sendViaHttp(text);
       } else {
-        ws!.onopen = sendPayload;
+        const ws = connectWs();
+        const sendPayload = () => {
+          ws!.send(
+            JSON.stringify({
+              message: text,
+              agent_id: agentId,
+              skill_pack: skillPack,
+            }),
+          );
+        };
+        if (ws!.readyState === WebSocket.OPEN) {
+          sendPayload();
+        } else {
+          ws!.onopen = sendPayload;
+        }
       }
     },
-    [input, isStreaming, agentId, skillPack, connectWs, attachment]
+    [input, isStreaming, agentId, skillPack, transport, sendViaHttp, connectWs],
   );
 
-  // Auto-submit initialMessage on mount (once only)
+  // -----------------------------------------------------------------------
+  // Regenerate: re-send the last user message
+  // -----------------------------------------------------------------------
+
+  const handleRegenerate = useCallback(() => {
+    if (isStreaming) return;
+    // Find the last user message
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        // Remove messages after the user message, then re-send
+        setMessages((prev) => prev.slice(0, i + 1));
+        setIsStreaming(true);
+        streamBufferRef.current = "";
+        if (transport === "http") {
+          sendViaHttp(messages[i].content);
+        }
+        return;
+      }
+    }
+  }, [isStreaming, messages, transport, sendViaHttp]);
+
+  // -----------------------------------------------------------------------
+  // Auto-submit initialMessage on mount
+  // -----------------------------------------------------------------------
+
   const initialSubmittedRef = useRef(false);
+
   useEffect(() => {
     if (initialMessage && !initialSubmittedRef.current) {
       initialSubmittedRef.current = true;
@@ -191,7 +452,6 @@ export default function CopilotChat({
     }
   }, [initialMessage]);
 
-  // When input is set from initialMessage, trigger send on next render
   useEffect(() => {
     if (
       initialSubmittedRef.current &&
@@ -202,9 +462,12 @@ export default function CopilotChat({
     ) {
       sendMessage();
     }
-    // Only run when input changes to the initial message value
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input]);
+
+  // -----------------------------------------------------------------------
+  // Key handler
+  // -----------------------------------------------------------------------
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -213,16 +476,21 @@ export default function CopilotChat({
     }
   };
 
-  const handleStarterSelect = (prompt: string) => {
-    sendMessage(prompt);
-  };
+  // -----------------------------------------------------------------------
+  // Render
+  // -----------------------------------------------------------------------
+
+  const showTypingIndicator =
+    isStreaming &&
+    !activeTool &&
+    messages[messages.length - 1]?.role !== "assistant";
 
   return (
     <div className="flex flex-col h-full bg-white rounded-xl border border-gray-200">
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-1">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full gap-8">
+          <div className="flex items-center justify-center h-full">
             <div className="text-center text-gray-400">
               <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mx-auto mb-4">
                 <span className="text-2xl text-brand-600 font-bold">C</span>
@@ -232,12 +500,9 @@ export default function CopilotChat({
                 Ask me anything about your media, events, or system status.
               </p>
             </div>
-            <StarterPrompts
-              visible={messages.length === 0}
-              onSelect={handleStarterSelect}
-            />
           </div>
         )}
+
         {messages.map((msg) => (
           <MessageBubble
             key={msg.id}
@@ -247,44 +512,44 @@ export default function CopilotChat({
             toolName={msg.toolName}
             toolInput={msg.toolInput}
             toolResult={msg.toolResult}
+            messageId={msg.id}
+            agentId={agentId}
+            onRegenerate={handleRegenerate}
           />
         ))}
 
-        {/* Streaming / tool indicator */}
+        {/* Tool indicator */}
         {isStreaming && activeTool && (
           <div className="flex items-center gap-2 text-sm text-amber-600 py-2 px-4">
             <span className="animate-spin inline-block w-4 h-4 border-2 border-amber-400 border-t-transparent rounded-full" />
             Using tool: {activeTool}
           </div>
         )}
-        {isStreaming && !activeTool && messages[messages.length - 1]?.role !== "assistant" && (
-          <div className="flex items-center gap-2 text-sm text-gray-400 py-2 px-4">
-            <span className="animate-pulse">Thinking...</span>
-          </div>
-        )}
+
+        {/* Typing indicator */}
+        {showTypingIndicator && <TypingIndicator />}
 
         <div ref={messagesEndRef} />
       </div>
 
       {/* Input bar */}
       <div className="border-t border-gray-200 p-4">
-        {attachment && (
-          <div className="mb-2">
-            <AttachmentInput
-              attachment={attachment}
-              onAttach={setAttachment}
-              onRemove={() => setAttachment(null)}
-            />
+        {/* Stop generating button */}
+        {isStreaming && (
+          <div className="flex justify-center mb-3">
+            <button
+              onClick={stopGenerating}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-full border border-gray-300 text-sm text-gray-600 hover:bg-gray-50 hover:border-gray-400 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+              Stop generating
+            </button>
           </div>
         )}
+
         <div className="flex items-end gap-2">
-          {!attachment && (
-            <AttachmentInput
-              attachment={null}
-              onAttach={setAttachment}
-              onRemove={() => setAttachment(null)}
-            />
-          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}

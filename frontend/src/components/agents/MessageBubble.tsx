@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import MessageActions from "./MessageActions";
 
 interface MessageBubbleProps {
   role: "user" | "assistant" | "tool";
@@ -9,6 +10,9 @@ interface MessageBubbleProps {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   toolResult?: string;
+  messageId?: string;
+  agentId?: string;
+  onRegenerate?: () => void;
 }
 
 function ToolResultCard({
@@ -72,9 +76,14 @@ export default function MessageBubble({
   toolName,
   toolInput,
   toolResult,
+  messageId,
+  agentId,
+  onRegenerate,
 }: MessageBubbleProps) {
+  const [hovered, setHovered] = useState(false);
   const isUser = role === "user";
   const isTool = role === "tool";
+  const isAssistant = role === "assistant";
 
   if (isTool) {
     return (
@@ -95,23 +104,41 @@ export default function MessageBubble({
   }
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
-      <div
-        className={`max-w-[75%] rounded-2xl px-4 py-3 ${
-          isUser
-            ? "bg-brand-600 text-white rounded-br-md"
-            : "bg-gray-100 text-gray-900 rounded-bl-md"
-        }`}
-      >
-        <p className="whitespace-pre-wrap text-sm leading-relaxed">{content}</p>
-        {timestamp && (
-          <p
-            className={`text-xs mt-1 ${
-              isUser ? "text-brand-100" : "text-gray-400"
-            }`}
-          >
-            {timestamp}
-          </p>
+    <div
+      className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3 group`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div className="relative max-w-[75%]">
+        <div
+          className={`rounded-2xl px-4 py-3 ${
+            isUser
+              ? "bg-brand-600 text-white rounded-br-md"
+              : "bg-gray-100 text-gray-900 rounded-bl-md"
+          }`}
+        >
+          <p className="whitespace-pre-wrap text-sm leading-relaxed">{content}</p>
+          {timestamp && (
+            <p
+              className={`text-xs mt-1 ${
+                isUser ? "text-brand-100" : "text-gray-400"
+              }`}
+            >
+              {timestamp}
+            </p>
+          )}
+        </div>
+
+        {/* Message actions toolbar — assistant messages only */}
+        {isAssistant && hovered && messageId && onRegenerate && (
+          <div className="absolute -bottom-3 left-2 z-10">
+            <MessageActions
+              messageText={content}
+              messageId={messageId}
+              onRegenerate={onRegenerate}
+              agentId={agentId}
+            />
+          </div>
         )}
       </div>
     </div>
