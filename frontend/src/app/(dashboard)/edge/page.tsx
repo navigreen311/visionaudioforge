@@ -1,6 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
+import ModelSelector from "@/components/edge/ModelSelector";
+import FormatOptionsPanel, {
+  FORMAT_DEFAULTS,
+} from "@/components/edge/FormatOptionsPanel";
+import FormatComparisonTable from "@/components/edge/FormatComparisonTable";
+import ExportProgress from "@/components/edge/ExportProgress";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -15,10 +21,11 @@ const ALL_FORMATS = [
 
 const OPT_LEVELS = ["none", "basic", "aggressive"];
 
-interface ExportResult {
-  export_id: string;
-  exports: Record<string, any>;
-  total_size_mb: number;
+interface SelectedModel {
+  id: string;
+  name: string;
+  version: string;
+  backbone: string | null;
   status: string;
 }
 
@@ -36,16 +43,27 @@ interface PackageResult {
 }
 
 export default function EdgePage() {
-  const [modelId, setModelId] = useState("my-model");
-  const [selectedFormats, setSelectedFormats] = useState<string[]>(["onnx"]);
-  const [optLevel, setOptLevel] = useState("basic");
-  const [exporting, setExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<ExportResult | null>(null);
+  // Model selection
+  const [selectedModel, setSelectedModel] = useState<SelectedModel | null>(null);
 
+  // Format selection and per-format options
+  const [selectedFormats, setSelectedFormats] = useState<string[]>(["onnx"]);
+  const [formatOptions, setFormatOptions] = useState<
+    Record<string, Record<string, string | number | boolean>>
+  >({ onnx: { ...FORMAT_DEFAULTS.onnx } });
+
+  const [optLevel, setOptLevel] = useState("basic");
+
+  // Export progress
+  const [exporting, setExporting] = useState(false);
+  const [exportJobId, setExportJobId] = useState<string | null>(null);
+
+  // Benchmark
   const [benchmarking, setBenchmarking] = useState(false);
   const [benchmarkResult, setBenchmarkResult] = useState<BenchmarkResult | null>(null);
   const [benchIterations, setBenchIterations] = useState(100);
 
+  // Package
   const [packaging, setPackaging] = useState(false);
   const [packageResult, setPackageResult] = useState<PackageResult | null>(null);
   const [packageFormat, setPackageFormat] = useState("onnx");
@@ -53,36 +71,62 @@ export default function EdgePage() {
   const [error, setError] = useState<string | null>(null);
 
   const toggleFormat = (id: string) => {
-    setSelectedFormats((prev) =>
-      prev.includes(id) ? prev.filter((f) => f !== id) : [...prev, id]
-    );
+    setSelectedFormats((prev) => {
+      if (prev.includes(id)) {
+        const next = prev.filter((f) => f !== id);
+        // Clean up options for removed format
+        setFormatOptions((opts) => {
+          const copy = { ...opts };
+          delete copy[id];
+          return copy;
+        });
+        return next;
+      }
+      // Add default options for new format
+      setFormatOptions((opts) => ({
+        ...opts,
+        [id]: { ...(FORMAT_DEFAULTS[id] ?? {}) },
+      }));
+      return [...prev, id];
+    });
   };
 
+  const handleFormatOptionChange = useCallback(
+    (format: string, options: Record<string, string | number | boolean>) => {
+      setFormatOptions((prev) => ({ ...prev, [format]: options }));
+    },
+    []
+  );
+
   const handleExport = async () => {
+    if (!selectedModel) return;
     setExporting(true);
     setError(null);
-    setExportResult(null);
+    setExportJobId(null);
     try {
       const res = await fetch(`${API}/api/edge/export`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model_id: modelId,
+          model_id: selectedModel.id,
           formats: selectedFormats,
           optimization_level: optLevel,
+          format_options: formatOptions,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
-      setExportResult(await res.json());
-    } catch (e: any) {
-      setError(e.message);
+      const data: { id: string } = await res.json();
+      setExportJobId(data.id);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Export failed";
+      setError(message);
     } finally {
       setExporting(false);
     }
   };
 
   const handleBenchmark = async () => {
-    if (!exportResult) return;
+    if (!exportJobId) return;
     setBenchmarking(true);
     setBenchmarkResult(null);
     try {
@@ -90,32 +134,35 @@ export default function EdgePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          export_id: exportResult.export_id,
+          export_id: exportJobId,
           iterations: benchIterations,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
       setBenchmarkResult(await res.json());
-    } catch (e: any) {
-      setError(e.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Benchmark failed";
+      setError(message);
     } finally {
       setBenchmarking(false);
     }
   };
 
   const handlePackage = async () => {
+    if (!selectedModel) return;
     setPackaging(true);
     setPackageResult(null);
     try {
       const res = await fetch(`${API}/api/edge/package`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId, format: packageFormat }),
+        body: JSON.stringify({ model_id: selectedModel.id, format: packageFormat }),
       });
       if (!res.ok) throw new Error(await res.text());
       setPackageResult(await res.json());
-    } catch (e: any) {
-      setError(e.message);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Packaging failed";
+      setError(message);
     } finally {
       setPackaging(false);
     }
@@ -143,19 +190,18 @@ export default function EdgePage() {
       <section className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-gray-800 mb-4">Export Model</h2>
 
-        {/* Model selector */}
-        <div className="mb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Model ID
-          </label>
-          <input
-            type="text"
-            value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
-            className="w-full max-w-md rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"
-            placeholder="Enter model ID..."
-          />
-        </div>
+        {/* Model selector (ED1) */}
+        <ModelSelector
+          onSelect={(model) =>
+            setSelectedModel({
+              id: model.id,
+              name: model.name,
+              version: model.version,
+              backbone: model.backbone,
+              status: model.status,
+            })
+          }
+        />
 
         {/* Format checkboxes */}
         <div className="mb-4">
@@ -183,15 +229,35 @@ export default function EdgePage() {
                   className={`ml-1 inline-block h-2 w-2 rounded-full ${
                     fmt.available ? "bg-green-400" : "bg-gray-300"
                   }`}
-                  title={fmt.available ? "Available" : "Stub — requires additional setup"}
+                  title={fmt.available ? "Available" : "Stub -- requires additional setup"}
                 />
               </label>
             ))}
           </div>
         </div>
 
+        {/* Per-format options panels (ED2) */}
+        {selectedFormats.length > 0 && (
+          <div className="mb-4 space-y-2">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Format-Specific Options
+            </label>
+            {selectedFormats.map((fmt) => (
+              <FormatOptionsPanel
+                key={fmt}
+                format={fmt}
+                options={formatOptions[fmt] ?? FORMAT_DEFAULTS[fmt] ?? {}}
+                onChange={(opts) => handleFormatOptionChange(fmt, opts)}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* Format comparison table (ED3 - part 1) */}
+        <FormatComparisonTable formats={selectedFormats} />
+
         {/* Optimization level */}
-        <div className="mb-4">
+        <div className="mb-4 mt-4">
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Optimization Level
           </label>
@@ -210,86 +276,16 @@ export default function EdgePage() {
 
         <button
           onClick={handleExport}
-          disabled={exporting || selectedFormats.length === 0}
+          disabled={exporting || selectedFormats.length === 0 || !selectedModel}
           className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {exporting ? "Exporting..." : "Export"}
         </button>
 
-        {/* Results table */}
-        {exportResult && (
+        {/* Export progress (ED3 - part 2) */}
+        {exportJobId && (
           <div className="mt-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">
-              Export Results
-            </h3>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-200">
-                    <th className="text-left py-2 px-3 font-medium text-gray-600">
-                      Format
-                    </th>
-                    <th className="text-left py-2 px-3 font-medium text-gray-600">
-                      Status
-                    </th>
-                    <th className="text-left py-2 px-3 font-medium text-gray-600">
-                      Size (MB)
-                    </th>
-                    <th className="text-left py-2 px-3 font-medium text-gray-600">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Object.entries(exportResult.exports).map(([fmt, data]) => (
-                    <tr key={fmt} className="border-b border-gray-100">
-                      <td className="py-2 px-3 font-medium">{fmt.toUpperCase()}</td>
-                      <td className="py-2 px-3">
-                        <span
-                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
-                            data.status === "stub"
-                              ? "bg-yellow-100 text-yellow-700"
-                              : data.path
-                              ? "bg-green-100 text-green-700"
-                              : "bg-red-100 text-red-700"
-                          }`}
-                        >
-                          {data.status === "stub"
-                            ? "Stub"
-                            : data.path
-                            ? "Exported"
-                            : "Error"}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3">
-                        {data.size_mb ? `${data.size_mb}` : "-"}
-                      </td>
-                      <td className="py-2 px-3">
-                        {data.path && (
-                          <a
-                            href={`${API}/api/edge/exports/${exportResult.export_id}/download?format=${fmt}`}
-                            className="text-brand-600 hover:underline text-xs"
-                          >
-                            Download
-                          </a>
-                        )}
-                        {data.note && (
-                          <span
-                            className="text-xs text-gray-400 ml-2"
-                            title={data.note}
-                          >
-                            (hover for info)
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <p className="mt-2 text-xs text-gray-500">
-              Total size: {exportResult.total_size_mb} MB
-            </p>
+            <ExportProgress jobId={exportJobId} formats={selectedFormats} />
           </div>
         )}
       </section>
@@ -322,7 +318,7 @@ export default function EdgePage() {
           </div>
           <button
             onClick={handlePackage}
-            disabled={packaging}
+            disabled={packaging || !selectedModel}
             className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 transition-colors"
           >
             {packaging ? "Generating..." : "Generate Package"}
@@ -358,7 +354,7 @@ export default function EdgePage() {
           Inference Benchmark
         </h2>
         <p className="text-sm text-gray-500 mb-4">
-          Run inference benchmarks on an exported ONNX model. Export a model first.
+          Run inference benchmarks on an exported model. Export a model first.
         </p>
         <div className="flex items-end gap-4 mb-4">
           <div>
@@ -376,7 +372,7 @@ export default function EdgePage() {
           </div>
           <button
             onClick={handleBenchmark}
-            disabled={benchmarking || !exportResult}
+            disabled={benchmarking || !exportJobId}
             className="rounded-lg bg-brand-600 px-5 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {benchmarking ? "Running..." : "Run Benchmark"}
