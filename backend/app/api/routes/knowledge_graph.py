@@ -35,6 +35,12 @@ class SceneExtractRequest(BaseModel):
     workspace_id: str | None = None
 
 
+class AssetExtractRequest(BaseModel):
+    asset_id: str
+    modes: list[str] = Field(default_factory=lambda: ["persons", "objects", "locations", "events"])
+    min_confidence: float = Field(0.6, ge=0.0, le=1.0)
+
+
 # ---------------------------------------------------------------------------
 # In-memory store (replaced by DB in production)
 # ---------------------------------------------------------------------------
@@ -110,64 +116,55 @@ async def get_neighbors(node_id: str) -> dict[str, Any]:
     return {"node_id": node_id, "neighbors": neighbors}
 
 
-@router.get("/path")
-async def find_shortest_path(
-    from_node: str = Query(..., alias="from", description="Source node ID"),
-    to_node: str = Query(..., alias="to", description="Target node ID"),
-) -> dict[str, Any]:
-    """Find the shortest path between two nodes (BFS).
+@router.post("/extract")
+async def extract_from_asset(body: AssetExtractRequest) -> dict[str, Any]:
+    """Extract entities from an asset (stub).
 
-    Returns a mock 2-hop path as a stub when nodes are not in the store,
-    or performs real BFS when the nodes exist.
+    In production this would run NLP/CV models against the asset content to
+    extract persons, objects, locations, and events with confidence scores.
     """
-    # If both nodes exist in our store, do real BFS
-    if from_node in _nodes and to_node in _nodes:
-        # Build adjacency list
-        adj: dict[str, list[str]] = {nid: [] for nid in _nodes}
-        for e in _edges:
-            src, tgt = e["source_id"], e["target_id"]
-            if src in adj and tgt in adj:
-                adj[src].append(tgt)
-                adj[tgt].append(src)
+    mode_type_map: dict[str, str] = {
+        "persons": "person",
+        "objects": "object",
+        "locations": "location",
+        "events": "event",
+    }
+    # Stub: generate sample entities per requested mode
+    entities: list[dict[str, Any]] = []
+    for mode in body.modes:
+        entity_type = mode_type_map.get(mode, mode)
+        sample_id = _next_id()
+        entities.append({
+            "id": sample_id,
+            "label": f"Sample {entity_type.capitalize()} from {body.asset_id}",
+            "type": entity_type,
+            "confidence": round(max(body.min_confidence, 0.75), 2),
+            "merge_suggestion": None,
+        })
+    return {"asset_id": body.asset_id, "entities": entities}
 
-        # BFS
-        visited: set[str] = {from_node}
-        parent: dict[str, str] = {}
-        queue: list[str] = [from_node]
-        found = False
 
-        while queue:
-            current = queue.pop(0)
-            for neighbor in adj.get(current, []):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    parent[neighbor] = current
-                    if neighbor == to_node:
-                        found = True
-                        break
-                    queue.append(neighbor)
-            if found:
-                break
+@router.get("/export")
+async def export_graph(format: str = Query("json", regex="^(json|csv)$")) -> dict[str, Any]:
+    """Export the full knowledge graph as JSON (stub).
 
-        if not found:
-            raise HTTPException(status_code=404, detail="No path found")
+    In production this would stream large graphs or support CSV/GraphML.
+    """
+    edges_with_ids = []
+    for i, e in enumerate(_edges):
+        edge_copy = dict(e)
+        if "id" not in edge_copy:
+            edge_copy["id"] = f"edge-{i + 1:06d}"
+        edges_with_ids.append(edge_copy)
 
-        # Reconstruct path
-        path: list[str] = []
-        cur = to_node
-        while cur != from_node:
-            path.append(cur)
-            cur = parent[cur]
-        path.append(from_node)
-        path.reverse()
-
-        return {"path": path, "hops": len(path) - 1}
-
-    # Stub: return mock 2-hop path for demo
-    mid = "mid-stub"
     return {
-        "path": [from_node, mid, to_node],
-        "hops": 2,
+        "format": format,
+        "nodes": list(_nodes.values()),
+        "edges": edges_with_ids,
+        "meta": {
+            "node_count": len(_nodes),
+            "edge_count": len(_edges),
+        },
     }
 
 
