@@ -1,7 +1,38 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import BeforeAfterSlider from "@/components/transform/BeforeAfterSlider";
+import dynamic from "next/dynamic";
+import BeforeAfterViewer from "@/components/transform/BeforeAfterViewer";
+
+// Dynamic imports for components created by other agents (with fallbacks)
+const OperationControls = dynamic(
+  () => import("@/components/transform/OperationControls"),
+  { loading: () => <div className="animate-pulse h-20 bg-gray-100 rounded-lg" />, ssr: false },
+);
+const ProcessingProgress = dynamic(
+  () => import("@/components/transform/ProcessingProgress"),
+  { loading: () => null, ssr: false },
+);
+const AudioTransformStudio = dynamic(
+  () => import("@/components/transform/AudioTransformStudio"),
+  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
+);
+const BatchTransformTab = dynamic(
+  () => import("@/components/transform/BatchTransformTab"),
+  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
+);
+const PresetsTab = dynamic(
+  () => import("@/components/transform/PresetsTab"),
+  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
+);
+const TransformExportPanel = dynamic(
+  () => import("@/components/transform/TransformExportPanel"),
+  { loading: () => null, ssr: false },
+);
+const TransformHistory = dynamic(
+  () => import("@/components/transform/TransformHistory"),
+  { loading: () => null, ssr: false },
+);
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -37,6 +68,18 @@ export default function TransformPage() {
   // --- result ---
   const [resultB64, setResultB64] = useState<string | null>(null);
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
+  const [processingTimeMs, setProcessingTimeMs] = useState<number | null>(null);
+
+  // Track which dynamic components are available
+  const [hasOperationControls, setHasOperationControls] = useState(false);
+  const [hasTransformHistory, setHasTransformHistory] = useState(false);
+  const [hasTransformExportPanel, setHasTransformExportPanel] = useState(false);
+
+  useEffect(() => {
+    import("@/components/transform/OperationControls").then(() => setHasOperationControls(true)).catch(() => {});
+    import("@/components/transform/TransformHistory").then(() => setHasTransformHistory(true)).catch(() => {});
+    import("@/components/transform/TransformExportPanel").then(() => setHasTransformExportPanel(true)).catch(() => {});
+  }, []);
 
   // --- per-mode options ---
   const [bgMethod, setBgMethod] = useState<string>("threshold");
@@ -105,6 +148,8 @@ export default function TransformPage() {
     setMeta(null);
     setChapterResult(null);
     setNoiseResult(null);
+    setProcessingTimeMs(null);
+    const startTime = performance.now();
     try {
       const form = new FormData();
       form.append("file", srcFile);
@@ -144,6 +189,7 @@ export default function TransformPage() {
       const json = await res.json();
       setResultB64(json.image ?? json.thumbnail ?? null);
       setMeta(json);
+      setProcessingTimeMs(json.processing_time_ms ?? (performance.now() - startTime));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -248,7 +294,7 @@ export default function TransformPage() {
   const resultSrc = resultB64 ? `data:image/png;base64,${resultB64}` : null;
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8 space-y-6">
+    <div className="mx-auto max-w-7xl px-4 py-8 space-y-6">
       {/* Page header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Transform Studio</h1>
@@ -270,9 +316,10 @@ export default function TransformPage() {
             onClick={() => setTab(key)}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition ${
               tab === key
-                ? "border-brand-600 text-brand-600"
+                ? "border-transparent text-gray-500 hover:text-gray-700"
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
+            style={tab === key ? { borderColor: "#185FA5", color: "#185FA5" } : undefined}
           >
             {label}
           </button>
@@ -467,295 +514,348 @@ export default function TransformPage() {
         </div>
       )}
 
-      {/* Video tab content */}
-      {tab === "video" && <>
-      {/* Mode selector */}
-      <div className="flex flex-wrap gap-2">
-        {(
-          [
-            ["background-remove", "Background Remove"],
-            ["super-resolution", "Super Resolution"],
-            ["style", "Style Transfer"],
-            ["auto-crop", "Auto Crop"],
-            ["color-grade", "Color Grade"],
-            ["subtitle", "Subtitle"],
-            ["inpaint", "Inpaint"],
-            ["smart-crop", "Smart Crop"],
-            ["interpolate", "Frame Interpolate"],
-            ["highlight", "Highlight Clip"],
-          ] as const
-        ).map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => { setMode(key); setResultB64(null); setMeta(null); }}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-              mode === key
-                ? "bg-brand-600 text-white"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {/* Upload zone */}
-      <div
-        onClick={() => fileRef.current?.click()}
-        className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-brand-400 transition"
-      >
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={onFileChange}
-        />
-        {srcPreview ? (
-          <img src={srcPreview} alt="Source" className="mx-auto max-h-48 rounded" />
-        ) : (
-          <p className="text-gray-400">Click or drag an image here to upload</p>
-        )}
-      </div>
-
-      {/* Mode-specific options */}
-      <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-        {mode === "background-remove" && (
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium text-gray-700">Method:</label>
-            <select
-              value={bgMethod}
-              onChange={(e) => setBgMethod(e.target.value)}
-              className="rounded border-gray-300 text-sm"
-            >
-              {BG_METHODS.map((m) => (
-                <option key={m} value={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {mode === "super-resolution" && (
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium text-gray-700">Scale:</label>
-            {[2, 4].map((s) => (
-              <button
-                key={s}
-                onClick={() => setSrScale(s)}
-                className={`px-3 py-1 rounded text-sm ${
-                  srScale === s ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
-                }`}
-              >
-                {s}x
-              </button>
-            ))}
-          </div>
-        )}
-
-        {mode === "style" && (
-          <div className="flex items-center gap-3 flex-wrap">
-            <label className="text-sm font-medium text-gray-700">Style:</label>
-            {STYLES.map((s) => (
-              <button
-                key={s}
-                onClick={() => setStylePreset(s)}
-                className={`px-3 py-1 rounded text-sm capitalize ${
-                  stylePreset === s ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
-                }`}
-              >
-                {s.replace("_", " ")}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {mode === "auto-crop" && (
-          <div className="flex items-center gap-3">
-            <label className="text-sm font-medium text-gray-700">Aspect Ratio:</label>
-            <select
-              value={aspect}
-              onChange={(e) => setAspect(e.target.value)}
-              className="rounded border-gray-300 text-sm"
-            >
-              {ASPECTS.map((a) => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {mode === "color-grade" && (
-          <div className="flex items-center gap-3 flex-wrap">
-            <label className="text-sm font-medium text-gray-700">Preset:</label>
-            {COLOR_GRADE_PRESETS.map((p) => (
-              <button
-                key={p}
-                onClick={() => setColorGradePreset(p)}
-                className={`px-3 py-1 rounded text-sm capitalize ${
-                  colorGradePreset === p ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
-                }`}
-              >
-                {p.replace("_", " ")}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {mode === "subtitle" && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">Text:</label>
-              <input
-                type="text"
-                value={subtitleText}
-                onChange={(e) => setSubtitleText(e.target.value)}
-                placeholder="Enter subtitle text..."
-                className="flex-1 rounded border-gray-300 text-sm px-3 py-1 border"
-              />
-            </div>
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">Position:</label>
-              {SUBTITLE_POSITIONS.map((pos) => (
+      {/* Video / Image tab content — 2-column split-pane layout */}
+      {tab === "video" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* ── Left column: controls ── */}
+          <div className="space-y-4">
+            {/* Mode selector */}
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["background-remove", "Background Remove"],
+                  ["super-resolution", "Super Resolution"],
+                  ["style", "Style Transfer"],
+                  ["auto-crop", "Auto Crop"],
+                  ["color-grade", "Color Grade"],
+                  ["subtitle", "Subtitle"],
+                  ["inpaint", "Inpaint"],
+                  ["smart-crop", "Smart Crop"],
+                  ["interpolate", "Frame Interpolate"],
+                  ["highlight", "Highlight Clip"],
+                ] as const
+              ).map(([key, label]) => (
                 <button
-                  key={pos}
-                  onClick={() => setSubtitlePosition(pos)}
-                  className={`px-3 py-1 rounded text-sm capitalize ${
-                    subtitlePosition === pos ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
+                  key={key}
+                  onClick={() => { setMode(key); setResultB64(null); setMeta(null); setProcessingTimeMs(null); }}
+                  className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
+                    mode === key
+                      ? "text-white"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                   }`}
+                  style={mode === key ? { backgroundColor: "#185FA5" } : undefined}
                 >
-                  {pos}
+                  {label}
                 </button>
               ))}
             </div>
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">Font Scale:</label>
-              <input
-                type="number"
-                value={fontScale}
-                onChange={(e) => setFontScale(Number(e.target.value))}
-                min={0.5}
-                max={5}
-                step={0.1}
-                className="rounded border-gray-300 text-sm px-3 py-1 border w-24"
-              />
-            </div>
-          </div>
-        )}
 
-        {mode === "inpaint" && (
-          <div className="space-y-3">
-            <p className="text-sm text-gray-600">Upload a mask image where white pixels indicate areas to inpaint.</p>
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">Mask:</label>
+            {/* Upload dropzone */}
+            <div
+              onClick={() => fileRef.current?.click()}
+              className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 transition"
+            >
               <input
-                ref={maskRef}
+                ref={fileRef}
                 type="file"
                 accept="image/*"
-                className="text-sm"
-                onChange={(e) => setMaskFile(e.target.files?.[0] ?? null)}
+                className="hidden"
+                onChange={onFileChange}
               />
-            </div>
-          </div>
-        )}
-
-        {mode === "smart-crop" && (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <label className="text-sm font-medium text-gray-700">Target Size (WxH):</label>
-              <input
-                type="text"
-                value={smartCropSize}
-                onChange={(e) => setSmartCropSize(e.target.value)}
-                placeholder="200x200"
-                className="rounded border-gray-300 text-sm px-3 py-1 border w-32"
-              />
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <label className="text-sm font-medium text-gray-700">Method:</label>
-              {SMART_CROP_METHODS.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setSmartCropMethod(m)}
-                  className={`px-3 py-1 rounded text-sm capitalize ${
-                    smartCropMethod === m ? "bg-brand-600 text-white" : "bg-gray-200 text-gray-700"
-                  }`}
-                >
-                  {m.replace(/_/g, " ")}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {mode === "interpolate" && (
-          <div className="bg-yellow-50 rounded-lg p-3">
-            <p className="text-sm text-yellow-700">Frame interpolation requires two frames. Use the API directly at <code>/api/transform/video/interpolate</code> with frame1 and frame2 uploads.</p>
-          </div>
-        )}
-
-        {mode === "highlight" && (
-          <div className="bg-yellow-50 rounded-lg p-3">
-            <p className="text-sm text-yellow-700">Highlight clip selection requires multiple frames with scores. Use the API directly at <code>/api/transform/video/highlight</code> with multiple files and a scores JSON array.</p>
-          </div>
-        )}
-
-        {/* Run button */}
-        {mode !== "interpolate" && mode !== "highlight" && (
-          <button
-            onClick={run}
-            disabled={!srcFile || loading}
-            className="px-6 py-2 bg-brand-600 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:bg-brand-700 transition"
-          >
-            {loading ? "Processing..." : "Transform"}
-          </button>
-        )}
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg text-sm">
-          {error}
-        </div>
-      )}
-
-      {/* Results */}
-      {srcPreview && resultSrc && (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-900">Result</h3>
-
-          <BeforeAfterSlider beforeSrc={srcPreview} afterSrc={resultSrc} />
-
-          {/* Metadata */}
-          {meta && (
-            <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-600 space-y-1">
-              {meta.processing_time_ms != null && (
-                <p>Processing time: {Number(meta.processing_time_ms).toFixed(1)} ms</p>
+              {srcPreview ? (
+                <img src={srcPreview} alt="Source" className="mx-auto max-h-48 rounded" />
+              ) : (
+                <p className="text-gray-400">Click or drag an image here to upload</p>
               )}
-              {meta.original_size ? (
-                <p>Original size: {(meta.original_size as number[]).join(" x ")}</p>
-              ) : null}
-              {meta.output_size ? (
-                <p>Output size: {(meta.output_size as number[]).join(" x ")}</p>
-              ) : null}
-              {meta.cropped_size ? (
-                <p>Cropped size: {(meta.cropped_size as number[]).join(" x ")}</p>
-              ) : null}
-              {meta.target_size ? (
-                <p>Target size: {(meta.target_size as number[]).join(" x ")}</p>
-              ) : null}
             </div>
-          )}
 
-          {/* Download */}
-          <button
-            onClick={download}
-            className="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-900 transition"
-          >
-            Download Result
-          </button>
+            {/* Placeholder for OperationControls (created by other agents) */}
+            {hasOperationControls ? (
+              <OperationControls />
+            ) : (
+              /* Inline mode-specific options (existing controls) */
+              <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+                {mode === "background-remove" && (
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700">Method:</label>
+                    <select
+                      value={bgMethod}
+                      onChange={(e) => setBgMethod(e.target.value)}
+                      className="rounded border-gray-300 text-sm"
+                    >
+                      {BG_METHODS.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {mode === "super-resolution" && (
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700">Scale:</label>
+                    {[2, 4].map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setSrScale(s)}
+                        className={`px-3 py-1 rounded text-sm ${
+                          srScale === s ? "text-white" : "bg-gray-200 text-gray-700"
+                        }`}
+                        style={srScale === s ? { backgroundColor: "#185FA5" } : undefined}
+                      >
+                        {s}x
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {mode === "style" && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <label className="text-sm font-medium text-gray-700">Style:</label>
+                    {STYLES.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setStylePreset(s)}
+                        className={`px-3 py-1 rounded text-sm capitalize ${
+                          stylePreset === s ? "text-white" : "bg-gray-200 text-gray-700"
+                        }`}
+                        style={stylePreset === s ? { backgroundColor: "#185FA5" } : undefined}
+                      >
+                        {s.replace("_", " ")}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {mode === "auto-crop" && (
+                  <div className="flex items-center gap-3">
+                    <label className="text-sm font-medium text-gray-700">Aspect Ratio:</label>
+                    <select
+                      value={aspect}
+                      onChange={(e) => setAspect(e.target.value)}
+                      className="rounded border-gray-300 text-sm"
+                    >
+                      {ASPECTS.map((a) => (
+                        <option key={a} value={a}>{a}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {mode === "color-grade" && (
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <label className="text-sm font-medium text-gray-700">Preset:</label>
+                    {COLOR_GRADE_PRESETS.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => setColorGradePreset(p)}
+                        className={`px-3 py-1 rounded text-sm capitalize ${
+                          colorGradePreset === p ? "text-white" : "bg-gray-200 text-gray-700"
+                        }`}
+                        style={colorGradePreset === p ? { backgroundColor: "#185FA5" } : undefined}
+                      >
+                        {p.replace("_", " ")}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {mode === "subtitle" && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-gray-700">Text:</label>
+                      <input
+                        type="text"
+                        value={subtitleText}
+                        onChange={(e) => setSubtitleText(e.target.value)}
+                        placeholder="Enter subtitle text..."
+                        className="flex-1 rounded border-gray-300 text-sm px-3 py-1 border"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-gray-700">Position:</label>
+                      {SUBTITLE_POSITIONS.map((pos) => (
+                        <button
+                          key={pos}
+                          onClick={() => setSubtitlePosition(pos)}
+                          className={`px-3 py-1 rounded text-sm capitalize ${
+                            subtitlePosition === pos ? "text-white" : "bg-gray-200 text-gray-700"
+                          }`}
+                          style={subtitlePosition === pos ? { backgroundColor: "#185FA5" } : undefined}
+                        >
+                          {pos}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-gray-700">Font Scale:</label>
+                      <input
+                        type="number"
+                        value={fontScale}
+                        onChange={(e) => setFontScale(Number(e.target.value))}
+                        min={0.5}
+                        max={5}
+                        step={0.1}
+                        className="rounded border-gray-300 text-sm px-3 py-1 border w-24"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {mode === "inpaint" && (
+                  <div className="space-y-3">
+                    <p className="text-sm text-gray-600">Upload a mask image where white pixels indicate areas to inpaint.</p>
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-gray-700">Mask:</label>
+                      <input
+                        ref={maskRef}
+                        type="file"
+                        accept="image/*"
+                        className="text-sm"
+                        onChange={(e) => setMaskFile(e.target.files?.[0] ?? null)}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {mode === "smart-crop" && (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-3">
+                      <label className="text-sm font-medium text-gray-700">Target Size (WxH):</label>
+                      <input
+                        type="text"
+                        value={smartCropSize}
+                        onChange={(e) => setSmartCropSize(e.target.value)}
+                        placeholder="200x200"
+                        className="rounded border-gray-300 text-sm px-3 py-1 border w-32"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <label className="text-sm font-medium text-gray-700">Method:</label>
+                      {SMART_CROP_METHODS.map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => setSmartCropMethod(m)}
+                          className={`px-3 py-1 rounded text-sm capitalize ${
+                            smartCropMethod === m ? "text-white" : "bg-gray-200 text-gray-700"
+                          }`}
+                          style={smartCropMethod === m ? { backgroundColor: "#185FA5" } : undefined}
+                        >
+                          {m.replace(/_/g, " ")}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {mode === "interpolate" && (
+                  <div className="rounded-lg p-3" style={{ backgroundColor: "#FEF3C7" }}>
+                    <p className="text-sm" style={{ color: "#92400E" }}>Frame interpolation requires two frames. Use the API directly at <code>/api/transform/video/interpolate</code> with frame1 and frame2 uploads.</p>
+                  </div>
+                )}
+
+                {mode === "highlight" && (
+                  <div className="rounded-lg p-3" style={{ backgroundColor: "#FEF3C7" }}>
+                    <p className="text-sm" style={{ color: "#92400E" }}>Highlight clip selection requires multiple frames with scores. Use the API directly at <code>/api/transform/video/highlight</code> with multiple files and a scores JSON array.</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Transform button */}
+            {mode !== "interpolate" && mode !== "highlight" && (
+              <button
+                onClick={run}
+                disabled={!srcFile || loading}
+                className="w-full px-6 py-2.5 text-white rounded-lg text-sm font-medium disabled:opacity-50 hover:opacity-90 transition"
+                style={{ backgroundColor: "#185FA5" }}
+              >
+                {loading ? "Processing..." : "Transform"}
+              </button>
+            )}
+
+            {/* Processing progress (created by other agents) */}
+            {loading && <ProcessingProgress />}
+
+            {/* Error */}
+            {error && (
+              <div className="border px-4 py-3 rounded-lg text-sm" style={{ backgroundColor: "#FEF2F2", borderColor: "#FECACA", color: "#A32D2D" }}>
+                {error}
+              </div>
+            )}
+
+            {/* Placeholder for TransformHistory */}
+            {hasTransformHistory && <TransformHistory />}
+          </div>
+
+          {/* ── Right column: results viewer ── */}
+          <div className="space-y-4">
+            {/* BeforeAfterViewer */}
+            <BeforeAfterViewer
+              originalSrc={srcPreview ?? undefined}
+              transformedSrc={resultSrc ?? undefined}
+              originalInfo={
+                meta?.original_size
+                  ? {
+                      width: (meta.original_size as number[])[0],
+                      height: (meta.original_size as number[])[1],
+                      size: srcFile ? `${(srcFile.size / 1024).toFixed(1)} KB` : "",
+                    }
+                  : undefined
+              }
+              transformedInfo={
+                meta?.output_size
+                  ? {
+                      width: (meta.output_size as number[])[0],
+                      height: (meta.output_size as number[])[1],
+                      size: resultB64 ? `${(Math.ceil(resultB64.length * 0.75) / 1024).toFixed(1)} KB` : "",
+                    }
+                  : undefined
+              }
+            />
+
+            {/* Output stats row */}
+            {meta && resultSrc && (
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg bg-gray-50 p-3 text-center">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Processing Time</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">
+                    {processingTimeMs != null ? `${processingTimeMs.toFixed(1)} ms` : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-gray-50 p-3 text-center">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Dimensions</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">
+                    {meta.output_size
+                      ? (meta.output_size as number[]).join(" x ")
+                      : meta.cropped_size
+                        ? (meta.cropped_size as number[]).join(" x ")
+                        : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-gray-50 p-3 text-center">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">File Size</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">
+                    {resultB64 ? `${(Math.ceil(resultB64.length * 0.75) / 1024).toFixed(1)} KB` : "—"}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Download button */}
+            {resultSrc && (
+              <button
+                onClick={download}
+                className="w-full px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-900 transition"
+              >
+                Download Result
+              </button>
+            )}
+
+            {/* Placeholder for TransformExportPanel */}
+            {hasTransformExportPanel && resultSrc && <TransformExportPanel />}
+          </div>
         </div>
       )}
-      </>}
 
       {/* Batch Transform tab */}
       {tab === "batch" && (
