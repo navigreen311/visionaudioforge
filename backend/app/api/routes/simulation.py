@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import random
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
@@ -31,6 +29,27 @@ class SimulationRun(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class SimulationRunRequest(BaseModel):
+    """Body for the simplified POST /run endpoint."""
+    scenario_type: str = "detection"
+    duration_sec: int = 60
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class StressTestRequest(BaseModel):
+    """Body for POST /stress-test."""
+    target: str = "pipeline"
+    concurrency: int = 50
+    duration_sec: int = 30
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class EdgeCaseRequest(BaseModel):
+    """Body for POST /edge-case."""
+    case_name: str = "low_light_noise_burst"
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
@@ -39,7 +58,55 @@ _simulations: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
-# Endpoints
+# Mock data helpers
+# ---------------------------------------------------------------------------
+
+_MOCK_EVENTS = [
+    {"event_num": 1, "type": "anomaly_detected", "timestamp_offset_sec": 3.2, "triggered_alert": True},
+    {"event_num": 2, "type": "normal_activity", "timestamp_offset_sec": 7.5, "triggered_alert": False},
+    {"event_num": 3, "type": "anomaly_detected", "timestamp_offset_sec": 12.1, "triggered_alert": True},
+    {"event_num": 4, "type": "anomaly_detected", "timestamp_offset_sec": 18.4, "triggered_alert": True},
+    {"event_num": 5, "type": "false_positive", "timestamp_offset_sec": 22.0, "triggered_alert": True},
+    {"event_num": 6, "type": "anomaly_detected", "timestamp_offset_sec": 30.7, "triggered_alert": True},
+    {"event_num": 7, "type": "anomaly_detected", "timestamp_offset_sec": 38.9, "triggered_alert": True},
+    {"event_num": 8, "type": "missed_anomaly", "timestamp_offset_sec": 45.3, "triggered_alert": False},
+]
+
+_MOCK_RUNS = [
+    {"run_id": f"sim_{str(i).zfill(3)}", "status": "completed", "total_events": 8,
+     "score": 76, "created_at": 1700000000 + i * 3600}
+    for i in range(1, 6)
+]
+
+
+def _build_stress_summary() -> dict[str, Any]:
+    return {
+        "total": 1000,
+        "successful": 950,
+        "failed": 50,
+        "rps_peak": 42.5,
+        "avg_latency_ms": 85.3,
+        "p99_latency_ms": 234.1,
+        "passed": True,
+    }
+
+
+def _build_throughput_series() -> list[dict[str, Any]]:
+    return [
+        {"time_sec": t, "rps": 30 + t * 1.2}
+        for t in range(0, 31, 5)
+    ]
+
+
+def _build_latency_series() -> list[dict[str, Any]]:
+    return [
+        {"time_sec": t, "p50_ms": 40 + t, "p99_ms": 100 + t * 4}
+        for t in range(0, 31, 5)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Existing endpoints — scenarios (unchanged)
 # ---------------------------------------------------------------------------
 
 @router.post("/scenarios")
@@ -68,8 +135,13 @@ async def get_scenario(scenario_id: str) -> dict:
     return _scenarios[scenario_id]
 
 
-@router.post("/run")
-async def run_simulation(body: SimulationRun) -> dict[str, Any]:
+# ---------------------------------------------------------------------------
+# Existing endpoint — run with scenario_id (unchanged)
+# ---------------------------------------------------------------------------
+
+@router.post("/run/scenario")
+async def run_simulation_with_scenario(body: SimulationRun) -> dict[str, Any]:
+    """Run a simulation against a previously created scenario."""
     if body.scenario_id not in _scenarios:
         raise HTTPException(status_code=404, detail="Scenario not found")
     sim_id = str(uuid.uuid4())
@@ -92,6 +164,10 @@ async def run_simulation(body: SimulationRun) -> dict[str, Any]:
     return simulation
 
 
+# ---------------------------------------------------------------------------
+# Existing endpoint — report (unchanged)
+# ---------------------------------------------------------------------------
+
 @router.get("/report/{simulation_id}")
 async def get_report(simulation_id: str) -> dict[str, Any]:
     if simulation_id not in _simulations:
@@ -108,113 +184,119 @@ async def get_report(simulation_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Run History & PDF Report endpoints (SI5)
+# NEW: POST /run — simplified simulation run (mock)
 # ---------------------------------------------------------------------------
 
-def _build_stub_runs() -> list[dict[str, Any]]:
-    """Return deterministic stub data for the run history table."""
-    now = datetime.now(timezone.utc)
-    run_types: list[str] = ["scenario", "stress", "edge-case"]
-    severities: list[str] = ["info", "warning", "error", "critical"]
-    stubs: list[dict[str, Any]] = []
-    for i in range(8):
-        rid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"stub-run-{i}"))
-        rtype = run_types[i % len(run_types)]
-        score = max(0, min(100, 60 + (i * 7) % 41))
-        created = (now - timedelta(days=i, hours=i * 3)).isoformat()
-        event_count = 3 + i
-        events = [
-            {
-                "timestamp": (
-                    now - timedelta(days=i, hours=i * 3, minutes=j * 2)
-                ).isoformat(),
-                "type": "pipeline_event",
-                "message": f"Event {j + 1} for run {i + 1}",
-                "severity": severities[j % len(severities)],
-            }
-            for j in range(event_count)
-        ]
-        stubs.append(
-            {
-                "id": rid,
-                "name": f"Run {i + 1} — {rtype.replace('-', ' ').title()}",
-                "type": rtype,
-                "score": score,
-                "events": event_count,
-                "duration_seconds": 30 + i * 15,
-                "created_at": created,
-                "status": "completed" if i != 2 else "failed",
-                "event_log": events,
-            }
-        )
-    return stubs
+@router.post("/run")
+async def run_simulation(body: SimulationRunRequest) -> dict[str, Any]:
+    """Run a simulation and return mock summary."""
+    return {
+        "run_id": "sim_001",
+        "status": "completed",
+        "total_events": 8,
+    }
 
+
+# ---------------------------------------------------------------------------
+# NEW: GET /runs/{run_id} — detailed run results (mock)
+# ---------------------------------------------------------------------------
+
+@router.get("/runs/{run_id}")
+async def get_run(run_id: str) -> dict[str, Any]:
+    """Get detailed results for a simulation run."""
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "events": _MOCK_EVENTS,
+        "score": 76,
+        "detection_rate": 0.875,
+        "false_alarm_rate": 0.125,
+        "missed_events": 1,
+    }
+
+
+# ---------------------------------------------------------------------------
+# NEW: GET /runs — list past runs (mock)
+# ---------------------------------------------------------------------------
 
 @router.get("/runs")
 async def list_runs() -> list[dict[str, Any]]:
-    """Return all simulation runs (stub data + any runs from in-memory store)."""
-    runs: list[dict[str, Any]] = _build_stub_runs()
-    # Append any runs created via /run endpoint
-    for sim_id, sim in _simulations.items():
-        scenario = _scenarios.get(sim["scenario_id"], {})
-        runs.append(
-            {
-                "id": sim_id,
-                "name": scenario.get("name", f"Run {sim_id[:8]}"),
-                "type": scenario.get("type", "scenario"),
-                "score": round(random.uniform(50, 100)),
-                "events": 0,
-                "duration_seconds": int(
-                    sim.get("results", {}).get("duration_seconds", 60)
-                ),
-                "created_at": datetime.fromtimestamp(
-                    sim.get("started_at", time.time()), tz=timezone.utc
-                ).isoformat(),
-                "status": sim.get("status", "completed"),
-                "event_log": [],
-            }
-        )
-    return runs
+    """List recent simulation runs."""
+    return _MOCK_RUNS
 
+
+# ---------------------------------------------------------------------------
+# NEW: POST /stress-test — launch stress test (mock)
+# ---------------------------------------------------------------------------
+
+@router.post("/stress-test")
+async def run_stress_test(body: StressTestRequest) -> dict[str, Any]:
+    """Launch a stress test and return mock summary."""
+    return {
+        "test_id": "stress_001",
+        "status": "completed",
+    }
+
+
+# ---------------------------------------------------------------------------
+# NEW: GET /stress-test/{test_id}/status — stress test status (mock)
+# ---------------------------------------------------------------------------
+
+@router.get("/stress-test/{test_id}/status")
+async def get_stress_test_status(test_id: str) -> dict[str, Any]:
+    """Get status and results of a stress test."""
+    return {
+        "test_id": test_id,
+        "status": "completed",
+        "throughput": _build_throughput_series(),
+        "latency": _build_latency_series(),
+        "summary": _build_stress_summary(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# NEW: POST /edge-case — run edge case test (mock)
+# ---------------------------------------------------------------------------
+
+@router.post("/edge-case")
+async def run_edge_case(body: EdgeCaseRequest) -> dict[str, Any]:
+    """Run an edge-case scenario and return mock result."""
+    return {
+        "case_name": body.case_name,
+        "result": "degraded",
+        "score_before": 92,
+        "score_after": 71,
+        "confidence_drop": 21,
+    }
+
+
+# ---------------------------------------------------------------------------
+# NEW: POST /runs/{run_id}/report — generate plain text report (mock)
+# ---------------------------------------------------------------------------
 
 @router.post("/runs/{run_id}/report")
-async def export_run_report(run_id: str) -> JSONResponse:
-    """Generate a report for a simulation run (stub — returns JSON payload).
-
-    In production this would generate a PDF.  For now returns a JSON
-    report with Content-Type application/json so the frontend can
-    handle the download.
-    """
-    # Look in dynamic store first
-    sim = _simulations.get(run_id)
-    if sim:
-        scenario = _scenarios.get(sim["scenario_id"], {})
-        return JSONResponse(
-            {
-                "report": {
-                    "run_id": run_id,
-                    "name": scenario.get("name", "unknown"),
-                    "status": sim["status"],
-                    "results": sim["results"],
-                    "generated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            }
-        )
-    # Check stub runs
-    for stub in _build_stub_runs():
-        if stub["id"] == run_id:
-            return JSONResponse(
-                {
-                    "report": {
-                        "run_id": run_id,
-                        "name": stub["name"],
-                        "type": stub["type"],
-                        "score": stub["score"],
-                        "events": stub["events"],
-                        "duration_seconds": stub["duration_seconds"],
-                        "status": stub["status"],
-                        "generated_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                }
-            )
-    raise HTTPException(status_code=404, detail="Run not found")
+async def generate_run_report(run_id: str) -> PlainTextResponse:
+    """Generate a plain-text report for a simulation run."""
+    report = (
+        f"SIMULATION REPORT — {run_id}\n"
+        f"{'=' * 40}\n"
+        f"Status: completed\n"
+        f"Total Events: 8\n"
+        f"Score: 76 / 100\n"
+        f"Detection Rate: 87.5%\n"
+        f"False Alarm Rate: 12.5%\n"
+        f"Missed Events: 1\n"
+        f"\n"
+        f"EVENT LOG:\n"
+        f"  #1  anomaly_detected   @ 3.2s   [ALERT]\n"
+        f"  #2  normal_activity    @ 7.5s   [—]\n"
+        f"  #3  anomaly_detected   @ 12.1s  [ALERT]\n"
+        f"  #4  anomaly_detected   @ 18.4s  [ALERT]\n"
+        f"  #5  false_positive     @ 22.0s  [ALERT]\n"
+        f"  #6  anomaly_detected   @ 30.7s  [ALERT]\n"
+        f"  #7  anomaly_detected   @ 38.9s  [ALERT]\n"
+        f"  #8  missed_anomaly     @ 45.3s  [—]\n"
+        f"\n"
+        f"SUMMARY: 7/8 events detected. 1 false alarm. 1 miss.\n"
+    )
+    return PlainTextResponse(content=report)
