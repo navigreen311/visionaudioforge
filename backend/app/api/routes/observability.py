@@ -1,6 +1,5 @@
 """Observability routes — SRE dashboard, SLA, alert fatigue analytics."""
 
-import math
 import random
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -107,45 +106,57 @@ async def alert_fatigue(
 
 
 # ------------------------------------------------------------------
-# Latency history (mock)
+# Request volume (OB3)
 # ------------------------------------------------------------------
 
-RANGE_HOURS = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
+
+def _mock_request_volume() -> list[dict[str, int]]:
+    """Generate 24 hours of mock request-volume data."""
+    now_hour = datetime.now(timezone.utc).hour
+    buckets: list[dict[str, int]] = []
+    for h in range(24):
+        base = random.randint(200, 1200) if h != now_hour else random.randint(80, 400)
+        errors = max(0, int(base * random.uniform(0.01, 0.08)))
+        buckets.append({"hour": h, "success": base - errors, "errors": errors})
+    return buckets
 
 
-@router.get("/latency-history")
-async def latency_history(
-    range: str = Query("24h", description="Preset range: 1h, 6h, 24h, 7d"),
-    from_dt: Optional[str] = Query(None, alias="from", description="ISO start (custom range)"),
-    to_dt: Optional[str] = Query(None, alias="to", description="ISO end (custom range)"),
-) -> dict:
-    """Return mock latency time-series with 24 data points."""
-    hours = RANGE_HOURS.get(range, 24)
+@router.get("/request-volume")
+async def request_volume() -> dict[str, object]:
+    """Hourly request volume for the last 24 hours (mock data)."""
+    return {
+        "period": "24h",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "buckets": _mock_request_volume(),
+    }
 
-    if from_dt and to_dt:
-        try:
-            start = datetime.fromisoformat(from_dt)
-            end = datetime.fromisoformat(to_dt)
-            hours = max(1, int((end - start).total_seconds() / 3600))
-        except ValueError:
-            pass
 
-    now = datetime.now(timezone.utc)
-    points = 24
-    step = timedelta(hours=hours) / points
+# ------------------------------------------------------------------
+# SLA history (OB4)
+# ------------------------------------------------------------------
 
-    rng = random.Random(42)  # deterministic seed for stable demo data
-    data = []
-    for i in range(points):
-        ts = now - timedelta(hours=hours) + step * i
-        base_avg = 120 + 30 * math.sin(i * 0.5) + rng.gauss(0, 10)
-        base_p99 = base_avg * (1.8 + rng.gauss(0, 0.15))
-        data.append(
-            {
-                "timestamp": ts.isoformat(),
-                "avg_ms": round(max(10, base_avg), 1),
-                "p99_ms": round(max(20, base_p99), 1),
-            }
-        )
 
-    return {"range": range, "points": points, "data": data}
+def _mock_sla_history(days: int = 7) -> list[dict[str, object]]:
+    """Generate daily SLA compliance percentages."""
+    today = datetime.now(timezone.utc).date()
+    history: list[dict[str, object]] = []
+    for i in range(days - 1, -1, -1):
+        day = today - timedelta(days=i)
+        # Mostly above 99.9, occasionally dip below
+        pct = round(random.uniform(99.5, 100.0), 3) if random.random() < 0.7 else round(random.uniform(98.5, 99.85), 3)
+        pct = min(pct, 100.0)
+        history.append({"date": day.isoformat(), "pct": pct})
+    return history
+
+
+@router.get("/sla-history")
+async def sla_history(
+    days: int = Query(7, ge=1, le=90, description="Number of days of history"),
+) -> dict[str, object]:
+    """Daily SLA compliance history (mock data)."""
+    return {
+        "days": days,
+        "target_pct": 99.9,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "history": _mock_sla_history(days),
+    }
