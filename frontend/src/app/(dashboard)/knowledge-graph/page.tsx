@@ -1,14 +1,80 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo } from "react";
+import dynamic from "next/dynamic";
 import GraphCanvas, {
   GraphNode,
   GraphEdge,
 } from "@/components/knowledge-graph/GraphCanvas";
-import NodeDetail from "@/components/knowledge-graph/NodeDetail";
+import NodeDetailPanel from "@/components/knowledge-graph/NodeDetailPanel";
 import GraphFilters, {
   GraphFilterState,
 } from "@/components/knowledge-graph/GraphFilters";
+
+// ---------------------------------------------------------------------------
+// Dynamic imports for components from other agents (lazy-loaded)
+// ---------------------------------------------------------------------------
+
+const GraphSearch = dynamic(
+  () => import("@/components/knowledge-graph/GraphSearch"),
+  { ssr: false, loading: () => <div className="h-8 bg-gray-800 rounded animate-pulse" /> }
+);
+
+const AddEntityModal = dynamic(
+  () => import("@/components/knowledge-graph/AddEntityModal"),
+  { ssr: false }
+);
+
+const AddRelationshipModal = dynamic(
+  () => import("@/components/knowledge-graph/AddRelationshipModal"),
+  { ssr: false }
+);
+
+const PathFinder = dynamic(
+  () => import("@/components/knowledge-graph/PathFinder"),
+  { ssr: false }
+);
+
+const GraphToolbar = dynamic(
+  () => import("@/components/knowledge-graph/GraphToolbar"),
+  { ssr: false, loading: () => <div className="h-10 bg-gray-800 rounded animate-pulse" /> }
+);
+
+const GraphMinimap = dynamic(
+  () => import("@/components/knowledge-graph/GraphMinimap"),
+  { ssr: false }
+);
+
+const ExtractFromAsset = dynamic(
+  () => import("@/components/knowledge-graph/ExtractFromAsset"),
+  { ssr: false }
+);
+
+const GraphExport = dynamic(
+  () => import("@/components/knowledge-graph/GraphExport"),
+  { ssr: false }
+);
+
+const CopilotGraphQuery = dynamic(
+  () => import("@/components/knowledge-graph/CopilotGraphQuery"),
+  { ssr: false }
+);
+
+// ---------------------------------------------------------------------------
+// Feature flags — set to true once the corresponding component is available
+// ---------------------------------------------------------------------------
+
+const FEATURES = {
+  graphSearch: false,
+  addEntity: false,
+  addRelationship: false,
+  pathFinder: false,
+  graphToolbar: false,
+  graphMinimap: false,
+  extractFromAsset: false,
+  graphExport: false,
+  copilotGraphQuery: false,
+} as const;
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -85,11 +151,19 @@ const ALL_NODE_TYPES = ["person", "object", "location", "event", "vehicle"];
 export default function KnowledgeGraphPage() {
   const [nodes, setNodes] = useState<GraphNode[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nlAnswer, setNlAnswer] = useState<string | null>(null);
+
+  // Modal states for dynamic components
+  const [showAddEntity, setShowAddEntity] = useState(false);
+  const [showAddRelationship, setShowAddRelationship] = useState(false);
+  const [showPathFinder, setShowPathFinder] = useState(false);
+  const [showExtractFromAsset, setShowExtractFromAsset] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [showCopilot, setShowCopilot] = useState(false);
 
   // Filters
   const availableEdgeTypes = useMemo(() => {
@@ -182,19 +256,16 @@ export default function KnowledgeGraphPage() {
   }, [edges, filteredNodes, filters.edgeTypes]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
-    setSelectedNode(node);
+    setSelectedNodeId(node.id);
     setHighlightedNodeId(node.id);
   }, []);
 
-  const handleNavigateToNode = useCallback(
+  const handleNodeFocus = useCallback(
     (nodeId: string) => {
-      const node = nodes.find((n) => n.id === nodeId);
-      if (node) {
-        setSelectedNode(node);
-        setHighlightedNodeId(nodeId);
-      }
+      setSelectedNodeId(nodeId);
+      setHighlightedNodeId(nodeId);
     },
-    [nodes]
+    []
   );
 
   return (
@@ -203,6 +274,46 @@ export default function KnowledgeGraphPage() {
       <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-white">
         <h1 className="text-xl font-bold text-gray-900">Knowledge Graph</h1>
         <div className="flex items-center gap-3 text-sm text-gray-500">
+          {FEATURES.addEntity && (
+            <button
+              className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-xs hover:bg-blue-700"
+              onClick={() => setShowAddEntity(true)}
+            >
+              + Entity
+            </button>
+          )}
+          {FEATURES.addRelationship && (
+            <button
+              className="px-3 py-1.5 bg-indigo-600 text-white rounded-md text-xs hover:bg-indigo-700"
+              onClick={() => setShowAddRelationship(true)}
+            >
+              + Relationship
+            </button>
+          )}
+          {FEATURES.extractFromAsset && (
+            <button
+              className="px-3 py-1.5 bg-green-600 text-white rounded-md text-xs hover:bg-green-700"
+              onClick={() => setShowExtractFromAsset(true)}
+            >
+              Extract
+            </button>
+          )}
+          {FEATURES.graphExport && (
+            <button
+              className="px-3 py-1.5 bg-gray-600 text-white rounded-md text-xs hover:bg-gray-700"
+              onClick={() => setShowExport(true)}
+            >
+              Export
+            </button>
+          )}
+          {FEATURES.copilotGraphQuery && (
+            <button
+              className="px-3 py-1.5 bg-purple-600 text-white rounded-md text-xs hover:bg-purple-700"
+              onClick={() => setShowCopilot(true)}
+            >
+              Copilot
+            </button>
+          )}
           <span>{filteredNodes.length} nodes</span>
           <span>{filteredEdges.length} edges</span>
           {loading && (
@@ -223,10 +334,22 @@ export default function KnowledgeGraphPage() {
         </div>
       )}
 
+      {/* Toolbar area */}
+      {FEATURES.graphToolbar && (
+        <div className="px-6 py-2 border-b border-gray-200 bg-white">
+          <GraphToolbar />
+        </div>
+      )}
+
       {/* Main layout: left panel | center graph | right panel */}
       <div className="flex flex-1 min-h-0">
         {/* Left panel: search + filters */}
         <div className="w-64 border-r border-gray-200 bg-gray-900 overflow-y-auto flex-shrink-0">
+          {FEATURES.graphSearch && (
+            <div className="p-3 border-b border-gray-700">
+              <GraphSearch />
+            </div>
+          )}
           <GraphFilters
             availableNodeTypes={ALL_NODE_TYPES}
             availableEdgeTypes={availableEdgeTypes}
@@ -234,32 +357,64 @@ export default function KnowledgeGraphPage() {
             onFiltersChange={setFilters}
             onSearch={handleSearch}
           />
+          {FEATURES.pathFinder && (
+            <div className="p-3 border-t border-gray-700">
+              <button
+                className="w-full text-xs text-gray-400 hover:text-gray-200 py-2"
+                onClick={() => setShowPathFinder(true)}
+              >
+                Find Path Between Nodes
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Center: graph canvas */}
-        <div className="flex-1 flex items-center justify-center bg-gray-950 overflow-hidden p-4">
+        <div className="flex-1 relative flex items-center justify-center bg-gray-950 overflow-hidden p-4">
           <GraphCanvas
             nodes={filteredNodes}
             edges={filteredEdges}
-            selectedNodeId={selectedNode?.id}
+            selectedNodeId={selectedNodeId}
             highlightedNodeId={highlightedNodeId}
             onNodeClick={handleNodeClick}
             width={900}
             height={600}
           />
+          {FEATURES.graphMinimap && (
+            <div className="absolute bottom-4 right-4">
+              <GraphMinimap />
+            </div>
+          )}
         </div>
 
         {/* Right panel: node detail */}
-        <div className="w-72 border-l border-gray-200 bg-gray-900 overflow-y-auto flex-shrink-0">
-          <NodeDetail
-            node={selectedNode}
-            edges={edges}
-            allNodes={nodes}
-            onClose={() => setSelectedNode(null)}
-            onNavigate={handleNavigateToNode}
+        <div className="w-80 border-l border-gray-200 bg-gray-900 overflow-y-auto flex-shrink-0">
+          <NodeDetailPanel
+            nodeId={selectedNodeId}
+            onNodeFocus={handleNodeFocus}
           />
         </div>
       </div>
+
+      {/* Dynamic modals (rendered only when feature flags are on) */}
+      {FEATURES.addEntity && showAddEntity && (
+        <AddEntityModal />
+      )}
+      {FEATURES.addRelationship && showAddRelationship && (
+        <AddRelationshipModal />
+      )}
+      {FEATURES.pathFinder && showPathFinder && (
+        <PathFinder />
+      )}
+      {FEATURES.extractFromAsset && showExtractFromAsset && (
+        <ExtractFromAsset />
+      )}
+      {FEATURES.graphExport && showExport && (
+        <GraphExport />
+      )}
+      {FEATURES.copilotGraphQuery && showCopilot && (
+        <CopilotGraphQuery />
+      )}
     </div>
   );
 }
