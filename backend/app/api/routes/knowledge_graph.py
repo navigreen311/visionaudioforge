@@ -35,6 +35,12 @@ class SceneExtractRequest(BaseModel):
     workspace_id: str | None = None
 
 
+class AssetExtractRequest(BaseModel):
+    asset_id: str
+    modes: list[str] = Field(default_factory=lambda: ["persons", "objects", "locations", "events"])
+    min_confidence: float = Field(0.6, ge=0.0, le=1.0)
+
+
 # ---------------------------------------------------------------------------
 # In-memory store (replaced by DB in production)
 # ---------------------------------------------------------------------------
@@ -108,6 +114,58 @@ async def get_neighbors(node_id: str) -> dict[str, Any]:
         elif e["target_id"] == node_id:
             neighbors.append({"node_id": e["source_id"], "relation": e["relation"], "direction": "incoming"})
     return {"node_id": node_id, "neighbors": neighbors}
+
+
+@router.post("/extract")
+async def extract_from_asset(body: AssetExtractRequest) -> dict[str, Any]:
+    """Extract entities from an asset (stub).
+
+    In production this would run NLP/CV models against the asset content to
+    extract persons, objects, locations, and events with confidence scores.
+    """
+    mode_type_map: dict[str, str] = {
+        "persons": "person",
+        "objects": "object",
+        "locations": "location",
+        "events": "event",
+    }
+    # Stub: generate sample entities per requested mode
+    entities: list[dict[str, Any]] = []
+    for mode in body.modes:
+        entity_type = mode_type_map.get(mode, mode)
+        sample_id = _next_id()
+        entities.append({
+            "id": sample_id,
+            "label": f"Sample {entity_type.capitalize()} from {body.asset_id}",
+            "type": entity_type,
+            "confidence": round(max(body.min_confidence, 0.75), 2),
+            "merge_suggestion": None,
+        })
+    return {"asset_id": body.asset_id, "entities": entities}
+
+
+@router.get("/export")
+async def export_graph(format: str = Query("json", regex="^(json|csv)$")) -> dict[str, Any]:
+    """Export the full knowledge graph as JSON (stub).
+
+    In production this would stream large graphs or support CSV/GraphML.
+    """
+    edges_with_ids = []
+    for i, e in enumerate(_edges):
+        edge_copy = dict(e)
+        if "id" not in edge_copy:
+            edge_copy["id"] = f"edge-{i + 1:06d}"
+        edges_with_ids.append(edge_copy)
+
+    return {
+        "format": format,
+        "nodes": list(_nodes.values()),
+        "edges": edges_with_ids,
+        "meta": {
+            "node_count": len(_nodes),
+            "edge_count": len(_edges),
+        },
+    }
 
 
 @router.post("/scene-extract")
