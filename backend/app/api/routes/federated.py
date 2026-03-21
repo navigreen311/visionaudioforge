@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import random
 import time
 import uuid
 from typing import Any
@@ -111,3 +113,59 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
         "participants": len(fed["participants"]),
         "status": "training",
     }
+
+
+# ---------------------------------------------------------------------------
+# Round history with mock data (FL4 / FL5 charts)
+# ---------------------------------------------------------------------------
+
+class RoundDataResponse(BaseModel):
+    round_number: int
+    accuracy: float | None
+    loss: float | None
+    privacy_epsilon_spent: float
+    participants: int
+    duration_s: float | None
+
+
+def _generate_mock_rounds(seed: str, count: int = 12) -> list[dict[str, Any]]:
+    """Generate deterministic mock round data for a given federation id."""
+    rng = random.Random(seed)
+    rounds: list[dict[str, Any]] = []
+    for i in range(1, count + 1):
+        # Accuracy climbs from ~55% towards ~93% with noise
+        base_acc = 55 + 38 * (1 - math.exp(-0.25 * i))
+        accuracy = round(min(base_acc + rng.gauss(0, 2.5), 99.5), 2)
+
+        # Loss drops from ~1.8 towards ~0.15
+        base_loss = 1.8 * math.exp(-0.3 * i) + 0.12
+        loss = round(max(base_loss + rng.gauss(0, 0.05), 0.01), 4)
+
+        # Privacy epsilon per round: small value with slight variance
+        epsilon = round(0.4 + rng.uniform(-0.08, 0.12), 4)
+
+        participants = rng.choice([3, 4, 5])
+        duration = round(rng.uniform(8.0, 35.0), 1)
+
+        rounds.append({
+            "round_number": i,
+            "accuracy": accuracy,
+            "loss": loss,
+            "privacy_epsilon_spent": epsilon,
+            "participants": participants,
+            "duration_s": duration,
+        })
+    return rounds
+
+
+@router.get("/federations/{federation_id}/rounds")
+async def get_federation_rounds(federation_id: str) -> list[dict[str, Any]]:
+    """Return per-round training metrics (mock data for now).
+
+    Provides 12 rounds of accuracy, loss, and differential-privacy
+    epsilon spend for the FL4 (Accuracy/Loss) and FL5 (Privacy Budget)
+    charts.
+    """
+    # Return deterministic mock data keyed by federation_id so the same
+    # id always returns the same series.
+    return _generate_mock_rounds(seed=federation_id)
