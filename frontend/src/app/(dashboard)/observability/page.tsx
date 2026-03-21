@@ -1,8 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import TimeRangeSelector, {
+  type TimeRange,
+} from "@/components/observability/TimeRangeSelector";
+import LatencyChart, {
+  type LatencyDataPoint,
+} from "@/components/observability/LatencyChart";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+// ----------------------------------------------------------------
+// Interfaces
+// ----------------------------------------------------------------
 
 interface SystemOverview {
   api_status: string;
@@ -47,6 +57,10 @@ interface AlertFatigue {
   recommendations: string[];
 }
 
+// ----------------------------------------------------------------
+// Shared UI
+// ----------------------------------------------------------------
+
 function StatusDot({ status }: { status: string }) {
   const color =
     status === "healthy"
@@ -87,47 +101,78 @@ function Metric({ label, value }: { label: string; value: string | number }) {
   );
 }
 
+// ----------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------
+
+function rangeToQueryString(range: TimeRange): string {
+  if (range.preset !== "custom") return `range=${range.preset}`;
+  const from = range.custom?.from ?? "";
+  const to = range.custom?.to ?? "";
+  return `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+}
+
+// ----------------------------------------------------------------
+// Page
+// ----------------------------------------------------------------
+
 export default function ObservabilityPage() {
   const [overview, setOverview] = useState<SystemOverview | null>(null);
   const [pipeline, setPipeline] = useState<PipelineHealth | null>(null);
   const [sla, setSla] = useState<SLACompliance | null>(null);
   const [errors, setErrors] = useState<ErrorTaxonomy | null>(null);
   const [fatigue, setFatigue] = useState<AlertFatigue | null>(null);
+  const [latencyHistory, setLatencyHistory] = useState<LatencyDataPoint[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [timeRange, setTimeRange] = useState<TimeRange>({ preset: "24h" });
 
   const workspaceId = "00000000-0000-0000-0000-000000000001";
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [ovRes, plRes, slaRes, errRes, fatRes] = await Promise.allSettled([
+  const loadData = useCallback(async () => {
+    try {
+      const qs = rangeToQueryString(timeRange);
+
+      const [ovRes, plRes, slaRes, errRes, fatRes, latRes] =
+        await Promise.allSettled([
           fetch(`${API}/api/observability/dashboard`),
           fetch(`${API}/api/observability/pipeline-health`),
           fetch(`${API}/api/observability/sla?tier=standard`),
           fetch(`${API}/api/observability/errors`),
           fetch(
-            `${API}/api/observability/alert-fatigue?workspace_id=${workspaceId}`
+            `${API}/api/observability/alert-fatigue?workspace_id=${workspaceId}`,
           ),
+          fetch(`${API}/api/observability/latency-history?${qs}`),
         ]);
 
-        if (ovRes.status === "fulfilled" && ovRes.value.ok)
-          setOverview(await ovRes.value.json());
-        if (plRes.status === "fulfilled" && plRes.value.ok)
-          setPipeline(await plRes.value.json());
-        if (slaRes.status === "fulfilled" && slaRes.value.ok)
-          setSla(await slaRes.value.json());
-        if (errRes.status === "fulfilled" && errRes.value.ok)
-          setErrors(await errRes.value.json());
-        if (fatRes.status === "fulfilled" && fatRes.value.ok)
-          setFatigue(await fatRes.value.json());
-      } catch {
-        // silently degrade
-      } finally {
-        setLoading(false);
+      if (ovRes.status === "fulfilled" && ovRes.value.ok)
+        setOverview(await ovRes.value.json());
+      if (plRes.status === "fulfilled" && plRes.value.ok)
+        setPipeline(await plRes.value.json());
+      if (slaRes.status === "fulfilled" && slaRes.value.ok)
+        setSla(await slaRes.value.json());
+      if (errRes.status === "fulfilled" && errRes.value.ok)
+        setErrors(await errRes.value.json());
+      if (fatRes.status === "fulfilled" && fatRes.value.ok)
+        setFatigue(await fatRes.value.json());
+      if (latRes.status === "fulfilled" && latRes.value.ok) {
+        const body = await latRes.value.json();
+        setLatencyHistory(body.data ?? []);
       }
+    } catch {
+      // silently degrade
+    } finally {
+      setLoading(false);
     }
-    load();
-  }, []);
+  }, [timeRange]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const handleRangeChange = (range: TimeRange) => {
+    setTimeRange(range);
+  };
 
   if (loading) {
     return (
@@ -144,6 +189,13 @@ export default function ObservabilityPage() {
       <h1 className="text-2xl font-bold text-gray-900">
         Observability &amp; SRE Dashboard
       </h1>
+
+      {/* ---- Time Range Selector ---- */}
+      <TimeRangeSelector
+        range={timeRange}
+        onRangeChange={handleRangeChange}
+        onRefresh={loadData}
+      />
 
       {/* ---- System overview ---- */}
       {overview && (
@@ -192,6 +244,9 @@ export default function ObservabilityPage() {
           </div>
         </Card>
       )}
+
+      {/* ---- Latency Chart ---- */}
+      <LatencyChart data={latencyHistory} slaTargetMs={500} />
 
       {/* ---- Pipeline health ---- */}
       {pipeline && (
