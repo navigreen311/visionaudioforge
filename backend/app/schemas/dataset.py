@@ -24,6 +24,8 @@ class DatasetRead(BaseModel):
     size_bytes: int = 0
     version: int = 1
     stats: dict[str, Any] | None = None
+    class_counts: dict[str, int] | None = None
+    split: dict[str, int] | None = None
     created_at: datetime
     updated_at: datetime
 

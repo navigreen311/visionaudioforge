@@ -66,10 +66,12 @@ def _get_search_service() -> CrossModalSearchService:
 
 
 class SearchQueryRequest(BaseModel):
-    query: str
-    modality: str = Field(default="text", pattern="^(text|image)$")
+    query: str = ""
+    modality: str = Field(default="text", pattern="^(text|image|audio)$")
     k: int = Field(default=10, ge=1, le=100)
     filters: dict[str, Any] = Field(default_factory=dict)
+    query_image_b64: str | None = None
+    query_audio_b64: str | None = None
 
 
 class IndexAssetRequest(BaseModel):
@@ -86,7 +88,6 @@ class SearchResultItem(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[SearchResultItem]
-    query_type: str = "text"
     total_results: int
     processing_time_ms: float
 
@@ -95,13 +96,6 @@ class IndexResponse(BaseModel):
     asset_id: str
     indexed: bool
     embedding_dim: int = 512
-
-
-class IndexStatusResponse(BaseModel):
-    images: int = 0
-    audio: int = 0
-    videos: int = 0
-    total: int = 0
 
 
 class StatsResponse(BaseModel):
@@ -151,20 +145,42 @@ async def search_query(body: SearchQueryRequest):
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    if body.modality == "image":
+    # Image search via base64 payload
+    if body.query_image_b64:
+        try:
+            import base64 as b64mod
+            image_data = b64mod.b64decode(body.query_image_b64)
+            raw_results = await search_svc.search_by_image(image_data, k=body.k)
+        except Exception as exc:
+            logger.exception("Image b64 search failed")
+            raise HTTPException(status_code=500, detail=f"Image search failed: {exc}") from exc
+    # Audio search via base64 payload
+    elif body.query_audio_b64:
+        try:
+            import base64 as b64mod
+            audio_data = b64mod.b64decode(body.query_audio_b64)
+            audio_array, sr = _decode_audio(audio_data)
+            embedding_svc = _get_embedding_service()
+            index_svc = _get_index_service()
+            vector = embedding_svc.embed_audio(audio_array, sr)
+            raw_results = index_svc.search(vector, k=body.k)
+        except Exception as exc:
+            logger.exception("Audio b64 search failed")
+            raise HTTPException(status_code=500, detail=f"Audio search failed: {exc}") from exc
+    elif body.modality == "image":
         raise HTTPException(
             status_code=400,
-            detail="Image search requires file upload. Use multipart/form-data with an 'file' field.",
+            detail="Image search requires file upload or query_image_b64 field.",
         )
-
-    # Text search
-    try:
-        raw_results = await search_svc.search_by_text(
-            query=body.query,
-            k=body.k,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    else:
+        # Text search
+        try:
+            raw_results = await search_svc.search_by_text(
+                query=body.query,
+                k=body.k,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
@@ -181,7 +197,6 @@ async def search_query(body: SearchQueryRequest):
 
     return SearchResponse(
         results=results,
-        query_type="text",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -222,7 +237,6 @@ async def search_query_image(file: UploadFile = File(...), k: int = 10):
 
     return SearchResponse(
         results=results,
-        query_type="image",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -281,16 +295,20 @@ async def search_stats():
     )
 
 
-@router.get("/index-status", response_model=IndexStatusResponse)
-async def index_status():
-    """Return per-modality index counts for the frontend status bar.
-
-    In a full implementation this queries the asset database grouped by
-    asset_type.  For now it returns zeros so the frontend can render the
-    amber "no assets indexed" banner until the indexing pipeline is live.
-    """
-    # TODO: replace stub with real DB query once asset table is populated
-    return IndexStatusResponse(images=0, audio=0, videos=0, total=0)
+@router.get("/index-status")
+async def search_index_status():
+    """Return per-modality index counts for the frontend dashboard."""
+    try:
+        index_svc = _get_index_service()
+        total = index_svc.get_stats().get("total_vectors", 0)
+    except Exception:
+        total = 0
+    return {
+        "images": 0,
+        "audio": 0,
+        "videos": 0,
+        "total": total,
+    }
 
 
 @router.post("/similar/{asset_id}", response_model=SearchResponse)
@@ -334,7 +352,6 @@ async def similar_assets(asset_id: str, k: int = 10):
 
     return SearchResponse(
         results=results,
-        query_type="similar",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -380,7 +397,6 @@ async def search_audio_query(file: UploadFile = File(...), k: int = 10):
 
     return SearchResponse(
         results=results,
-        query_type="audio",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
