@@ -1,210 +1,129 @@
-"""Settings API routes — integrations config, billing, notifications, security."""
+"""Settings extra routes — integrations, API keys, and billing stubs."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(prefix="/api/settings", tags=["settings-extra"])
 
 
-# ── Pydantic models ─────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
 class IntegrationConfig(BaseModel):
-    enabled: bool = True
+    id: str = ""
+    name: str = ""
+    type: str = ""
+    enabled: bool = False
     config: dict[str, Any] = Field(default_factory=dict)
+    connected_at: str = ""
 
 
-class NotificationPreferences(BaseModel):
-    email_alerts: bool = True
-    slack_alerts: bool = False
-    in_app: bool = True
-    digest_frequency: str = Field("daily", examples=["realtime", "daily", "weekly"])
-    categories: dict[str, bool] = Field(
-        default_factory=lambda: {
-            "system": True,
-            "security": True,
-            "billing": True,
-            "pipeline": True,
-            "team": True,
-        }
-    )
+class ApiKeyCreate(BaseModel):
+    label: str
+    scopes: list[str] = Field(default_factory=lambda: ["read"])
 
 
-class PasswordChangeRequest(BaseModel):
-    current_password: str
-    new_password: str
+class ApiKeyOut(BaseModel):
+    id: str
+    label: str
+    prefix: str
+    scopes: list[str]
+    created_at: float
 
 
-# ── In-memory state (stub) ──────────────────────────────────────────
+class BillingOverview(BaseModel):
+    plan: str = "pro"
+    seats_used: int = 3
+    seats_total: int = 10
+    current_period_start: str = "2026-03-01"
+    current_period_end: str = "2026-03-31"
+    monthly_cost_usd: float = 99.0
+    usage_pct: float = 24.0
 
-_integrations: dict[str, dict[str, Any]] = {
-    "slack": {
-        "type": "slack",
-        "name": "Slack",
-        "description": "Send alerts and reports to Slack channels",
-        "connected": False,
-        "config": {},
-    },
-    "email": {
-        "type": "email",
-        "name": "Email",
-        "description": "Email notifications via SMTP or SendGrid",
-        "connected": True,
-        "config": {"smtp_host": "smtp.example.com", "from": "noreply@example.com"},
-    },
-    "webhook": {
-        "type": "webhook",
-        "name": "Webhook",
-        "description": "Outbound webhooks for pipeline events",
-        "connected": False,
-        "config": {},
-    },
-    "s3": {
-        "type": "s3",
-        "name": "Amazon S3",
-        "description": "Cloud storage for assets and exports",
-        "connected": True,
-        "config": {"bucket": "my-bucket", "region": "us-east-1"},
-    },
-}
 
-_notification_prefs = NotificationPreferences()
+# ---------------------------------------------------------------------------
+# In-memory stores
+# ---------------------------------------------------------------------------
 
-_sessions = [
-    {
-        "id": "sess-1",
-        "device": "Chrome on Windows",
-        "ip": "192.168.1.10",
-        "location": "New York, US",
-        "last_active": "2026-03-21T10:30:00Z",
-        "current": True,
-    },
-    {
-        "id": "sess-2",
-        "device": "Safari on macOS",
-        "ip": "10.0.0.42",
-        "location": "San Francisco, US",
-        "last_active": "2026-03-20T18:15:00Z",
-        "current": False,
-    },
-    {
-        "id": "sess-3",
-        "device": "Mobile App (iOS)",
-        "ip": "172.16.0.5",
-        "location": "Chicago, US",
-        "last_active": "2026-03-19T09:00:00Z",
-        "current": False,
-    },
+_integrations: list[dict[str, Any]] = [
+    IntegrationConfig(
+        id="int-1", name="Slack", type="messaging", enabled=True,
+        config={"channel": "#alerts"}, connected_at="2026-01-10T12:00:00Z",
+    ).model_dump(),
+    IntegrationConfig(
+        id="int-2", name="S3 Bucket", type="storage", enabled=True,
+        config={"bucket": "vaf-assets"}, connected_at="2026-02-05T08:00:00Z",
+    ).model_dump(),
 ]
 
-_VALID_TYPES = {"slack", "email", "webhook", "s3"}
+_api_keys: dict[str, dict[str, Any]] = {}
 
 
-# ── Integrations ────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Routes — Integrations
+# ---------------------------------------------------------------------------
+
+@router.get("/integrations", response_model=list[IntegrationConfig])
+async def list_integrations():
+    """List configured integrations."""
+    return _integrations
 
 
-@router.get("/integrations")
-async def list_integrations() -> list[dict[str, Any]]:
-    """Return all available integrations with their connected status."""
-    return list(_integrations.values())
+@router.post("/integrations", response_model=IntegrationConfig)
+async def add_integration(body: IntegrationConfig):
+    """Add a new integration."""
+    body.id = f"int-{uuid.uuid4().hex[:6]}"
+    entry = body.model_dump()
+    _integrations.append(entry)
+    return entry
 
 
-@router.post("/integrations/{integration_type}")
-async def save_integration_config(
-    integration_type: str, body: IntegrationConfig
-) -> dict[str, Any]:
-    """Save configuration for an integration type."""
-    if integration_type not in _VALID_TYPES:
-        raise HTTPException(status_code=404, detail=f"Unknown integration: {integration_type}")
-    _integrations[integration_type]["connected"] = body.enabled
-    _integrations[integration_type]["config"] = body.config
-    return {"success": True, "integration": _integrations[integration_type]}
+# ---------------------------------------------------------------------------
+# Routes — API Keys
+# ---------------------------------------------------------------------------
+
+@router.get("/api-keys", response_model=list[ApiKeyOut])
+async def list_api_keys():
+    """List API keys (secrets masked)."""
+    return list(_api_keys.values())
 
 
-@router.post("/integrations/{integration_type}/test")
-async def test_integration(integration_type: str) -> dict[str, Any]:
-    """Run a connectivity test for the given integration."""
-    if integration_type not in _VALID_TYPES:
-        raise HTTPException(status_code=404, detail=f"Unknown integration: {integration_type}")
-    return {"success": True, "message": "Test sent"}
+@router.post("/api-keys", response_model=ApiKeyOut)
+async def create_api_key(body: ApiKeyCreate):
+    """Create a new API key and return metadata (secret shown only once)."""
+    kid = str(uuid.uuid4())
+    key = ApiKeyOut(
+        id=kid,
+        label=body.label,
+        prefix=f"vaf_{uuid.uuid4().hex[:8]}",
+        scopes=body.scopes,
+        created_at=time.time(),
+    )
+    _api_keys[kid] = key.model_dump()
+    return key
 
 
-# ── Billing ─────────────────────────────────────────────────────────
+@router.delete("/api-keys/{key_id}")
+async def revoke_api_key(key_id: str):
+    """Revoke an API key."""
+    if key_id not in _api_keys:
+        raise HTTPException(status_code=404, detail="API key not found")
+    del _api_keys[key_id]
+    return {"status": "revoked", "id": key_id}
 
 
-@router.get("/billing")
-async def get_billing() -> dict[str, Any]:
-    """Return current plan, usage meters, and billing history."""
-    return {
-        "plan": "free",
-        "usage": {
-            "api_calls": {"used": 1_234, "limit": 10_000, "unit": "requests/month"},
-            "storage": {"used": 256, "limit": 5_000, "unit": "MB"},
-            "pipelines": {"used": 3, "limit": 5, "unit": "active"},
-            "team_members": {"used": 2, "limit": 3, "unit": "seats"},
-        },
-        "billing_history": [],
-    }
+# ---------------------------------------------------------------------------
+# Routes — Billing
+# ---------------------------------------------------------------------------
 
-
-# ── Notifications ───────────────────────────────────────────────────
-
-
-@router.get("/notifications")
-async def get_notification_preferences() -> dict[str, Any]:
-    """Return the notification preferences grid."""
-    global _notification_prefs
-    return {
-        "email_alerts": _notification_prefs.email_alerts,
-        "slack_alerts": _notification_prefs.slack_alerts,
-        "in_app": _notification_prefs.in_app,
-        "digest_frequency": _notification_prefs.digest_frequency,
-        "categories": _notification_prefs.categories,
-    }
-
-
-@router.put("/notifications")
-async def update_notification_preferences(body: NotificationPreferences) -> dict[str, Any]:
-    """Save notification preferences."""
-    global _notification_prefs
-    _notification_prefs = body
-    return {"success": True, "preferences": body.model_dump()}
-
-
-# ── Security ────────────────────────────────────────────────────────
-
-
-@router.get("/security/sessions")
-async def list_sessions() -> list[dict[str, Any]]:
-    """Return active sessions."""
-    return _sessions
-
-
-@router.delete("/security/sessions/{session_id}")
-async def revoke_session(session_id: str) -> dict[str, Any]:
-    """Revoke (delete) a session by ID."""
-    global _sessions
-    before = len(_sessions)
-    _sessions = [s for s in _sessions if s["id"] != session_id]
-    if len(_sessions) == before:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return {"success": True, "message": f"Session {session_id} revoked"}
-
-
-@router.post("/security/2fa/enable")
-async def enable_2fa() -> dict[str, Any]:
-    """Enable two-factor authentication (stub)."""
-    return {"enabled": True, "method": "totp", "provisioned_at": datetime.now(timezone.utc).isoformat()}
-
-
-@router.post("/security/password")
-async def change_password(body: PasswordChangeRequest) -> dict[str, Any]:
-    """Change the current user's password (stub)."""
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
-    return {"success": True, "message": "Password updated successfully"}
+@router.get("/billing", response_model=BillingOverview)
+async def get_billing():
+    """Return billing / plan overview."""
+    return BillingOverview()
