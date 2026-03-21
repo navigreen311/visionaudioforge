@@ -2,33 +2,96 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import Link from "next/link";
+import { chatWithCopilot } from "@/lib/api";
+import type { ChatMessage } from "@/lib/api";
 
 interface CopilotInlineProps {
-  onSendMessage: (message: string) => void;
-  responses: string[];
-  isLoading?: boolean;
+  getFrameBase64?: () => string | null;
 }
 
-export default function CopilotInline({
-  onSendMessage,
-  responses,
-  isLoading = false,
-}: CopilotInlineProps) {
+interface DisplayMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export default function CopilotInline({ getFrameBase64 }: CopilotInlineProps) {
   const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastFailedMessage, setLastFailedMessage] = useState<string | null>(
+    null
+  );
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const lastThree = responses.slice(-3);
+  const visibleMessages = messages.slice(-6); // last 3 exchanges (user + assistant)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [lastThree.length]);
+  }, [messages.length]);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isLoading) return;
+
+      setError(null);
+      setLastFailedMessage(null);
+
+      const userMsg: DisplayMessage = { role: "user", content: trimmed };
+      setMessages((prev) => [...prev, userMsg]);
+      setInput("");
+      setIsLoading(true);
+
+      try {
+        // Build history from existing messages for context
+        const history: ChatMessage[] = messages.slice(-6).map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+
+        // Append frame context if available
+        let messageWithContext = trimmed;
+        if (getFrameBase64) {
+          const frame = getFrameBase64();
+          if (frame) {
+            messageWithContext = `[Frame attached: ${frame.slice(0, 50)}...] ${trimmed}`;
+          }
+        }
+
+        const response = await chatWithCopilot(
+          "copilot",
+          messageWithContext,
+          history
+        );
+        const assistantMsg: DisplayMessage = {
+          role: "assistant",
+          content: response.reply,
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch (err: unknown) {
+        const errorMessage =
+          err instanceof Error ? err.message : "Failed to get response";
+        setError(errorMessage);
+        setLastFailedMessage(trimmed);
+        // Remove the user message on failure so it can be retried cleanly
+        setMessages((prev) => prev.slice(0, -1));
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [isLoading, messages, getFrameBase64]
+  );
 
   const handleSend = useCallback(() => {
-    const trimmed = input.trim();
-    if (!trimmed || isLoading) return;
-    onSendMessage(trimmed);
-    setInput("");
-  }, [input, isLoading, onSendMessage]);
+    sendMessage(input);
+  }, [input, sendMessage]);
+
+  const handleRetry = useCallback(() => {
+    if (lastFailedMessage) {
+      sendMessage(lastFailedMessage);
+    }
+  }, [lastFailedMessage, sendMessage]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -41,43 +104,66 @@ export default function CopilotInline({
   );
 
   return (
-    <div className="flex flex-col gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+    <div className="flex flex-col gap-3 p-3 bg-gray-900 rounded-lg border border-gray-700">
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+        <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
           Copilot
         </span>
         <Link
           href="/agents"
-          className="text-xs text-brand-600 hover:text-brand-700 hover:underline"
+          className="text-xs text-[#185FA5] hover:text-[#1a6dbd] hover:underline transition-colors"
         >
           Open full Copilot
         </Link>
       </div>
 
-      {/* Chat bubbles — last 3 responses */}
-      {lastThree.length > 0 && (
-        <div className="flex flex-col gap-2 max-h-36 overflow-y-auto">
-          {lastThree.map((response, index) => (
+      {/* Chat bubbles — last 3 exchanges */}
+      {visibleMessages.length > 0 && (
+        <div className="flex flex-col gap-1.5 max-h-[200px] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700">
+          {visibleMessages.map((msg, index) => (
             <div
               key={index}
-              className="px-3 py-2 bg-white rounded-md border border-gray-100 text-xs text-gray-700 leading-relaxed"
+              className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
-              {response}
+              <div
+                className={`max-w-[85%] px-3 py-1.5 rounded-lg text-xs leading-relaxed ${
+                  msg.role === "user"
+                    ? "bg-[#185FA5] text-white rounded-br-sm"
+                    : "bg-gray-800 text-gray-300 border border-gray-700 rounded-bl-sm"
+                }`}
+              >
+                {msg.content}
+              </div>
             </div>
           ))}
           <div ref={messagesEndRef} />
         </div>
       )}
 
-      {/* Loading indicator */}
+      {/* Typing indicator */}
       {isLoading && (
-        <div className="flex items-center gap-2 px-3 py-2">
+        <div className="flex items-center gap-2 px-3 py-1.5">
           <div className="flex gap-1">
-            <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.3s]" />
-            <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce [animation-delay:-0.15s]" />
-            <span className="w-1.5 h-1.5 bg-gray-400 rounded-full animate-bounce" />
+            <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+            <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+            <span className="w-1.5 h-1.5 bg-gray-500 rounded-full animate-bounce" />
           </div>
-          <span className="text-xs text-gray-400">Thinking...</span>
+          <span className="text-xs text-gray-500">Thinking...</span>
+        </div>
+      )}
+
+      {/* Error message with retry */}
+      {error && (
+        <div className="flex items-center justify-between gap-2 px-3 py-2 bg-red-900/30 border border-red-800/50 rounded-md">
+          <span className="text-xs text-red-400 truncate">{error}</span>
+          <button
+            type="button"
+            onClick={handleRetry}
+            className="shrink-0 text-xs font-medium text-red-300 hover:text-red-200 underline transition-colors"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -90,12 +176,13 @@ export default function CopilotInline({
           onKeyDown={handleKeyDown}
           placeholder="Ask about what's on screen..."
           disabled={isLoading}
-          className="flex-1 px-3 py-1.5 text-sm bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 disabled:opacity-50 placeholder:text-gray-400"
+          className="flex-1 px-3 py-1.5 text-sm bg-gray-800 text-gray-200 border border-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-[#185FA5] focus:border-[#185FA5] disabled:opacity-50 placeholder:text-gray-500"
         />
         <button
+          type="button"
           onClick={handleSend}
           disabled={isLoading || !input.trim()}
-          className="px-3 py-1.5 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md text-sm font-medium transition-colors"
+          className="px-3 py-1.5 bg-[#185FA5] hover:bg-[#14508a] disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md text-sm font-medium transition-colors"
         >
           Send
         </button>
