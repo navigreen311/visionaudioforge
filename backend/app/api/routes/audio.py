@@ -203,16 +203,46 @@ async def augment(
 @router.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
-    language: str | None = Form(None),
+    model: str = Form("base"),
+    language: str = Form("auto"),
+    task: str = Form("transcribe"),
+    word_timestamps: bool = Form(True),
 ):
-    """Transcribe speech in an uploaded audio file using Whisper."""
+    """Transcribe speech in an uploaded audio file using Whisper.
+
+    Parameters
+    ----------
+    file : UploadFile
+        Audio file to transcribe.
+    model : str
+        Whisper model size (tiny/base/small/medium/large). Default ``"base"``.
+    language : str
+        Language code or ``"auto"`` for auto-detection. Default ``"auto"``.
+    task : str
+        ``"transcribe"`` or ``"translate"`` (translate to English). Default ``"transcribe"``.
+    word_timestamps : bool
+        Whether to include word-level timestamps. Default ``True``.
+
+    Returns
+    -------
+    dict
+        ``{ "transcript": "", "words": [], "language": "en", "speakers": [], "duration_sec": 0.0 }``
+    """
     try:
         audio_bytes = await file.read()
         audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
 
-    result = await _stt.transcribe(audio, sr, language=language)
+    lang_arg = None if language == "auto" else language
+    result = await _stt.transcribe(
+        audio,
+        sr,
+        language=lang_arg,
+        model=model,
+        task=task,
+        word_timestamps=word_timestamps,
+    )
     return result
 
 

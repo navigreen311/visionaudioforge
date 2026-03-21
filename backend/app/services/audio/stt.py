@@ -15,7 +15,7 @@ class SpeechToTextService:
 
     def __init__(self) -> None:
         self.available = False
-        self._model = None
+        self._models: dict = {}
         try:
             import whisper  # noqa: F401
 
@@ -23,34 +23,42 @@ class SpeechToTextService:
         except ImportError:
             pass
 
-    def _ensure_model(self):
+    def _ensure_model(self, model_name: str = "base"):
         """Lazy-load the Whisper model on first use."""
-        if self._model is None and self.available:
+        if model_name not in self._models and self.available:
             import whisper
 
-            self._model = whisper.load_model("base")
+            self._models[model_name] = whisper.load_model(model_name)
+        return self._models.get(model_name)
 
     async def transcribe(
         self,
         audio: np.ndarray,
         sr: int,
         language: str | None = None,
+        model: str = "base",
+        task: str = "transcribe",
+        word_timestamps: bool = True,
     ) -> dict:
         """Transcribe an audio array.
 
-        Returns dict with keys: text, segments, language, duration_s.
+        Returns dict with keys:
+            transcript, text, segments, words, language, speakers, duration_sec.
         """
         duration_s = len(audio) / sr
 
         if not self.available:
             return {
+                "transcript": "[Whisper not installed - pip install openai-whisper]",
                 "text": "[Whisper not installed - pip install openai-whisper]",
                 "segments": [],
+                "words": [],
                 "language": "unknown",
-                "duration_s": round(duration_s, 3),
+                "speakers": [],
+                "duration_sec": round(duration_s, 3),
             }
 
-        self._ensure_model()
+        whisper_model = self._ensure_model(model)
 
         # Whisper expects float32 mono at 16 kHz
         if sr != 16000:
@@ -58,11 +66,11 @@ class SpeechToTextService:
 
         audio = audio.astype(np.float32)
 
-        options: dict = {}
+        options: dict = {"task": task, "word_timestamps": word_timestamps}
         if language is not None:
             options["language"] = language
 
-        result = self._model.transcribe(audio, **options)
+        result = whisper_model.transcribe(audio, **options)
 
         segments = [
             {
@@ -74,11 +82,30 @@ class SpeechToTextService:
             for seg in result.get("segments", [])
         ]
 
+        # Extract word-level timestamps if available
+        words: list[dict] = []
+        if word_timestamps:
+            for seg in result.get("segments", []):
+                for w in seg.get("words", []):
+                    words.append(
+                        {
+                            "word": w.get("word", "").strip(),
+                            "start": round(w.get("start", 0.0), 3),
+                            "end": round(w.get("end", 0.0), 3),
+                        }
+                    )
+
+        full_text = result.get("text", "")
+        detected_language = result.get("language", "unknown")
+
         return {
-            "text": result.get("text", ""),
+            "transcript": full_text,
+            "text": full_text,
             "segments": segments,
-            "language": result.get("language", "unknown"),
-            "duration_s": round(duration_s, 3),
+            "words": words,
+            "language": detected_language,
+            "speakers": [],
+            "duration_sec": round(duration_s, 3),
         }
 
     async def transcribe_file(self, file_bytes: bytes) -> dict:
@@ -101,7 +128,7 @@ class SpeechToTextService:
         if not self.available:
             return {"language": "unknown", "confidence": 0.0}
 
-        self._ensure_model()
+        whisper_model = self._ensure_model("base")
         import whisper
 
         if sr != 16000:
@@ -110,7 +137,7 @@ class SpeechToTextService:
 
         # Pad/trim to 30 s as required by Whisper
         audio = whisper.pad_or_trim(audio)
-        mel = whisper.log_mel_spectrogram(audio).to(self._model.device)
-        _, probs = self._model.detect_language(mel)
+        mel = whisper.log_mel_spectrogram(audio).to(whisper_model.device)
+        _, probs = whisper_model.detect_language(mel)
         lang = max(probs, key=probs.get)
         return {"language": lang, "confidence": float(probs[lang])}
