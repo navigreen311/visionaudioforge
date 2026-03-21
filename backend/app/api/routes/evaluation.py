@@ -69,6 +69,43 @@ class ThresholdPoint(BaseModel):
     accuracy: float
 
 
+class ThresholdCurvesRequest(BaseModel):
+    predictions: list[float]
+    ground_truth: list[int]
+
+
+class PRPointOut(BaseModel):
+    recall: float
+    precision: float
+    threshold: float
+
+
+class ROCPointOut(BaseModel):
+    fpr: float
+    tpr: float
+    threshold: float
+
+
+class ThresholdStatOut(BaseModel):
+    threshold: float
+    precision: float
+    recall: float
+    f1: float
+    fpr: float
+    accuracy: float
+
+
+class ThresholdCurvesOut(BaseModel):
+    pr_curve: list[PRPointOut]
+    roc_curve: list[ROCPointOut]
+    auc_pr: float
+    auc_roc: float
+    threshold_stats: list[ThresholdStatOut]
+    optimal_f1_threshold: float
+    optimal_precision_threshold: float
+    optimal_recall_threshold: float
+
+
 class ScorecardOut(BaseModel):
     model_config = {"protected_namespaces": ()}
     model: str
@@ -137,6 +174,115 @@ async def threshold_analysis(body: ThresholdRequest) -> list[ThresholdPoint]:
         body.predictions, body.ground_truth, body.thresholds
     )
     return [ThresholdPoint(**r) for r in results]
+
+
+@router.post("/threshold-curves", response_model=ThresholdCurvesOut)
+async def threshold_curves(body: ThresholdCurvesRequest) -> ThresholdCurvesOut:
+    """Compute PR and ROC curves with AUC values and optimal thresholds.
+
+    Returns fine-grained curve data (101 threshold steps from 0 to 1)
+    suitable for rendering interactive PR and ROC charts.
+    """
+    if len(body.predictions) != len(body.ground_truth):
+        raise HTTPException(
+            status_code=400,
+            detail="predictions and ground_truth must have the same length",
+        )
+
+    n = len(body.predictions)
+
+    # Generate 101 thresholds from 0.00 to 1.00
+    thresholds = [round(i * 0.01, 2) for i in range(101)]
+
+    pr_curve: list[PRPointOut] = []
+    roc_curve: list[ROCPointOut] = []
+    threshold_stats: list[ThresholdStatOut] = []
+
+    best_f1 = -1.0
+    best_f1_threshold = 0.5
+    best_precision = -1.0
+    best_precision_threshold = 0.5
+    best_recall = -1.0
+    best_recall_threshold = 0.5
+
+    for t in thresholds:
+        tp = fp = tn = fn = 0
+        for pred, truth in zip(body.predictions, body.ground_truth):
+            predicted = 1 if pred >= t else 0
+            if predicted == 1 and truth == 1:
+                tp += 1
+            elif predicted == 1 and truth == 0:
+                fp += 1
+            elif predicted == 0 and truth == 0:
+                tn += 1
+            else:
+                fn += 1
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 1.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
+        tpr = recall
+        accuracy = (tp + tn) / n if n > 0 else 0.0
+
+        pr_curve.append(PRPointOut(recall=round(recall, 4), precision=round(precision, 4), threshold=t))
+        roc_curve.append(ROCPointOut(fpr=round(fpr, 4), tpr=round(tpr, 4), threshold=t))
+        threshold_stats.append(
+            ThresholdStatOut(
+                threshold=t,
+                precision=round(precision, 4),
+                recall=round(recall, 4),
+                f1=round(f1, 4),
+                fpr=round(fpr, 4),
+                accuracy=round(accuracy, 4),
+            )
+        )
+
+        if f1 > best_f1:
+            best_f1 = f1
+            best_f1_threshold = t
+
+        # Best precision with recall > 0
+        if recall > 0 and precision > best_precision:
+            best_precision = precision
+            best_precision_threshold = t
+
+        # Best recall with precision > 0
+        if precision > 0 and recall > best_recall:
+            best_recall = recall
+            best_recall_threshold = t
+
+    # Sort PR curve by recall ascending for proper curve rendering
+    pr_curve_sorted = sorted(pr_curve, key=lambda p: (p.recall, -p.precision))
+
+    # Sort ROC curve by FPR ascending for proper curve rendering
+    roc_curve_sorted = sorted(roc_curve, key=lambda p: (p.fpr, p.tpr))
+
+    # Compute AUC using trapezoidal rule
+    auc_pr = 0.0
+    for i in range(1, len(pr_curve_sorted)):
+        dx = pr_curve_sorted[i].recall - pr_curve_sorted[i - 1].recall
+        avg_y = (pr_curve_sorted[i].precision + pr_curve_sorted[i - 1].precision) / 2
+        auc_pr += dx * avg_y
+    auc_pr = round(max(0.0, min(1.0, auc_pr)), 4)
+
+    auc_roc = 0.0
+    for i in range(1, len(roc_curve_sorted)):
+        dx = roc_curve_sorted[i].fpr - roc_curve_sorted[i - 1].fpr
+        avg_y = (roc_curve_sorted[i].tpr + roc_curve_sorted[i - 1].tpr) / 2
+        auc_roc += dx * avg_y
+    auc_roc = round(max(0.0, min(1.0, auc_roc)), 4)
+
+    return ThresholdCurvesOut(
+        pr_curve=pr_curve_sorted,
+        roc_curve=roc_curve_sorted,
+        auc_pr=auc_pr,
+        auc_roc=auc_roc,
+        threshold_stats=threshold_stats,
+        optimal_f1_threshold=best_f1_threshold,
+        optimal_precision_threshold=best_precision_threshold,
+        optimal_recall_threshold=best_recall_threshold,
+    )
 
 
 @router.get("/scorecard/{model_id}", response_model=ScorecardOut)

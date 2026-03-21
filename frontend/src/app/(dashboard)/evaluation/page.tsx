@@ -4,20 +4,13 @@ import React, { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
+import ThresholdTuningTab from "@/components/evaluation/ThresholdTuningTab";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface ThresholdPoint {
-  threshold: number;
-  precision: number;
-  recall: number;
-  f1: number;
-  accuracy: number;
-}
 
 interface MatchupResult {
   model_a: string;
@@ -358,150 +351,6 @@ function TournamentTab() {
           </Card>
         </>
       )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Threshold Tuning Tab
-// ---------------------------------------------------------------------------
-
-function ThresholdTuningTab() {
-  const [predictionsRaw, setPredictionsRaw] = useState(
-    "0.1, 0.4, 0.35, 0.8, 0.65, 0.9, 0.2, 0.55, 0.7, 0.95"
-  );
-  const [truthRaw, setTruthRaw] = useState("0, 0, 1, 1, 1, 1, 0, 1, 0, 1");
-  const [results, setResults] = useState<ThresholdPoint[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  async function handleAnalyze() {
-    setLoading(true);
-    try {
-      const predictions = predictionsRaw.split(",").map((x) => parseFloat(x.trim()));
-      const ground_truth = truthRaw.split(",").map((x) => parseInt(x.trim(), 10));
-      const res = await fetch(`${API}/api/evaluation/threshold-analysis`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ predictions, ground_truth }),
-      });
-      const data: ThresholdPoint[] = await res.json();
-      setResults(data);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Find the threshold with the best F1
-  const bestF1 = results ? results.reduce((best, pt) => (pt.f1 > best.f1 ? pt : best), results[0]) : null;
-
-  return (
-    <div className="space-y-6">
-      <Card title="Threshold Analysis">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Predictions (comma-separated floats 0-1)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              rows={2}
-              value={predictionsRaw}
-              onChange={(e) => setPredictionsRaw(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Ground Truth (comma-separated 0 or 1)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              rows={2}
-              value={truthRaw}
-              onChange={(e) => setTruthRaw(e.target.value)}
-            />
-          </div>
-          <Button onClick={handleAnalyze} loading={loading}>
-            Analyze Thresholds
-          </Button>
-        </div>
-      </Card>
-
-      {results && (
-        <>
-          {/* Chart visualization using CSS bars */}
-          <Card title="Precision / Recall / F1 Curves">
-            <div className="space-y-4">
-              {results.map((pt) => {
-                const isOptimal = bestF1 && pt.threshold === bestF1.threshold;
-                return (
-                  <div
-                    key={pt.threshold}
-                    className={`rounded-lg p-3 ${isOptimal ? "bg-brand-50 border border-brand-200" : "bg-gray-50"}`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-gray-900">
-                        Threshold: {pt.threshold}
-                        {isOptimal && (
-                          <span className="ml-2 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-800">
-                            Optimal F1
-                          </span>
-                        )}
-                      </span>
-                      <span className="text-xs text-gray-500">Acc: {pt.accuracy}</span>
-                    </div>
-                    <div className="space-y-1">
-                      <MetricBar label="Precision" value={pt.precision} color="bg-blue-500" />
-                      <MetricBar label="Recall" value={pt.recall} color="bg-green-500" />
-                      <MetricBar label="F1" value={pt.f1} color="bg-purple-500" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </Card>
-
-          {/* Data table */}
-          <Card title="Threshold Data">
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-50">
-                  <tr>
-                    {["Threshold", "Precision", "Recall", "F1", "Accuracy"].map((h) => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-medium uppercase text-gray-500">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200 bg-white">
-                  {results.map((pt) => {
-                    const isOptimal = bestF1 && pt.threshold === bestF1.threshold;
-                    return (
-                      <tr key={pt.threshold} className={isOptimal ? "bg-brand-50" : "hover:bg-gray-50"}>
-                        <td className="px-4 py-3 text-sm font-medium text-gray-900">{pt.threshold}</td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{pt.precision}</td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{pt.recall}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-gray-900">{pt.f1}</td>
-                        <td className="px-4 py-3 text-sm text-gray-700">{pt.accuracy}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
-
-function MetricBar({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500 w-16">{label}</span>
-      <div className="flex-1 h-3 bg-gray-200 rounded-full overflow-hidden">
-        <div className={`h-full rounded-full ${color}`} style={{ width: `${value * 100}%` }} />
-      </div>
-      <span className="text-xs font-mono text-gray-700 w-12 text-right">{value.toFixed(4)}</span>
     </div>
   );
 }
