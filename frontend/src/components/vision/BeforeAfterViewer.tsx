@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 
 interface ImageStats {
   min: number;
@@ -9,98 +9,165 @@ interface ImageStats {
   std: number;
 }
 
+interface Dims {
+  w: number;
+  h: number;
+}
+
 interface BeforeAfterViewerProps {
-  originalSrc: string;
-  processedSrc: string | null;
+  originalSrc?: string;
+  processedSrc?: string;
   stats?: ImageStats;
+  originalDims?: Dims;
+  processedDims?: Dims;
 }
 
 export default function BeforeAfterViewer({
   originalSrc,
   processedSrc,
   stats,
+  originalDims: originalDimsProp,
+  processedDims: processedDimsProp,
 }: BeforeAfterViewerProps) {
   const [dividerPosition, setDividerPosition] = useState(50);
-  const [originalDims, setOriginalDims] = useState<{ w: number; h: number } | null>(null);
-  const [processedDims, setProcessedDims] = useState<{ w: number; h: number } | null>(null);
+  const [localOriginalDims, setLocalOriginalDims] = useState<Dims | null>(null);
+  const [localProcessedDims, setLocalProcessedDims] = useState<Dims | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const isDragging = useRef(false);
 
-  const handleMouseDown = useCallback(() => {
-    isDragging.current = true;
-  }, []);
+  const originalDims = originalDimsProp ?? localOriginalDims;
+  const processedDims = processedDimsProp ?? localProcessedDims;
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging.current || !containerRef.current) return;
+  // ---- Pointer helpers (mouse + touch) ----
+
+  const updatePosition = useCallback((clientX: number) => {
+    if (!containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = clientX - rect.left;
     const pct = Math.max(0, Math.min(100, (x / rect.width) * 100));
     setDividerPosition(pct);
   }, []);
 
-  const handleMouseUp = useCallback(() => {
+  const handlePointerDown = useCallback(() => {
+    isDragging.current = true;
+  }, []);
+
+  const handlePointerUp = useCallback(() => {
     isDragging.current = false;
+  }, []);
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!isDragging.current) return;
+      updatePosition(e.clientX);
+    },
+    [updatePosition],
+  );
+
+  const handleTouchMove = useCallback(
+    (e: React.TouchEvent<HTMLDivElement>) => {
+      if (!isDragging.current) return;
+      const touch = e.touches[0];
+      if (touch) {
+        e.preventDefault();
+        updatePosition(touch.clientX);
+      }
+    },
+    [updatePosition],
+  );
+
+  // Clean up drag state when pointer leaves window
+  useEffect(() => {
+    const stop = () => {
+      isDragging.current = false;
+    };
+    window.addEventListener("mouseup", stop);
+    window.addEventListener("touchend", stop);
+    return () => {
+      window.removeEventListener("mouseup", stop);
+      window.removeEventListener("touchend", stop);
+    };
   }, []);
 
   const handleOriginalLoad = useCallback(
     (e: React.SyntheticEvent<HTMLImageElement>) => {
-      const img = e.currentTarget;
-      setOriginalDims({ w: img.naturalWidth, h: img.naturalHeight });
+      if (!originalDimsProp) {
+        const img = e.currentTarget;
+        setLocalOriginalDims({ w: img.naturalWidth, h: img.naturalHeight });
+      }
     },
-    []
+    [originalDimsProp],
   );
 
   const handleProcessedLoad = useCallback(
     (e: React.SyntheticEvent<HTMLImageElement>) => {
-      const img = e.currentTarget;
-      setProcessedDims({ w: img.naturalWidth, h: img.naturalHeight });
+      if (!processedDimsProp) {
+        const img = e.currentTarget;
+        setLocalProcessedDims({ w: img.naturalWidth, h: img.naturalHeight });
+      }
     },
-    []
+    [processedDimsProp],
   );
+
+  // ---- Render helpers ----
+
+  const dimsLabel = (dims: Dims | null) =>
+    dims ? (
+      <span className="ml-1 font-normal text-gray-400">
+        {dims.w}&times;{dims.h}
+      </span>
+    ) : null;
+
+  // No images at all
+  if (!originalSrc && !processedSrc) {
+    return (
+      <div className="flex h-48 items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-sm text-gray-400">
+        Upload an image to get started
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4 md:flex-row md:gap-6">
-      {/* Original panel */}
+      {/* ---- Original panel ---- */}
       <div className="flex-1">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Original
-          {originalDims && (
-            <span className="ml-1 font-normal text-gray-400">
-              {originalDims.w} &times; {originalDims.h}px
-            </span>
-          )}
+          Original{dimsLabel(originalDims)}
         </p>
-        <img
-          src={originalSrc}
-          alt="Original"
-          className="w-full rounded-lg border border-gray-200 object-contain"
-          onLoad={handleOriginalLoad}
-          draggable={false}
-        />
+        {originalSrc ? (
+          <img
+            src={originalSrc}
+            alt="Original"
+            className="w-full rounded-lg border border-gray-200 object-contain"
+            onLoad={handleOriginalLoad}
+            draggable={false}
+          />
+        ) : (
+          <div className="flex h-48 items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50 text-sm text-gray-400">
+            No original image
+          </div>
+        )}
       </div>
 
-      {/* Processed panel */}
+      {/* ---- Processed panel ---- */}
       <div className="flex-1">
         <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">
-          Processed
-          {processedDims && (
-            <span className="ml-1 font-normal text-gray-400">
-              {processedDims.w} &times; {processedDims.h}px
-            </span>
-          )}
+          Processed{dimsLabel(processedDims)}
         </p>
 
-        {processedSrc ? (
+        {processedSrc && originalSrc ? (
           <>
             {/* Slider comparison container */}
             <div
               ref={containerRef}
-              className="relative select-none overflow-hidden rounded-lg border border-gray-200"
+              className="relative select-none overflow-hidden rounded-lg border border-gray-200 touch-none"
               onMouseMove={handleMouseMove}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
+              onMouseUp={handlePointerUp}
+              onMouseLeave={handlePointerUp}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handlePointerUp}
             >
-              {/* Original layer (full width, clipped to left of divider) */}
+              {/* Original layer (clipped to left of divider) */}
               <img
                 src={originalSrc}
                 alt="Original comparison"
@@ -111,7 +178,7 @@ export default function BeforeAfterViewer({
                 draggable={false}
               />
 
-              {/* Processed layer (absolute, clipped to right of divider) */}
+              {/* Processed layer (clipped to right of divider) */}
               <img
                 src={processedSrc}
                 alt="Processed comparison"
@@ -127,17 +194,18 @@ export default function BeforeAfterViewer({
               <div
                 className="absolute top-0 bottom-0 z-10 w-1 cursor-col-resize bg-white shadow-lg"
                 style={{ left: `${dividerPosition}%`, transform: "translateX(-50%)" }}
-                onMouseDown={handleMouseDown}
+                onMouseDown={handlePointerDown}
+                onTouchStart={handlePointerDown}
               >
                 <div className="absolute top-1/2 left-1/2 flex h-8 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white shadow-md">
-                  <span className="text-xs text-gray-400">⟺</span>
+                  <span className="text-xs text-gray-400">&#x27FA;</span>
                 </div>
               </div>
             </div>
 
             {/* Stats row */}
             {stats && (
-              <div className="mt-2 grid grid-cols-4 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2">
+              <div className="mt-2 grid grid-cols-2 gap-2 rounded-lg border border-gray-200 bg-gray-50 p-2 sm:grid-cols-4">
                 <StatCell label="Min" value={stats.min} />
                 <StatCell label="Max" value={stats.max} />
                 <StatCell label="Mean" value={stats.mean} />
