@@ -1,72 +1,29 @@
 "use client";
 
-import { useState } from "react";
-import Tabs from "@/components/ui/Tabs";
+import { useCallback, useMemo, useState } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import DataTable from "@/components/ui/DataTable";
 import Modal from "@/components/ui/Modal";
 import EmptyState from "@/components/ui/EmptyState";
+import SettingsNav from "@/components/settings/SettingsNav";
+import GeneralTab from "@/components/settings/GeneralTab";
+import {
+  BillingTab,
+  SecurityTab,
+  NotificationsTab,
+  StorageTab,
+  AuditLogTab,
+  AppearanceTab,
+} from "@/components/settings/PlaceholderTabs";
 
-// --- General Tab ---
-function GeneralTab() {
-  const [workspaceName, setWorkspaceName] = useState("My Workspace");
-  const workspaceId = "ws_abc123def456";
+// ---------------------------------------------------------------------------
+// API Keys Tab (kept inline — already existed)
+// ---------------------------------------------------------------------------
 
-  return (
-    <div className="space-y-6">
-      <Card title="Workspace Settings">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Workspace Name
-            </label>
-            <div className="flex gap-3">
-              <input
-                type="text"
-                value={workspaceName}
-                onChange={(e) => setWorkspaceName(e.target.value)}
-                className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              />
-              <Button variant="primary" size="md">
-                Save
-              </Button>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Plan
-            </label>
-            <Badge variant="info">Free</Badge>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Workspace ID
-            </label>
-            <div className="flex items-center gap-2">
-              <code className="rounded bg-gray-100 px-3 py-1.5 text-sm text-gray-700 font-mono">
-                {workspaceId}
-              </code>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => navigator.clipboard.writeText(workspaceId)}
-              >
-                Copy
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Card>
-    </div>
-  );
-}
-
-// --- API Keys Tab ---
-function ApiKeysTab() {
+function APIKeysTab() {
   const [showModal, setShowModal] = useState(false);
   const [keyName, setKeyName] = useState("");
   const [keys] = useState<
@@ -96,7 +53,15 @@ function ApiKeysTab() {
           <DataTable
             columns={[
               { key: "name", label: "Name", sortable: true },
-              { key: "prefix", label: "Key", render: (v) => <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">{String(v)}...</code> },
+              {
+                key: "prefix",
+                label: "Key",
+                render: (v) => (
+                  <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">
+                    {String(v)}...
+                  </code>
+                ),
+              },
               { key: "created", label: "Created", sortable: true },
               {
                 key: "name",
@@ -150,7 +115,10 @@ function ApiKeysTab() {
   );
 }
 
-// --- Users Tab ---
+// ---------------------------------------------------------------------------
+// Users Tab (kept inline — already existed)
+// ---------------------------------------------------------------------------
+
 function UsersTab() {
   const [users] = useState<
     { email: string; role: string; lastLogin: string }[]
@@ -204,7 +172,10 @@ function UsersTab() {
   );
 }
 
-// --- Integrations Tab ---
+// ---------------------------------------------------------------------------
+// Integrations Tab (kept inline — already existed)
+// ---------------------------------------------------------------------------
+
 function IntegrationsTab() {
   const integrations = [
     {
@@ -254,16 +225,47 @@ function IntegrationsTab() {
   );
 }
 
-// --- Settings Page ---
-export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState("general");
+// ---------------------------------------------------------------------------
+// Tab registry
+// ---------------------------------------------------------------------------
 
-  const tabs = [
-    { id: "general", label: "General", content: <GeneralTab /> },
-    { id: "api-keys", label: "API Keys", content: <ApiKeysTab /> },
-    { id: "users", label: "Users", content: <UsersTab /> },
-    { id: "integrations", label: "Integrations", content: <IntegrationsTab /> },
-  ];
+const TAB_COMPONENTS: Record<string, React.ComponentType> = {
+  general: GeneralTab,
+  billing: BillingTab,
+  "api-keys": APIKeysTab,
+  users: UsersTab,
+  security: SecurityTab,
+  notifications: NotificationsTab,
+  storage: StorageTab,
+  "audit-log": AuditLogTab,
+  integrations: IntegrationsTab,
+  appearance: AppearanceTab,
+};
+
+// ---------------------------------------------------------------------------
+// Settings Page
+// ---------------------------------------------------------------------------
+
+export default function SettingsPage() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const initialTab = searchParams.get("tab") || "general";
+  const [activeTab, setActiveTab] = useState(initialTab);
+
+  const handleTabChange = useCallback(
+    (tab: string) => {
+      setActiveTab(tab);
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("tab", tab);
+      router.replace(`?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+
+  const ActiveComponent = useMemo(
+    () => TAB_COMPONENTS[activeTab] || GeneralTab,
+    [activeTab],
+  );
 
   return (
     <div className="space-y-6">
@@ -274,7 +276,12 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
+      <div className="flex gap-8">
+        <SettingsNav activeTab={activeTab} onTabChange={handleTabChange} />
+        <div className="min-w-0 flex-1">
+          <ActiveComponent />
+        </div>
+      </div>
     </div>
   );
 }

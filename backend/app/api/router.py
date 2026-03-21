@@ -37,6 +37,7 @@ from app.api.routes import (
     safety,
     search,
     semantic_memory,
+    settings,
     simulation,
     transfer,
     transform,
@@ -80,6 +81,7 @@ api_router.include_router(knowledge_graph.router)
 api_router.include_router(semantic_memory.router)
 api_router.include_router(memory.router)
 api_router.include_router(command_center.router)
+api_router.include_router(settings.router)
 api_router.include_router(simulation.router)
 api_router.include_router(reviewops.router)
 api_router.include_router(edge.router)
