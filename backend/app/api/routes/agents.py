@@ -1,6 +1,8 @@
 """Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
 
 import uuid
+from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -64,6 +66,37 @@ class MemoryOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ConversationMessageIn(BaseModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    timestamp: str
+    tool_name: str | None = None
+
+
+class SaveConversationRequest(BaseModel):
+    summary: str
+    skill_pack: str = "general"
+    messages: list[ConversationMessageIn] = Field(default_factory=list)
+
+
+class ConversationSummaryOut(BaseModel):
+    id: str
+    summary: str
+    skill_pack: str
+    message_count: int
+    created_at: str
+    updated_at: str
+
+
+class ConversationDetailOut(BaseModel):
+    id: str
+    summary: str
+    skill_pack: str
+    messages: list[ConversationMessageIn]
+    created_at: str
+    updated_at: str
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +194,86 @@ async def create_agent(
         "status": agent.status,
         "created_at": agent.created_at.isoformat() if agent.created_at else "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Conversations (AG5) — stub endpoints
+# IMPORTANT: These MUST be registered before /{agent_id} routes to avoid
+# FastAPI matching "conversations" as an agent_id path parameter.
+# ---------------------------------------------------------------------------
+
+# In-memory store (stub — replace with DB persistence)
+_conversations_store: dict[str, dict[str, object]] = {}
+
+
+@router.get("/conversations", response_model=list[ConversationSummaryOut])
+async def list_conversations():
+    """List all saved conversations (newest first)."""
+    items = sorted(
+        _conversations_store.values(),
+        key=lambda c: str(c.get("updated_at", "")),
+        reverse=True,
+    )
+    return [
+        ConversationSummaryOut(
+            id=str(c["id"]),
+            summary=str(c["summary"]),
+            skill_pack=str(c["skill_pack"]),
+            message_count=len(c.get("messages", [])),  # type: ignore[arg-type]
+            created_at=str(c["created_at"]),
+            updated_at=str(c["updated_at"]),
+        )
+        for c in items
+    ]
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
+async def get_conversation(conversation_id: str):
+    """Load a specific conversation with its messages."""
+    conv = _conversations_store.get(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationDetailOut(
+        id=str(conv["id"]),
+        summary=str(conv["summary"]),
+        skill_pack=str(conv["skill_pack"]),
+        messages=conv.get("messages", []),  # type: ignore[arg-type]
+        created_at=str(conv["created_at"]),
+        updated_at=str(conv["updated_at"]),
+    )
+
+
+@router.post("/conversations", response_model=ConversationSummaryOut, status_code=201)
+async def save_conversation(body: SaveConversationRequest):
+    """Save a conversation (creates a new entry)."""
+    conv_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "id": conv_id,
+        "summary": body.summary,
+        "skill_pack": body.skill_pack,
+        "messages": [m.model_dump() for m in body.messages],
+        "created_at": now,
+        "updated_at": now,
+    }
+    _conversations_store[conv_id] = entry
+    return ConversationSummaryOut(
+        id=conv_id,
+        summary=body.summary,
+        skill_pack=body.skill_pack,
+        message_count=len(body.messages),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a saved conversation."""
+    if conversation_id not in _conversations_store:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    del _conversations_store[conversation_id]
+    return {"deleted": True, "id": conversation_id}
 
 
 # ---------------------------------------------------------------------------
