@@ -3,9 +3,9 @@
 import React, { useState, useCallback } from "react";
 
 interface ExportPanelProps {
-  processedImageB64: string | null;
-  stats: Record<string, unknown> | null;
-  operationType: string;
+  results?: Record<string, unknown>;
+  processedImageB64?: string;
+  isVisible: boolean;
 }
 
 function DownloadIcon() {
@@ -69,12 +69,58 @@ function JsonIcon() {
 
 type ToastState = { type: "success" | "error"; message: string } | null;
 
+/**
+ * Extracts key stats (dimensions, min, max, mean, std) from API results
+ * for clipboard copy.
+ */
+function extractKeyStats(results: Record<string, unknown>): string {
+  const lines: string[] = [];
+
+  const tryAdd = (label: string, key: string) => {
+    if (key in results && results[key] !== undefined) {
+      lines.push(`${label}: ${String(results[key])}`);
+    }
+  };
+
+  tryAdd("Width", "width");
+  tryAdd("Height", "height");
+  tryAdd("Dimensions", "dimensions");
+  tryAdd("Min", "min");
+  tryAdd("Max", "max");
+  tryAdd("Mean", "mean");
+  tryAdd("Std", "std");
+  tryAdd("Channels", "channels");
+  tryAdd("Format", "format");
+
+  // Also check nested stats object
+  const stats = results.stats as Record<string, unknown> | undefined;
+  if (stats && typeof stats === "object") {
+    if ("min" in stats) lines.push(`Min: ${String(stats.min)}`);
+    if ("max" in stats) lines.push(`Max: ${String(stats.max)}`);
+    if ("mean" in stats) lines.push(`Mean: ${String(stats.mean)}`);
+    if ("std" in stats) lines.push(`Std: ${String(stats.std)}`);
+  }
+
+  if (lines.length === 0) {
+    // Fallback: stringify top-level keys excluding large base64 fields
+    return Object.entries(results)
+      .filter(([k]) => k !== "preview_b64" && k !== "processed_b64")
+      .map(([k, v]) =>
+        `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`,
+      )
+      .join("\n");
+  }
+
+  return lines.join("\n");
+}
+
 export default function ExportPanel({
+  results,
   processedImageB64,
-  stats,
-  operationType,
+  isVisible,
 }: ExportPanelProps) {
   const [toast, setToast] = useState<ToastState>(null);
+  const [saving, setSaving] = useState(false);
 
   const showToast = useCallback((state: ToastState) => {
     setToast(state);
@@ -82,62 +128,78 @@ export default function ExportPanel({
   }, []);
 
   const hasImage = !!processedImageB64;
-  const hasStats = !!stats;
-  const hasData = hasImage || hasStats;
+  const hasResults = !!results;
 
   const handleDownloadImage = useCallback(() => {
     if (!processedImageB64) return;
-    const link = document.createElement("a");
-    link.href = `data:image/png;base64,${processedImageB64}`;
-    link.download = `${operationType.replace(/\s+/g, "_").toLowerCase()}_result.png`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  }, [processedImageB64, operationType]);
-
-  const handleDownloadStats = useCallback(() => {
-    if (!stats) return;
-    const json = JSON.stringify(stats, null, 2);
-    const blob = new Blob([json], { type: "application/json" });
+    const byteChars = atob(processedImageB64);
+    const byteNumbers = new Uint8Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {
+      byteNumbers[i] = byteChars.charCodeAt(i);
+    }
+    const blob = new Blob([byteNumbers], { type: "image/png" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${operationType.replace(/\s+/g, "_").toLowerCase()}_stats.json`;
+    link.download = "processed_image.png";
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }, [stats, operationType]);
+  }, [processedImageB64]);
+
+  const handleDownloadStats = useCallback(() => {
+    if (!results) return;
+    const json = JSON.stringify(results, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "vision_stats.json";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }, [results]);
 
   const handleCopyStats = useCallback(async () => {
-    if (!stats) return;
+    if (!results) return;
     try {
-      await navigator.clipboard.writeText(JSON.stringify(stats, null, 2));
+      const text = extractKeyStats(results);
+      await navigator.clipboard.writeText(text);
       showToast({ type: "success", message: "Stats copied to clipboard" });
     } catch {
       showToast({ type: "error", message: "Failed to copy to clipboard" });
     }
-  }, [stats, showToast]);
+  }, [results, showToast]);
 
   const handleSaveToAssets = useCallback(async () => {
     if (!processedImageB64) return;
+    setSaving(true);
     try {
-      const res = await fetch("/api/assets", {
+      const res = await fetch("/api/assets/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           image: processedImageB64,
-          operationType,
+          tag: "vision-processing",
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const errorBody = await res.text();
+        throw new Error(errorBody || `HTTP ${res.status}`);
+      }
       showToast({ type: "success", message: "Saved to assets" });
-    } catch {
-      showToast({ type: "error", message: "Failed to save to assets" });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Failed to save to assets";
+      showToast({ type: "error", message });
+    } finally {
+      setSaving(false);
     }
-  }, [processedImageB64, operationType, showToast]);
+  }, [processedImageB64, showToast]);
 
-  if (!hasData) return null;
+  if (!isVisible || (!hasImage && !hasResults)) return null;
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4">
@@ -157,7 +219,7 @@ export default function ExportPanel({
         <button
           type="button"
           onClick={handleDownloadStats}
-          disabled={!hasStats}
+          disabled={!hasResults}
           className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <JsonIcon />
@@ -167,7 +229,7 @@ export default function ExportPanel({
         <button
           type="button"
           onClick={handleCopyStats}
-          disabled={!hasStats}
+          disabled={!hasResults}
           className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <CopyIcon />
@@ -177,11 +239,11 @@ export default function ExportPanel({
         <button
           type="button"
           onClick={handleSaveToAssets}
-          disabled={!hasImage}
+          disabled={!hasImage || saving}
           className="inline-flex items-center gap-1.5 rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <SaveIcon />
-          Save to Assets
+          {saving ? "Saving\u2026" : "Save to Assets"}
         </button>
       </div>
 
