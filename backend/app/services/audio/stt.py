@@ -15,7 +15,7 @@ class SpeechToTextService:
 
     def __init__(self) -> None:
         self.available = False
-        self._model = None
+        self._models: dict[str, object] = {}
         try:
             import whisper  # noqa: F401
 
@@ -23,34 +23,57 @@ class SpeechToTextService:
         except ImportError:
             pass
 
-    def _ensure_model(self):
-        """Lazy-load the Whisper model on first use."""
-        if self._model is None and self.available:
+    def _ensure_model(self, model_name: str = "base"):
+        """Lazy-load the Whisper model on first use (cached per model size)."""
+        if model_name not in self._models and self.available:
             import whisper
 
-            self._model = whisper.load_model("base")
+            self._models[model_name] = whisper.load_model(model_name)
+        return self._models.get(model_name)
 
     async def transcribe(
         self,
         audio: np.ndarray,
         sr: int,
         language: str | None = None,
+        model: str = "base",
+        task: str = "transcribe",
+        word_timestamps: bool = True,
     ) -> dict:
         """Transcribe an audio array.
 
-        Returns dict with keys: text, segments, language, duration_s.
+        Parameters
+        ----------
+        audio : np.ndarray
+            Mono audio signal.
+        sr : int
+            Sample rate of *audio*.
+        language : str | None
+            Language code (e.g. ``"en"``). ``None`` or ``"auto"`` for auto-detection.
+        model : str
+            Whisper model size (``"tiny"``, ``"base"``, ``"small"``, ``"medium"``, ``"large"``).
+        task : str
+            ``"transcribe"`` or ``"translate"`` (translate to English).
+        word_timestamps : bool
+            If ``True``, request word-level timestamps from Whisper.
+
+        Returns
+        -------
+        dict
+            Keys: transcript, words, language, speakers, duration_sec.
         """
         duration_s = len(audio) / sr
 
         if not self.available:
             return {
-                "text": "[Whisper not installed - pip install openai-whisper]",
-                "segments": [],
+                "transcript": "[Whisper not installed - pip install openai-whisper]",
+                "words": [],
                 "language": "unknown",
-                "duration_s": round(duration_s, 3),
+                "speakers": [],
+                "duration_sec": round(duration_s, 3),
             }
 
-        self._ensure_model()
+        whisper_model = self._ensure_model(model)
 
         # Whisper expects float32 mono at 16 kHz
         if sr != 16000:
@@ -58,27 +81,29 @@ class SpeechToTextService:
 
         audio = audio.astype(np.float32)
 
-        options: dict = {}
-        if language is not None:
+        options: dict = {"task": task, "word_timestamps": word_timestamps}
+        if language is not None and language != "auto":
             options["language"] = language
 
-        result = self._model.transcribe(audio, **options)
+        result = whisper_model.transcribe(audio, **options)
 
-        segments = [
-            {
-                "start": seg["start"],
-                "end": seg["end"],
-                "text": seg["text"],
-                "confidence": seg.get("avg_logprob", 0.0),
-            }
-            for seg in result.get("segments", [])
-        ]
+        # Extract word-level timestamps when available
+        words = []
+        for seg in result.get("segments", []):
+            for w in seg.get("words", []):
+                words.append({
+                    "word": w.get("word", "").strip(),
+                    "start": w.get("start", 0.0),
+                    "end": w.get("end", 0.0),
+                    "probability": w.get("probability", 0.0),
+                })
 
         return {
-            "text": result.get("text", ""),
-            "segments": segments,
+            "transcript": result.get("text", ""),
+            "words": words,
             "language": result.get("language", "unknown"),
-            "duration_s": round(duration_s, 3),
+            "speakers": [],
+            "duration_sec": round(duration_s, 3),
         }
 
     async def transcribe_file(self, file_bytes: bytes) -> dict:
@@ -101,7 +126,7 @@ class SpeechToTextService:
         if not self.available:
             return {"language": "unknown", "confidence": 0.0}
 
-        self._ensure_model()
+        whisper_model = self._ensure_model("base")
         import whisper
 
         if sr != 16000:
@@ -110,7 +135,7 @@ class SpeechToTextService:
 
         # Pad/trim to 30 s as required by Whisper
         audio = whisper.pad_or_trim(audio)
-        mel = whisper.log_mel_spectrogram(audio).to(self._model.device)
-        _, probs = self._model.detect_language(mel)
+        mel = whisper.log_mel_spectrogram(audio).to(whisper_model.device)
+        _, probs = whisper_model.detect_language(mel)
         lang = max(probs, key=probs.get)
         return {"language": lang, "confidence": float(probs[lang])}
