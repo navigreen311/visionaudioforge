@@ -8,6 +8,7 @@ import Badge from "@/components/ui/Badge";
 import DataTable from "@/components/ui/DataTable";
 import Modal from "@/components/ui/Modal";
 import EmptyState from "@/components/ui/EmptyState";
+import NotificationsTab from "@/components/settings/NotificationsTab";
 
 // --- General Tab ---
 function GeneralTab() {
@@ -262,6 +263,7 @@ export default function SettingsPage() {
     { id: "general", label: "General", content: <GeneralTab /> },
     { id: "api-keys", label: "API Keys", content: <ApiKeysTab /> },
     { id: "users", label: "Users", content: <UsersTab /> },
+    { id: "notifications", label: "Notifications", content: <NotificationsTab /> },
     { id: "integrations", label: "Integrations", content: <IntegrationsTab /> },
   ];
 
