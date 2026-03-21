@@ -1,39 +1,11 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 
-import dynamic from "next/dynamic";
-
-import NodeConfig from "@/components/pipeline/NodeConfig";
+import NodeConfigPanel from "@/components/pipeline/NodeConfigPanel";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
-
-// Dynamic imports for components from other agents (may not exist yet)
-const NodeConfigPanel = dynamic(
-  () => import("@/components/pipeline/NodeConfigPanel").catch(() => () => null),
-  { ssr: false },
-);
-const SavedPipelinesDrawer = dynamic(
-  () => import("@/components/pipeline/SavedPipelinesDrawer").catch(() => () => null),
-  { ssr: false },
-);
-const TemplatesModal = dynamic(
-  () => import("@/components/pipeline/TemplatesModal").catch(() => () => null),
-  { ssr: false },
-);
-const GenerateModal = dynamic(
-  () => import("@/components/pipeline/GenerateModal").catch(() => () => null),
-  { ssr: false },
-);
-const ScheduleModal = dynamic(
-  () => import("@/components/pipeline/ScheduleModal").catch(() => () => null),
-  { ssr: false },
-);
-const RunHistory = dynamic(
-  () => import("@/components/pipeline/RunHistory").catch(() => () => null),
-  { ssr: false },
-);
 
 interface PipelineRun {
   id: string;
@@ -281,6 +253,17 @@ export default function PipelinePage() {
     [setNodes],
   );
 
+  const handleRemoveNode = useCallback(
+    (nodeId: string) => {
+      setNodes((nds) => nds.filter((n) => n.id !== nodeId));
+      setEdges((eds) =>
+        eds.filter((e) => e.source !== nodeId && e.target !== nodeId),
+      );
+      setSelectedNode(null);
+    },
+    [setNodes, setEdges],
+  );
+
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
       {/* Toolbar */}
@@ -350,7 +333,11 @@ export default function PipelinePage() {
           nodesState={[nodes, setNodes, onNodesChange]}
           edgesState={[edges, setEdges, onEdgesChange]}
         />
-        <NodeConfig node={selectedNode} onUpdate={handleNodeParamsUpdate} />
+        <NodeConfigPanel
+          selectedNode={selectedNode}
+          onConfigChange={handleNodeParamsUpdate}
+          onRemove={handleRemoveNode}
+        />
 
         {/* Templates side panel */}
         {showTemplatesPanel && (
