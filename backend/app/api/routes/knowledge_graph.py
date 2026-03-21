@@ -220,6 +220,37 @@ async def get_neighbors(node_id: str) -> dict[str, Any]:
     return {"node_id": node_id, "neighbors": neighbors}
 
 
+@router.get("/search")
+async def search_nodes(q: str = Query("", min_length=1)) -> dict[str, list[str] | int]:
+    """Search nodes by label (case-insensitive substring match)."""
+    query = q.lower()
+    matched_ids = [
+        nid
+        for nid, node in _nodes.items()
+        if query in node.get("label", "").lower()
+        or query in node.get("type", "").lower()
+        or any(query in str(v).lower() for v in node.get("properties", {}).values())
+    ]
+    return {"node_ids": matched_ids, "total": len(matched_ids)}
+
+
+@router.get("/autocomplete")
+async def autocomplete_nodes(
+    q: str = Query("", min_length=1),
+    limit: int = Query(10, ge=1, le=50),
+) -> list[dict[str, str]]:
+    """Return autocomplete suggestions matching query prefix."""
+    query = q.lower()
+    results: list[dict[str, str]] = []
+    for nid, node in _nodes.items():
+        label = node.get("label", "")
+        if query in label.lower():
+            results.append({"id": nid, "label": label, "type": node.get("type", "unknown")})
+            if len(results) >= limit:
+                break
+    return results
+
+
 @router.post("/scene-extract")
 async def scene_extract(body: SceneExtractRequest) -> dict[str, Any]:
     """Extract entities and relations from a scene description."""
