@@ -9,10 +9,13 @@ interface VideoDevice {
 
 interface CameraPlaceholderProps {
   onDeviceSelect: (deviceId: string) => void;
+  /** Currently selected device id, used to highlight the active card */
+  selectedDeviceId?: string;
 }
 
 export default function CameraPlaceholder({
   onDeviceSelect,
+  selectedDeviceId,
 }: CameraPlaceholderProps) {
   const [devices, setDevices] = useState<VideoDevice[]>([]);
   const [loading, setLoading] = useState(false);
@@ -91,17 +94,38 @@ export default function CameraPlaceholder({
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">
             Available Cameras
           </p>
-          {devices.map((device) => (
-            <button
-              key={device.deviceId}
-              onClick={() => onDeviceSelect(device.deviceId)}
-              className="w-full text-left px-4 py-3 rounded-lg border border-gray-200 hover:border-brand-500 hover:bg-brand-50 transition-colors"
-            >
-              <span className="text-sm font-medium text-gray-800">
-                {device.label}
-              </span>
-            </button>
-          ))}
+          {devices.map((device) => {
+            const isSelected = selectedDeviceId === device.deviceId;
+            return (
+              <button
+                key={device.deviceId}
+                onClick={() => onDeviceSelect(device.deviceId)}
+                className={[
+                  "w-full text-left px-4 py-3 rounded-lg border transition-colors flex items-center gap-3",
+                  isSelected
+                    ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500"
+                    : "border-gray-200 hover:border-brand-500 hover:bg-brand-50",
+                ].join(" ")}
+              >
+                <svg
+                  className={`w-4 h-4 shrink-0 ${isSelected ? "text-brand-600" : "text-gray-400"}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                  />
+                </svg>
+                <span className={`text-sm font-medium ${isSelected ? "text-brand-700" : "text-gray-800"}`}>
+                  {device.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
