@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -66,7 +68,18 @@ VERTICAL_PACKS = {
     },
 }
 
-_installed: dict[str, dict] = {}
+_installed: dict[str, dict[str, Any]] = {}
+
+# In-memory install jobs: install_id -> status dict
+_install_jobs: dict[str, dict[str, Any]] = {}
+
+INSTALL_STEPS = [
+    "downloading",
+    "installing_pipelines",
+    "configuring_alerts",
+    "setting_up",
+    "done",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -77,18 +90,45 @@ class InstallRequest(BaseModel):
     pack_id: str
 
 
+class PatchInstallRequest(BaseModel):
+    enabled_modules: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Background install simulation
+# ---------------------------------------------------------------------------
+
+async def _simulate_install(install_id: str, pack_id: str) -> None:
+    """Walk through install steps with delays to simulate real work."""
+    job = _install_jobs[install_id]
+    for step in INSTALL_STEPS:
+        job["step"] = step
+        if step == "done":
+            job["status"] = "completed"
+            job["progress"] = 100
+            _installed[pack_id] = dict(VERTICAL_PACKS[pack_id])
+            _installed[pack_id]["enabled_modules"] = list(
+                VERTICAL_PACKS[pack_id]["modules"]
+            )
+            break
+        await asyncio.sleep(0.8)
+        job["progress"] = min(
+            100, job["progress"] + 25
+        )
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @router.get("/packs")
-async def list_packs() -> list[dict]:
+async def list_packs() -> list[dict[str, Any]]:
     """List all available vertical packs."""
     return list(VERTICAL_PACKS.values())
 
 
 @router.get("/packs/{pack_id}")
-async def get_pack(pack_id: str) -> dict:
+async def get_pack(pack_id: str) -> dict[str, Any]:
     """Get details of a vertical pack."""
     if pack_id not in VERTICAL_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
@@ -99,17 +139,80 @@ async def get_pack(pack_id: str) -> dict:
 
 @router.post("/install")
 async def install_pack(body: InstallRequest) -> dict[str, Any]:
-    """Install a vertical pack."""
+    """Start installing a vertical pack. Returns an install_id for polling."""
     if body.pack_id not in VERTICAL_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
-    _installed[body.pack_id] = VERTICAL_PACKS[body.pack_id]
-    return {"pack_id": body.pack_id, "status": "installed", "modules": VERTICAL_PACKS[body.pack_id]["modules"]}
+
+    install_id = uuid.uuid4().hex[:12]
+    _install_jobs[install_id] = {
+        "install_id": install_id,
+        "pack_id": body.pack_id,
+        "status": "in_progress",
+        "step": "downloading",
+        "progress": 0,
+    }
+
+    # Fire-and-forget the simulated install
+    asyncio.create_task(_simulate_install(install_id, body.pack_id))
+
+    return {
+        "install_id": install_id,
+        "pack_id": body.pack_id,
+        "status": "in_progress",
+    }
+
+
+@router.get("/install/{install_id}/status")
+async def get_install_status(install_id: str) -> dict[str, Any]:
+    """Poll the status of a running install job."""
+    job = _install_jobs.get(install_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Install job not found")
+    return {
+        "install_id": job["install_id"],
+        "pack_id": job["pack_id"],
+        "status": job["status"],
+        "step": job["step"],
+        "progress": job["progress"],
+    }
 
 
 @router.get("/installed")
-async def list_installed() -> list[dict]:
+async def list_installed() -> list[dict[str, Any]]:
     """List installed vertical packs."""
     return list(_installed.values())
+
+
+@router.patch("/install/{pack_id}")
+async def update_installed_pack(
+    pack_id: str, body: PatchInstallRequest
+) -> dict[str, Any]:
+    """Update enabled modules for an installed pack."""
+    if pack_id not in _installed:
+        raise HTTPException(status_code=404, detail="Pack not installed")
+
+    valid_modules = set(VERTICAL_PACKS[pack_id]["modules"])
+    for mod in body.enabled_modules:
+        if mod not in valid_modules:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown module: {mod}"
+            )
+
+    _installed[pack_id]["enabled_modules"] = body.enabled_modules
+    return {
+        "pack_id": pack_id,
+        "enabled_modules": body.enabled_modules,
+        "status": "updated",
+    }
+
+
+@router.delete("/install/{pack_id}")
+async def uninstall_pack(pack_id: str) -> dict[str, Any]:
+    """Uninstall a vertical pack."""
+    if pack_id not in _installed:
+        raise HTTPException(status_code=404, detail="Pack not installed")
+    del _installed[pack_id]
+    return {"pack_id": pack_id, "status": "uninstalled"}
 
 
 @router.get("/packs/{pack_id}/resources")
@@ -117,7 +220,6 @@ async def get_pack_resources(pack_id: str) -> dict[str, Any]:
     """Get resources (models, configs) for a pack."""
     if pack_id not in VERTICAL_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
-    pack = VERTICAL_PACKS[pack_id]
     return {
         "pack_id": pack_id,
         "models": [f"{pack_id}-model-v1"],
