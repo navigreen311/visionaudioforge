@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import AlertInbox from "@/components/alerts/AlertInbox";
+import AlertStatsSummary from "@/components/alerts/AlertStatsSummary";
 import RuleBuilder from "@/components/alerts/RuleBuilder";
 import AlertStats from "@/components/alerts/AlertStats";
 import IncidentView from "@/components/alerts/IncidentView";
@@ -10,7 +11,7 @@ import EvidenceBundleViewer from "@/components/alerts/EvidenceBundleViewer";
 import ChainOfCustodyDisplay from "@/components/alerts/ChainOfCustodyDisplay";
 
 const TABS = [
-  { id: "live", label: "Live Alerts" },
+  { id: "inbox", label: "Inbox" },
   { id: "incidents", label: "Incidents" },
   { id: "evidence", label: "Evidence" },
   { id: "custody", label: "Chain of Custody" },
@@ -19,7 +20,7 @@ const TABS = [
 ];
 
 export default function AlertsPage() {
-  const [activeTab, setActiveTab] = useState("live");
+  const [activeTab, setActiveTab] = useState("inbox");
 
   return (
     <div className="space-y-6">
@@ -30,10 +31,12 @@ export default function AlertsPage() {
         </p>
       </div>
 
+      <AlertStatsSummary />
+
       <Tabs tabs={TABS} activeTab={activeTab} onChange={setActiveTab} />
 
       <div>
-        {activeTab === "live" && <AlertInbox />}
+        {activeTab === "inbox" && <AlertInbox />}
         {activeTab === "incidents" && <IncidentView />}
         {activeTab === "evidence" && <EvidenceBundleViewer />}
         {activeTab === "custody" && <ChainOfCustodyDisplay />}
