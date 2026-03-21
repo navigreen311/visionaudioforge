@@ -1,8 +1,12 @@
-"""Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
+"""Agent API routes — chat, CRUD, memory, conversation history, patrol, and feedback."""
 
+import json
+import logging
 import uuid
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +17,8 @@ from app.services.agents.conversation import ConversationManager
 from app.services.agents.copilot import CopilotService
 from app.services.agents.memory import AgentMemoryService
 from app.services.agents.patrol import get_patrol_agent
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -36,6 +42,24 @@ class ChatResponse(BaseModel):
     response: str
     agent_id: str
     memories_used: int
+
+
+class FeedbackRequest(BaseModel):
+    message_id: str
+    agent_id: str
+    rating: str = Field(..., pattern="^(up|down)$")
+
+
+class FeedbackResponse(BaseModel):
+    status: str
+    message_id: str
+
+
+class SaveMemoryRequest(BaseModel):
+    agent_id: str
+    content: str
+    category: str = "general"
+    importance: int = Field(5, ge=1, le=10)
 
 
 class CreateAgentRequest(BaseModel):
@@ -109,6 +133,121 @@ async def agent_chat(
         agent_id=agent_id,
         memories_used=len(memories_list),
     )
+
+
+# ---------------------------------------------------------------------------
+# Streaming chat (SSE via text/event-stream)
+# ---------------------------------------------------------------------------
+
+
+async def _stream_chat_events(
+    body: ChatRequest,
+    db: AsyncSession,
+) -> AsyncGenerator[str, None]:
+    """Yield SSE-formatted events from the copilot service."""
+    agent_id = body.agent_id or str(uuid.uuid4())
+
+    try:
+        # Recall relevant memories
+        memories_list = await memory_service.recall(
+            db, agent_id, query=body.message, k=5
+        )
+        memory_strings = [m.content for m in memories_list]
+
+        full_response: list[str] = []
+
+        async for event in copilot_service.chat(
+            message=body.message,
+            workspace_id="default",
+            agent_id=agent_id,
+            context=body.context,
+            skill_pack=body.skill_pack,
+            memories=memory_strings,
+            db=db,
+        ):
+            # Forward each event as SSE
+            yield f"data: {json.dumps(event)}\n\n"
+
+            if event.get("type") == "token":
+                full_response.append(event.get("content", ""))
+
+        # Store response as memory if substantive
+        response_text = "".join(full_response)
+        if len(response_text) > 50:
+            await memory_service.store_memory(
+                db, agent_id, response_text[:500], importance_score=0.4
+            )
+    except Exception:
+        logger.exception("Error during streaming chat")
+        yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
+
+    # End-of-stream signal
+    yield "data: [DONE]\n\n"
+
+
+@router.post("/chat/stream")
+async def agent_chat_stream(
+    body: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Streaming chat endpoint — returns text/event-stream SSE."""
+    return StreamingResponse(
+        _stream_chat_events(body, db),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+
+
+@router.post("/feedback", response_model=FeedbackResponse)
+async def submit_feedback(
+    body: FeedbackRequest,
+):
+    """Record user feedback (thumbs up/down) for a message.
+
+    Stub: logs the feedback and returns success. A future iteration
+    will persist feedback to the database for model-quality tracking.
+    """
+    logger.info(
+        "Feedback received: message_id=%s agent_id=%s rating=%s",
+        body.message_id,
+        body.agent_id,
+        body.rating,
+    )
+    return FeedbackResponse(status="recorded", message_id=body.message_id)
+
+
+# ---------------------------------------------------------------------------
+# Save to Memory (from message action)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/memory")
+async def save_memory_from_action(
+    body: SaveMemoryRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Save content to agent memory from the MessageActions UI."""
+    importance_score = body.importance / 10.0  # Normalize 1-10 to 0.0-1.0
+    memory = await memory_service.store_memory(
+        db,
+        body.agent_id,
+        content=body.content,
+        importance_score=importance_score,
+    )
+    return {
+        "id": str(memory.id),
+        "content": memory.content,
+        "importance_score": memory.importance_score,
+        "category": body.category,
+    }
 
 
 # ---------------------------------------------------------------------------
