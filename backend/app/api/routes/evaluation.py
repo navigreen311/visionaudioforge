@@ -118,6 +118,18 @@ class ScorecardOut(BaseModel):
     weaknesses: list[str]
 
 
+class BenchmarkSummaryOut(BaseModel):
+    """Summary of a past benchmark run for the history list."""
+
+    id: str
+    name: str
+    modelCount: int
+    topMetric: str
+    topScore: float
+    createdAt: str
+    status: str
+
+
 # ---------------------------------------------------------------------------
 # Bracket-style single-elimination tournament schemas
 # ---------------------------------------------------------------------------
@@ -426,3 +438,38 @@ async def get_scorecard(
     """Generate a scorecard for a specific model."""
     result = await EvaluationService.generate_scorecard(db, model_id)
     return ScorecardOut(**result)
+
+
+@router.get("/benchmarks", response_model=list[BenchmarkSummaryOut])
+async def list_benchmarks() -> list[BenchmarkSummaryOut]:
+    """Return a list of past benchmark runs (stub with sample data)."""
+    # TODO: Replace with real DB query once persistence is wired up.
+    return [
+        BenchmarkSummaryOut(
+            id="bench-001",
+            name="COCO Object Detection v3",
+            modelCount=4,
+            topMetric="f1",
+            topScore=0.9234,
+            createdAt="2026-03-18T14:30:00Z",
+            status="completed",
+        ),
+        BenchmarkSummaryOut(
+            id="bench-002",
+            name="AudioSet Classification",
+            modelCount=3,
+            topMetric="accuracy",
+            topScore=0.8871,
+            createdAt="2026-03-15T09:12:00Z",
+            status="completed",
+        ),
+        BenchmarkSummaryOut(
+            id="bench-003",
+            name="UrbanSound8K Eval",
+            modelCount=2,
+            topMetric="precision",
+            topScore=0.9102,
+            createdAt="2026-03-12T17:45:00Z",
+            status="failed",
+        ),
+    ]

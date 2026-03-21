@@ -232,6 +232,41 @@ class CollaborationService:
 
         return pending
 
+    async def get_case_approvals(
+        self,
+        db: AsyncSession,
+        case_id: UUID,
+    ) -> list[dict]:
+        """Get all approval requests for a specific case."""
+        result = await db.execute(
+            select(Event)
+            .where(Event.type == "approval_request")
+            .order_by(Event.timestamp.desc())
+        )
+        all_approvals = result.scalars().all()
+        case_approvals = [
+            a for a in all_approvals
+            if a.payload and a.payload.get("case_id") == str(case_id)
+        ]
+
+        items: list[dict] = []
+        for a in case_approvals:
+            payload = a.payload or {}
+            items.append({
+                "id": str(a.id),
+                "case_id": payload.get("case_id"),
+                "requester_id": payload.get("requester_id"),
+                "approver_ids": [payload.get("approver_id", "")],
+                "description": payload.get("reason", ""),
+                "deadline": payload.get("deadline"),
+                "status": payload.get("status", "pending"),
+                "decided_by": payload.get("decided_by"),
+                "decided_at": payload.get("decided_at"),
+                "reject_reason": payload.get("notes"),
+                "timestamp": a.timestamp.isoformat() if a.timestamp else None,
+            })
+        return items
+
     async def assign_reviewer(
         self,
         db: AsyncSession,
