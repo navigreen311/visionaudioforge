@@ -66,6 +66,18 @@ class ProcessApprovalRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class AddCaseEventRequest(BaseModel):
+    """Request body for adding an event / evidence item to a case."""
+
+    type: str  # alert | capture_frame | audio_clip | uploaded_file | text_note
+    description: str
+    timestamp: Optional[datetime] = None
+    severity: int = 3  # 1-5 scale
+    asset_id: Optional[UUID] = None
+    alert_id: Optional[UUID] = None
+    content: Optional[str] = None  # for text_note type
+
+
 class ExportReportRequest(BaseModel):
     format: str = "markdown"
 
@@ -154,6 +166,88 @@ async def add_note(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return _serialize_event(note)
+
+
+@router.get("/cases/{case_id}/events")
+async def get_case_events(
+    case_id: UUID,
+    start: Optional[datetime] = Query(None, description="Filter from"),
+    end: Optional[datetime] = Query(None, description="Filter until"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all events for a case, optionally filtered by date range."""
+    try:
+        data = await investigation_service.get_case(db, case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    all_events = [
+        *data.get("events", []),
+        *data.get("evidence", []),
+        *data.get("notes", []),
+    ]
+    serialized = [_serialize_event(e) for e in all_events]
+
+    if start or end:
+        filtered = []
+        for ev in serialized:
+            ts = ev.get("timestamp")
+            if not ts:
+                continue
+            event_dt = datetime.fromisoformat(ts)
+            if start and event_dt < start:
+                continue
+            if end and event_dt > end:
+                continue
+            filtered.append(ev)
+        serialized = filtered
+
+    serialized.sort(key=lambda e: e.get("timestamp") or "")
+    return serialized
+
+
+@router.post("/cases/{case_id}/events", status_code=201)
+async def add_case_event(
+    case_id: UUID,
+    body: AddCaseEventRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Add an event (evidence) to a case -- supports multiple evidence types."""
+    from uuid import uuid4
+
+    event_timestamp = body.timestamp or datetime.utcnow()
+
+    if body.type == "text_note":
+        try:
+            note = await investigation_service.add_note(
+                db,
+                case_id=case_id,
+                user_id="current-user",
+                content=body.content or body.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        result = _serialize_event(note)
+        result["severity"] = body.severity
+        return result
+
+    asset_id = body.asset_id or body.alert_id or uuid4()
+
+    try:
+        evidence = await investigation_service.add_evidence(
+            db,
+            case_id=case_id,
+            asset_id=asset_id,
+            notes=body.description,
+            timestamp=event_timestamp,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    result = _serialize_event(evidence)
+    result["severity"] = body.severity
+    result["evidence_type"] = body.type
+    return result
 
 
 @router.get("/timeline")

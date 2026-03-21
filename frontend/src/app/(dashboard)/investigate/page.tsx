@@ -4,6 +4,8 @@ import React, { useState, useCallback, useEffect } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
 import EventTimeline from "@/components/investigate/EventTimeline";
 import EvidencePanel from "@/components/investigate/EvidencePanel";
+import CaseTimeline from "@/components/investigate/CaseTimeline";
+import AddEvidenceModal from "@/components/investigate/AddEvidenceModal";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -469,6 +471,9 @@ export default function InvestigatePage() {
   const [newCaseDesc, setNewCaseDesc] = useState("");
   const [creating, setCreating] = useState(false);
 
+  // Add Evidence modal
+  const [showAddEvidence, setShowAddEvidence] = useState(false);
+
   // Right panel tab
   const [activeTab, setActiveTab] = useState<TabKey>("evidence");
 
@@ -627,7 +632,18 @@ export default function InvestigatePage() {
       </div>
 
       {/* Center — Timeline */}
-      <div className="flex-1 min-w-0 bg-gray-50">
+      <div className="flex-1 min-w-0 bg-gray-50 overflow-y-auto">
+        {/* Horizontal CaseTimeline (IV3) — shown when a case is selected */}
+        {selectedCase && (
+          <div className="p-4 border-b border-gray-200 bg-white">
+            <CaseTimeline
+              caseId={selectedCase.id}
+              dateRange={{ start: startDate, end: endDate }}
+              onAddEvidence={() => setShowAddEvidence(true)}
+            />
+          </div>
+        )}
+
         {/* Checkpoint markers */}
         {checkpoints.length > 0 && (
           <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center gap-2 overflow-x-auto">
@@ -714,6 +730,18 @@ export default function InvestigatePage() {
           )}
         </div>
       </div>
+
+      {/* Add Evidence Modal (IV3) */}
+      {selectedCase && (
+        <AddEvidenceModal
+          isOpen={showAddEvidence}
+          onClose={() => setShowAddEvidence(false)}
+          caseId={selectedCase.id}
+          onAdded={() => {
+            loadTimeline();
+          }}
+        />
+      )}
 
       {/* New Case Modal */}
       <Modal
