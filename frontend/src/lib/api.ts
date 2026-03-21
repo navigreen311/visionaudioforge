@@ -1030,6 +1030,44 @@ export async function testDeliveryChannel(
   return data;
 }
 
+export interface NotificationChannelConfig {
+  type: "slack" | "email" | "webhook";
+  enabled: boolean;
+  severity_filter: ("critical" | "warning" | "info")[];
+  slack?: {
+    webhook_url: string;
+    channel_name: string;
+  };
+  email?: {
+    recipients: string[];
+    subject_prefix: string;
+  };
+  webhook?: {
+    url: string;
+    headers: Record<string, string>;
+    payload_template: string;
+  };
+}
+
+export interface ChannelTestResult {
+  success: boolean;
+  message: string;
+}
+
+export async function testNotificationChannel(
+  config: NotificationChannelConfig,
+): Promise<ChannelTestResult> {
+  const { data } = await api.post("/api/alerts/channels/test", config);
+  return data;
+}
+
+export async function saveNotificationChannel(
+  config: NotificationChannelConfig,
+): Promise<NotificationChannelConfig> {
+  const { data } = await api.post("/api/alerts/channels", config);
+  return data;
+}
+
 export async function listEscalations(): Promise<unknown[]> {
   const { data } = await api.get("/api/alerts/escalations", {
     params: { workspace_id: getWorkspaceId() },
