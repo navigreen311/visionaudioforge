@@ -3,7 +3,8 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
@@ -360,3 +361,203 @@ async def get_chain_of_custody(
         db, str(alert_id),
     )
     return report
+
+
+# ------------------------------------------------------------------
+# AL4 — Alert Rules Tab (stub endpoints with mock data)
+# ------------------------------------------------------------------
+
+import copy
+from datetime import datetime as _dt
+from uuid import uuid4 as _uuid4
+
+_MOCK_AL4_RULES: list[dict] = [
+    {
+        "id": "a1b2c3d4-0001-4000-8000-000000000001",
+        "name": "Low Confidence Detection",
+        "severity": "warning",
+        "conditions": [
+            {"id": "c1", "field": "confidence", "operator": "<", "value": "0.5"},
+        ],
+        "logic_operator": "AND",
+        "cooldown": "5m",
+        "actions": {
+            "email": {"enabled": True, "address": "alerts@example.com"},
+            "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/T00/B00/xxx"},
+            "webhook": {"enabled": False, "post_url": ""},
+            "auto_clip": True,
+        },
+        "enabled": True,
+        "trigger_count": 12,
+        "trigger_window_days": 7,
+        "created_at": "2026-03-10T08:00:00Z",
+        "updated_at": "2026-03-18T14:30:00Z",
+    },
+    {
+        "id": "a1b2c3d4-0002-4000-8000-000000000002",
+        "name": "Loud Audio + Motion Spike",
+        "severity": "critical",
+        "conditions": [
+            {"id": "c2", "field": "audio_level", "operator": ">", "value": "85"},
+            {"id": "c3", "field": "motion", "operator": ">", "value": "0.9"},
+        ],
+        "logic_operator": "AND",
+        "cooldown": "15m",
+        "actions": {
+            "email": {"enabled": False, "address": ""},
+            "slack": {"enabled": True, "webhook_url": "https://hooks.slack.com/services/T00/B00/yyy"},
+            "webhook": {"enabled": True, "post_url": "https://example.com/webhook"},
+            "auto_clip": True,
+        },
+        "enabled": True,
+        "trigger_count": 3,
+        "trigger_window_days": 7,
+        "created_at": "2026-03-12T10:00:00Z",
+        "updated_at": "2026-03-19T09:15:00Z",
+    },
+    {
+        "id": "a1b2c3d4-0003-4000-8000-000000000003",
+        "name": "OCR Keyword Match",
+        "severity": "info",
+        "conditions": [
+            {"id": "c4", "field": "ocr_text", "operator": "contains", "value": "RESTRICTED"},
+        ],
+        "logic_operator": "AND",
+        "cooldown": "1h",
+        "actions": {
+            "email": {"enabled": True, "address": "security@example.com"},
+            "slack": {"enabled": False, "webhook_url": ""},
+            "webhook": {"enabled": False, "post_url": ""},
+            "auto_clip": False,
+        },
+        "enabled": False,
+        "trigger_count": 0,
+        "trigger_window_days": 7,
+        "created_at": "2026-03-15T12:00:00Z",
+        "updated_at": "2026-03-15T12:00:00Z",
+    },
+]
+
+
+@router.get("/rules/al4", response_model=list[dict])
+async def list_al4_rules(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+):
+    """List AL4 alert rules (stub with mock data)."""
+    return _MOCK_AL4_RULES
+
+
+@router.post("/rules/al4", response_model=dict, status_code=201)
+async def create_al4_rule(
+    body: dict,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+):
+    """Create a new AL4 alert rule (stub)."""
+    now = _dt.utcnow().isoformat() + "Z"
+    new_rule = {
+        "id": str(_uuid4()),
+        **body,
+        "trigger_count": 0,
+        "trigger_window_days": 7,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _MOCK_AL4_RULES.append(new_rule)
+    return new_rule
+
+
+@router.post("/rules/al4/{rule_id}/duplicate", response_model=dict, status_code=201)
+async def duplicate_al4_rule(
+    rule_id: str,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+):
+    """Duplicate an existing AL4 alert rule (stub)."""
+    source = next((r for r in _MOCK_AL4_RULES if r["id"] == rule_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+    now = _dt.utcnow().isoformat() + "Z"
+    dup = copy.deepcopy(source)
+    dup["id"] = str(_uuid4())
+    dup["name"] = f"{source['name']} (copy)"
+    dup["trigger_count"] = 0
+    dup["created_at"] = now
+    dup["updated_at"] = now
+    _MOCK_AL4_RULES.append(dup)
+    return dup
+
+
+@router.patch("/rules/al4/{rule_id}", response_model=dict)
+async def toggle_al4_rule(
+    rule_id: str,
+    body: dict,
+):
+    """Toggle enabled state of an AL4 alert rule (stub)."""
+    rule = next((r for r in _MOCK_AL4_RULES if r["id"] == rule_id), None)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+    if "enabled" in body:
+        rule["enabled"] = body["enabled"]
+    rule["updated_at"] = _dt.utcnow().isoformat() + "Z"
+    return rule
+
+
+@router.delete("/rules/al4/{rule_id}", status_code=204)
+async def delete_al4_rule(
+    rule_id: str,
+):
+    """Delete an AL4 alert rule (stub)."""
+    global _MOCK_AL4_RULES
+    before = len(_MOCK_AL4_RULES)
+    _MOCK_AL4_RULES = [r for r in _MOCK_AL4_RULES if r["id"] != rule_id]
+    if len(_MOCK_AL4_RULES) == before:
+        raise HTTPException(status_code=404, detail=f"Rule {rule_id} not found")
+    return None
+
+
+# ------------------------------------------------------------------
+# Notification Channel endpoints
+# ------------------------------------------------------------------
+
+
+class SlackChannelConfig(BaseModel):
+    webhook_url: str = ""
+    channel_name: str = ""
+
+
+class EmailChannelConfig(BaseModel):
+    recipients: list[str] = Field(default_factory=list)
+    subject_prefix: str = "[ALERT]"
+
+
+class WebhookChannelConfig(BaseModel):
+    url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
+    payload_template: str = ""
+
+
+class NotificationChannelPayload(BaseModel):
+    type: str  # "slack" | "email" | "webhook"
+    enabled: bool = True
+    severity_filter: list[str] = Field(default_factory=list)
+    slack: Optional[SlackChannelConfig] = None
+    email: Optional[EmailChannelConfig] = None
+    webhook: Optional[WebhookChannelConfig] = None
+
+
+@router.post("/channels/test", response_model=dict)
+async def test_notification_channel(
+    body: NotificationChannelPayload = Body(...),
+):
+    """Test a notification channel configuration (stub)."""
+    return {"success": True, "message": "Test notification sent"}
+
+
+@router.post("/channels", response_model=dict, status_code=201)
+async def save_notification_channel(
+    body: NotificationChannelPayload = Body(...),
+):
+    """Save a notification channel configuration (stub)."""
+    return {
+        "success": True,
+        "channel": body.model_dump(),
+    }
