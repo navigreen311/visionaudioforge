@@ -4,6 +4,14 @@ import { useEffect, useRef, useState, useCallback } from "react";
 
 type ConnectionQuality = "Excellent" | "Good" | "Poor" | "Unstable";
 
+/** External stream stats that a parent can optionally provide. */
+export interface StreamStats {
+  fps: number;
+  latency: number;
+  bitrate: number;
+  droppedFrames: number;
+}
+
 interface HealthMetrics {
   fps: number;
   latencyMs: number;
@@ -14,7 +22,11 @@ interface HealthMetrics {
 }
 
 interface StreamHealthBarProps {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
+  /** Optional video element ref — when provided, metrics are computed via rAF. */
+  videoRef?: React.RefObject<HTMLVideoElement | null>;
+  /** Optional external stats — when provided, these override rAF-computed values. */
+  stats?: StreamStats;
+  /** Reconnect handler — button appears only when connection quality is Unstable. */
   onReconnect?: () => void;
 }
 
@@ -39,6 +51,12 @@ function qualityColor(quality: ConnectionQuality): string {
     case "Unstable":
       return "bg-red-500 text-white animate-pulse";
   }
+}
+
+function fpsColor(fps: number): string {
+  if (fps >= 24) return "text-green-400";
+  if (fps >= 12) return "text-amber-400";
+  return "text-red-400";
 }
 
 function sparklineColor(fps: number): string {
@@ -67,6 +85,7 @@ function buildSparklinePath(history: number[]): string {
 
 export default function StreamHealthBar({
   videoRef,
+  stats,
   onReconnect,
 }: StreamHealthBarProps) {
   const [metrics, setMetrics] = useState<HealthMetrics>({
@@ -85,6 +104,7 @@ export default function StreamHealthBar({
   const unstableStreakRef = useRef<number>(0);
   const fpsHistoryRef = useRef<number[]>([]);
 
+  // ── rAF-based measurement (active only when videoRef is provided and no external stats) ──
   const measureFrame = useCallback(
     (now: number) => {
       const timestamps = frameTimestampsRef.current;
@@ -97,8 +117,7 @@ export default function StreamHealthBar({
 
       const currentFps = timestamps.length;
 
-      // Collect video quality info from the video element
-      const video = videoRef.current;
+      const video = videoRef?.current;
       let droppedFrames = 0;
       let latency = 0;
       let bitrate = 0;
@@ -112,10 +131,8 @@ export default function StreamHealthBar({
           if (totalFrames > 0 && prevTimeRef.current > 0) {
             const dt = (now - prevTimeRef.current) / 1000;
             if (dt > 0) {
-              // Rough latency estimate based on frame delivery gap
               latency = Math.round((1000 / Math.max(currentFps, 1)) * 0.5);
 
-              // Estimate bitrate from video dimensions and fps
               const pixels =
                 (video.videoWidth || 640) * (video.videoHeight || 480);
               const estimatedBitsPerSecond =
@@ -130,7 +147,7 @@ export default function StreamHealthBar({
         }
         prevTimeRef.current = now;
 
-        // Use track frame rate for latency refinement if available
+        // Refine latency from track frame rate if available
         const stream = video.srcObject as MediaStream | null;
         if (stream) {
           const tracks = stream.getVideoTracks();
@@ -154,7 +171,6 @@ export default function StreamHealthBar({
         unstableStreakRef.current = 0;
       }
 
-      // Update FPS history
       const history = fpsHistoryRef.current;
       history.push(currentFps);
       if (history.length > FPS_HISTORY_MAX) {
@@ -180,30 +196,66 @@ export default function StreamHealthBar({
     [videoRef]
   );
 
+  // Start / stop rAF loop — skip when external stats are provided
   useEffect(() => {
+    if (stats) return;
+
     rafIdRef.current = requestAnimationFrame(measureFrame);
     return () => {
       if (rafIdRef.current) {
         cancelAnimationFrame(rafIdRef.current);
       }
     };
-  }, [measureFrame]);
+  }, [measureFrame, stats]);
+
+  // ── Derive display metrics from external stats when provided ──
+  useEffect(() => {
+    if (!stats) return;
+
+    const { fps, latency, bitrate, droppedFrames } = stats;
+
+    if (fps < 5) {
+      unstableStreakRef.current += 1;
+    } else {
+      unstableStreakRef.current = 0;
+    }
+
+    const history = fpsHistoryRef.current;
+    history.push(fps);
+    if (history.length > FPS_HISTORY_MAX) {
+      history.shift();
+    }
+
+    const connectionQuality = getQuality(fps, unstableStreakRef.current);
+
+    setMetrics({
+      fps,
+      latencyMs: latency,
+      bitrateKBs: bitrate,
+      framesDropped: droppedFrames,
+      quality: connectionQuality,
+      fpsHistory: [...history],
+    });
+  }, [stats]);
 
   const sparklinePoints = buildSparklinePath(metrics.fpsHistory);
   const currentSparklineColor = sparklineColor(metrics.fps);
 
   return (
-    <div className="flex items-center gap-4 px-3 py-1.5 bg-gray-900/80 rounded-lg text-xs font-mono text-gray-300 backdrop-blur-sm">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 bg-gray-900/80 rounded-lg text-xs font-mono text-gray-300 backdrop-blur-sm">
       {/* FPS + sparkline */}
       <div className="flex items-center gap-2">
         <span className="text-gray-500">FPS</span>
-        <span className="font-semibold text-white">{metrics.fps}</span>
+        <span className={`font-semibold ${fpsColor(metrics.fps)}`}>
+          {metrics.fps}
+        </span>
         {sparklinePoints && (
           <svg
             width={80}
             height={16}
             viewBox="0 0 80 16"
             className="inline-block"
+            aria-label={`FPS sparkline, current ${metrics.fps}`}
           >
             <polyline
               points={sparklinePoints}
@@ -217,7 +269,7 @@ export default function StreamHealthBar({
         )}
       </div>
 
-      <span className="text-gray-600">|</span>
+      <span className="text-gray-600 hidden sm:inline">|</span>
 
       {/* Latency */}
       <div className="flex items-center gap-1">
@@ -225,7 +277,7 @@ export default function StreamHealthBar({
         <span>{metrics.latencyMs} ms</span>
       </div>
 
-      <span className="text-gray-600">|</span>
+      <span className="text-gray-600 hidden sm:inline">|</span>
 
       {/* Bitrate */}
       <div className="flex items-center gap-1">
@@ -233,7 +285,7 @@ export default function StreamHealthBar({
         <span>{metrics.bitrateKBs} KB/s</span>
       </div>
 
-      <span className="text-gray-600">|</span>
+      <span className="text-gray-600 hidden sm:inline">|</span>
 
       {/* Frames Dropped */}
       <div className="flex items-center gap-1">
@@ -243,7 +295,7 @@ export default function StreamHealthBar({
         </span>
       </div>
 
-      <span className="text-gray-600">|</span>
+      <span className="text-gray-600 hidden sm:inline">|</span>
 
       {/* Quality pill */}
       <span

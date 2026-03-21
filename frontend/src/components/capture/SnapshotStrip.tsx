@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 
-interface Snapshot {
+export interface Snapshot {
   id: string;
   dataUrl: string;
   timestamp: string;
@@ -19,7 +19,16 @@ export interface SnapshotStripHandle {
 }
 
 interface SnapshotStripProps {
-  canvasRef: React.RefObject<HTMLCanvasElement | null>;
+  /** Canvas ref to capture snapshots from (imperative mode). */
+  canvasRef?: React.RefObject<HTMLCanvasElement | null>;
+  /** Externally-managed snapshots array. When provided, internal state is bypassed. */
+  snapshots?: Snapshot[];
+  /** Callback fired when a snapshot capture is requested by the strip itself. */
+  onCapture?: () => void;
+  /** Callback to delete a snapshot by id (used with external snapshots). */
+  onDelete?: (id: string) => void;
+  /** Callback to clear all snapshots (used with external snapshots). */
+  onClearAll?: () => void;
 }
 
 const MAX_SNAPSHOTS = 20;
@@ -36,15 +45,28 @@ function formatTimestamp(date: Date): string {
 }
 
 const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
-  function SnapshotStrip({ canvasRef }, ref) {
-    const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  function SnapshotStrip(
+    { canvasRef, snapshots: externalSnapshots, onCapture, onDelete, onClearAll },
+    ref
+  ) {
+    const [internalSnapshots, setInternalSnapshots] = useState<Snapshot[]>([]);
     const router = useRouter();
 
+    // Decide which snapshot list to display
+    const snapshots = externalSnapshots ?? internalSnapshots;
+    const isControlled = externalSnapshots !== undefined;
+
     const addSnapshot = useCallback(() => {
-      const sourceCanvas = canvasRef.current;
+      // If parent provides onCapture, delegate to it
+      if (onCapture) {
+        onCapture();
+        return;
+      }
+
+      // Otherwise, capture from canvasRef (imperative mode)
+      const sourceCanvas = canvasRef?.current;
       if (!sourceCanvas) return;
 
-      // Create thumbnail canvas
       const thumbCanvas = document.createElement("canvas");
       thumbCanvas.width = THUMB_WIDTH;
       thumbCanvas.height = THUMB_HEIGHT;
@@ -60,17 +82,24 @@ const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
         timestamp: formatTimestamp(new Date()),
       };
 
-      setSnapshots((prev) => {
+      setInternalSnapshots((prev) => {
         const updated = [snapshot, ...prev];
         return updated.slice(0, MAX_SNAPSHOTS);
       });
-    }, [canvasRef]);
+    }, [canvasRef, onCapture]);
 
     useImperativeHandle(ref, () => ({ addSnapshot }), [addSnapshot]);
 
-    const handleDelete = useCallback((id: string) => {
-      setSnapshots((prev) => prev.filter((s) => s.id !== id));
-    }, []);
+    const handleDelete = useCallback(
+      (id: string) => {
+        if (isControlled && onDelete) {
+          onDelete(id);
+          return;
+        }
+        setInternalSnapshots((prev) => prev.filter((s) => s.id !== id));
+      },
+      [isControlled, onDelete]
+    );
 
     const handleSendToVision = useCallback(
       (dataUrl: string) => {
@@ -84,8 +113,12 @@ const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
     );
 
     const handleClearAll = useCallback(() => {
-      setSnapshots([]);
-    }, []);
+      if (isControlled && onClearAll) {
+        onClearAll();
+        return;
+      }
+      setInternalSnapshots([]);
+    }, [isControlled, onClearAll]);
 
     if (snapshots.length === 0) {
       return (
@@ -97,7 +130,16 @@ const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
 
     return (
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 overflow-x-auto flex-nowrap flex-1 pb-1">
+        {/* Scrollable thumbnail strip with subtle scrollbar */}
+        <div
+          className="flex items-center gap-2 overflow-x-auto flex-nowrap flex-1 pb-1
+            scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent
+            [&::-webkit-scrollbar]:h-1.5
+            [&::-webkit-scrollbar-track]:bg-transparent
+            [&::-webkit-scrollbar-thumb]:bg-gray-700
+            [&::-webkit-scrollbar-thumb]:rounded-full
+            [&::-webkit-scrollbar-thumb:hover]:bg-gray-600"
+        >
           {snapshots.map((snap) => (
             <div
               key={snap.id}
@@ -127,6 +169,7 @@ const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
                 <button
                   onClick={() => handleDelete(snap.id)}
                   className="px-2 py-0.5 bg-red-600 hover:bg-red-700 text-white text-[9px] rounded font-semibold transition-colors"
+                  aria-label="Delete snapshot"
                 >
                   &times;
                 </button>
@@ -135,6 +178,7 @@ const SnapshotStrip = forwardRef<SnapshotStripHandle, SnapshotStripProps>(
           ))}
         </div>
 
+        {/* Clear All button at right end */}
         <button
           onClick={handleClearAll}
           className="flex-shrink-0 px-2 py-1 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-white text-[10px] rounded font-medium transition-colors"
