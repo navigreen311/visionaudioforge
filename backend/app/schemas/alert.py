@@ -113,6 +113,29 @@ class AlertStats(BaseModel):
     by_severity: dict[str, int]
     by_status: dict[str, int]
     recent_24h: int
+    critical_24h: int = 0
+    acknowledged: int = 0
+    unresolved: int = 0
+    recent: list[dict[str, Any]] = []
+
+
+class AlertStatsSummary(BaseModel):
+    """Compact 4-card summary for the alerts dashboard."""
+
+    critical: int = 0
+    critical_trend: int = 0
+    warning: int = 0
+    warning_trend: int = 0
+    info: int = 0
+    info_trend: int = 0
+    acknowledged_today: int = 0
+    acknowledged_today_trend: int = 0
+
+
+class AlertStatusUpdate(BaseModel):
+    """Body for PATCH /api/alerts/{id}."""
+
+    status: str
 
 
 class AlertAction(BaseModel):

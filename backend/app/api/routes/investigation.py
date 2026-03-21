@@ -6,6 +6,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,8 +28,12 @@ report_service = ReportService()
 
 class CreateCaseRequest(BaseModel):
     name: str
-    description: str
+    description: str = ""
     workspace_id: UUID
+    priority: str = "medium"
+    status: str = "open"
+    assignee: str = ""
+    tags: list[str] = []
 
 
 class AddEvidenceRequest(BaseModel):
@@ -66,6 +71,18 @@ class ProcessApprovalRequest(BaseModel):
     notes: Optional[str] = None
 
 
+class AddCaseEventRequest(BaseModel):
+    """Request body for adding an event / evidence item to a case."""
+
+    type: str  # alert | capture_frame | audio_clip | uploaded_file | text_note
+    description: str
+    timestamp: Optional[datetime] = None
+    severity: int = 3  # 1-5 scale
+    asset_id: Optional[UUID] = None
+    alert_id: Optional[UUID] = None
+    content: Optional[str] = None  # for text_note type
+
+
 class ExportReportRequest(BaseModel):
     format: str = "markdown"
 
@@ -94,7 +111,14 @@ def _serialize_event(e) -> dict:
 async def create_case(body: CreateCaseRequest, db: AsyncSession = Depends(get_db)):
     """Create a new investigation case."""
     case = await investigation_service.create_case(
-        db, name=body.name, description=body.description, workspace_id=body.workspace_id
+        db,
+        name=body.name,
+        description=body.description,
+        workspace_id=body.workspace_id,
+        priority=body.priority,
+        status=body.status,
+        assignee=body.assignee,
+        tags=body.tags,
     )
     return _serialize_event(case)
 
@@ -154,6 +178,88 @@ async def add_note(
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return _serialize_event(note)
+
+
+@router.get("/cases/{case_id}/events")
+async def get_case_events(
+    case_id: UUID,
+    start: Optional[datetime] = Query(None, description="Filter from"),
+    end: Optional[datetime] = Query(None, description="Filter until"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get all events for a case, optionally filtered by date range."""
+    try:
+        data = await investigation_service.get_case(db, case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    all_events = [
+        *data.get("events", []),
+        *data.get("evidence", []),
+        *data.get("notes", []),
+    ]
+    serialized = [_serialize_event(e) for e in all_events]
+
+    if start or end:
+        filtered = []
+        for ev in serialized:
+            ts = ev.get("timestamp")
+            if not ts:
+                continue
+            event_dt = datetime.fromisoformat(ts)
+            if start and event_dt < start:
+                continue
+            if end and event_dt > end:
+                continue
+            filtered.append(ev)
+        serialized = filtered
+
+    serialized.sort(key=lambda e: e.get("timestamp") or "")
+    return serialized
+
+
+@router.post("/cases/{case_id}/events", status_code=201)
+async def add_case_event(
+    case_id: UUID,
+    body: AddCaseEventRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Add an event (evidence) to a case -- supports multiple evidence types."""
+    from uuid import uuid4
+
+    event_timestamp = body.timestamp or datetime.utcnow()
+
+    if body.type == "text_note":
+        try:
+            note = await investigation_service.add_note(
+                db,
+                case_id=case_id,
+                user_id="current-user",
+                content=body.content or body.description,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        result = _serialize_event(note)
+        result["severity"] = body.severity
+        return result
+
+    asset_id = body.asset_id or body.alert_id or uuid4()
+
+    try:
+        evidence = await investigation_service.add_evidence(
+            db,
+            case_id=case_id,
+            asset_id=asset_id,
+            notes=body.description,
+            timestamp=event_timestamp,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    result = _serialize_event(evidence)
+    result["severity"] = body.severity
+    result["evidence_type"] = body.type
+    return result
 
 
 @router.get("/timeline")
@@ -231,6 +337,12 @@ async def create_checkpoint(
     return _serialize_event(checkpoint)
 
 
+@router.get("/cases/{case_id}/approvals")
+async def get_case_approvals(case_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get all approval requests for a specific case."""
+    return await collaboration_service.get_case_approvals(db, case_id)
+
+
 @router.post("/cases/{case_id}/approval", status_code=201)
 async def create_approval(
     case_id: UUID, body: CreateApprovalRequest, db: AsyncSession = Depends(get_db)
@@ -296,11 +408,26 @@ async def generate_report(case_id: UUID, db: AsyncSession = Depends(get_db)):
 async def export_report(
     case_id: UUID, body: ExportReportRequest, db: AsyncSession = Depends(get_db)
 ):
-    """Export a report in the specified format (markdown or json)."""
+    """Export a report in the specified format (markdown, json, or pdf stub).
+
+    When format is 'pdf', returns a text/plain stub indicating that full PDF
+    generation is not yet implemented.
+    """
     try:
         content = await report_service.export_report(db, case_id, format=body.format)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+    # PDF stub: return plain text instead of JSON
+    if body.format == "pdf":
+        return PlainTextResponse(
+            content=content,
+            media_type="text/plain",
+            headers={
+                "Content-Disposition": f'attachment; filename="report_{case_id}.txt"'
+            },
+        )
+
     return {"content": content, "format": body.format}
 
 

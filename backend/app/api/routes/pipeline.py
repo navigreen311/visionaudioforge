@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -46,8 +47,184 @@ class ScheduleRequest(BaseModel):
     cron: str
 
 
+class SchedulePatchRequest(BaseModel):
+    enabled: bool = True
+    cron: str
+    timezone: str = "UTC"
+
+
+class PipelineRunRequest(BaseModel):
+    pipeline_id: str
+    rerun_of: str | None = None
+
+
 class SuggestNextRequest(BaseModel):
     current_nodes: list[str]
+
+
+class PipelineSaveRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str | None = None
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineScheduleUpdate(BaseModel):
+    cron: str | None = None
+    enabled: bool = True
+    timezone: str = "UTC"
+
+
+# --------------------------------------------------------------------------
+# Mock-data stubs for Pipeline page UI
+# --------------------------------------------------------------------------
+
+MOCK_PIPELINES = [
+    {
+        "id": "pipe_001",
+        "name": "Audio Feature Extraction",
+        "node_count": 4,
+        "status": "active",
+        "updated_at": "2026-03-19T14:30:00Z",
+    },
+    {
+        "id": "pipe_002",
+        "name": "Vision Preprocessing + CLIP Embedding",
+        "node_count": 6,
+        "status": "draft",
+        "updated_at": "2026-03-18T09:15:00Z",
+    },
+    {
+        "id": "pipe_003",
+        "name": "Multimodal Fusion Pipeline",
+        "node_count": 8,
+        "status": "scheduled",
+        "updated_at": "2026-03-17T22:45:00Z",
+    },
+]
+
+MOCK_RUNS = [
+    {
+        "run_id": "run_001",
+        "pipeline_id": "pipe_001",
+        "pipeline_name": "Audio Feature Extraction",
+        "status": "completed",
+        "started_at": "2026-03-19T14:35:00Z",
+        "finished_at": "2026-03-19T14:42:00Z",
+        "nodes_completed": 4,
+        "nodes_total": 4,
+        "log": [
+            {"timestamp": "2026-03-19T14:35:01Z", "node": "ingest", "level": "info", "message": "Loading audio files from /data/raw"},
+            {"timestamp": "2026-03-19T14:36:10Z", "node": "normalize", "level": "info", "message": "Normalized 128 audio clips"},
+            {"timestamp": "2026-03-19T14:38:45Z", "node": "extract_mfcc", "level": "info", "message": "Extracted 13 MFCCs per clip"},
+            {"timestamp": "2026-03-19T14:42:00Z", "node": "export", "level": "info", "message": "Saved features to /data/processed/mfcc.npy"},
+        ],
+    },
+    {
+        "run_id": "run_002",
+        "pipeline_id": "pipe_002",
+        "pipeline_name": "Vision Preprocessing + CLIP Embedding",
+        "status": "failed",
+        "started_at": "2026-03-18T10:00:00Z",
+        "finished_at": "2026-03-18T10:05:30Z",
+        "nodes_completed": 3,
+        "nodes_total": 6,
+        "log": [
+            {"timestamp": "2026-03-18T10:00:01Z", "node": "load_images", "level": "info", "message": "Loaded 256 images"},
+            {"timestamp": "2026-03-18T10:02:00Z", "node": "resize", "level": "info", "message": "Resized to 224x224"},
+            {"timestamp": "2026-03-18T10:03:30Z", "node": "color_convert", "level": "info", "message": "Converted BGR to RGB"},
+            {"timestamp": "2026-03-18T10:05:30Z", "node": "clip_embed", "level": "error", "message": "CUDA out of memory — reduce batch size"},
+        ],
+    },
+    {
+        "run_id": "run_003",
+        "pipeline_id": "pipe_003",
+        "pipeline_name": "Multimodal Fusion Pipeline",
+        "status": "running",
+        "started_at": "2026-03-19T15:00:00Z",
+        "finished_at": None,
+        "nodes_completed": 5,
+        "nodes_total": 8,
+        "log": [
+            {"timestamp": "2026-03-19T15:00:01Z", "node": "audio_ingest", "level": "info", "message": "Ingested 64 audio samples"},
+            {"timestamp": "2026-03-19T15:01:30Z", "node": "vision_ingest", "level": "info", "message": "Ingested 64 image samples"},
+            {"timestamp": "2026-03-19T15:03:00Z", "node": "audio_features", "level": "info", "message": "Extracted MEL spectrograms"},
+            {"timestamp": "2026-03-19T15:05:00Z", "node": "vision_features", "level": "info", "message": "Extracted CLIP embeddings"},
+            {"timestamp": "2026-03-19T15:07:00Z", "node": "align", "level": "info", "message": "Temporal alignment complete"},
+        ],
+    },
+]
+
+
+@router.get("/pipeline/list")
+async def list_pipelines_mock() -> list[dict[str, Any]]:
+    """Return mock pipeline list for Pipeline page UI."""
+    return MOCK_PIPELINES
+
+
+@router.post("/pipeline/save")
+async def save_pipeline_mock(body: PipelineSaveRequest) -> dict[str, Any]:
+    """Accept a pipeline definition and return a draft stub."""
+    return {
+        "id": f"pipe_{uuid.uuid4().hex[:6]}",
+        "name": body.name,
+        "status": "draft",
+    }
+
+
+@router.patch("/pipeline/{pipeline_id}/schedule")
+async def update_pipeline_schedule(
+    pipeline_id: str,
+    body: PipelineScheduleUpdate,
+) -> dict[str, Any]:
+    """Accept schedule config and return the updated pipeline stub."""
+    return {
+        "id": pipeline_id,
+        "name": next(
+            (p["name"] for p in MOCK_PIPELINES if p["id"] == pipeline_id),
+            "Unknown Pipeline",
+        ),
+        "status": "scheduled" if body.enabled else "draft",
+        "schedule": {
+            "cron": body.cron,
+            "enabled": body.enabled,
+            "timezone": body.timezone,
+        },
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.post("/pipeline/run")
+async def run_pipeline_mock() -> dict[str, Any]:
+    """Start a mock pipeline run and return a run stub."""
+    return {"run_id": "run_001", "status": "running"}
+
+
+@router.get("/pipeline/runs/{run_id}/status")
+async def get_run_status(run_id: str) -> dict[str, Any]:
+    """Return mock status for a specific pipeline run."""
+    run = next((r for r in MOCK_RUNS if r["run_id"] == run_id), None)
+    if run:
+        return {
+            "run_id": run["run_id"],
+            "status": run["status"],
+            "nodes_completed": run["nodes_completed"],
+            "nodes_total": run["nodes_total"],
+            "current_node": None if run["status"] == "completed" else run["log"][-1]["node"],
+        }
+    # Default fallback for unknown run_id
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "nodes_completed": 5,
+        "nodes_total": 5,
+        "current_node": None,
+    }
+
+
+@router.get("/pipeline/runs")
+async def list_pipeline_runs_mock() -> list[dict[str, Any]]:
+    """Return mock run history for Pipeline page UI."""
+    return MOCK_RUNS
 
 
 # --------------------------------------------------------------------------
@@ -94,6 +271,64 @@ async def create_pipeline(
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail=validation["errors"])
 
+    pipeline = Pipeline(
+        name=body.name,
+        description=body.description,
+        definition=body.definition,
+        workspace_id=body.workspace_id,
+    )
+    db.add(pipeline)
+    await db.commit()
+    await db.refresh(pipeline)
+    return pipeline
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/list — convenience alias for listing saved pipelines
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/list", response_model=PaginatedResponse)
+async def list_pipelines_alias(
+    workspace_id: uuid.UUID | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """List saved pipelines (alias for GET /api/pipelines)."""
+    query = select(Pipeline)
+    count_query = select(func.count(Pipeline.id))
+
+    if workspace_id:
+        query = query.where(Pipeline.workspace_id == workspace_id)
+        count_query = count_query.where(Pipeline.workspace_id == workspace_id)
+
+    total = (await db.execute(count_query)).scalar() or 0
+    total_pages = max(1, -(-total // page_size))
+
+    query = query.order_by(Pipeline.updated_at.desc())
+    query = query.offset((page - 1) * page_size).limit(page_size)
+    result = await db.execute(query)
+    items = result.scalars().all()
+
+    return {
+        "items": [PipelineRead.model_validate(p) for p in items],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/save — save or update a pipeline
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/save", response_model=PipelineRead, status_code=201)
+async def save_pipeline(
+    body: PipelineCreate,
+    db: AsyncSession = Depends(get_db),
+) -> Pipeline:
+    """Save a pipeline (create new). Acts as an alias for create with relaxed validation."""
     pipeline = Pipeline(
         name=body.name,
         description=body.description,
@@ -274,3 +509,171 @@ async def suggest_next_nodes(body: SuggestNextRequest) -> dict:
     """Suggest next nodes based on current pipeline composition."""
     suggestions = await nl_generator.suggest_next_nodes(body.current_nodes)
     return {"suggestions": suggestions}
+
+
+# --------------------------------------------------------------------------
+# PATCH /api/pipeline/{pipeline_id}/schedule — update schedule for a pipeline
+# --------------------------------------------------------------------------
+
+@router.patch("/pipeline/{pipeline_id}/schedule")
+async def update_pipeline_schedule(
+    pipeline_id: uuid.UUID,
+    body: SchedulePatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create or update a cron schedule for a specific pipeline."""
+    result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    try:
+        schedule_result = await scheduler.schedule(str(pipeline_id), body.cron)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "pipeline_id": str(pipeline_id),
+        "enabled": body.enabled,
+        "cron": body.cron,
+        "timezone": body.timezone,
+        **schedule_result,
+    }
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/run — start a pipeline run (accepts body with pipeline_id)
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/run")
+async def start_pipeline_run(
+    body: PipelineRunRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Start a new pipeline run from a JSON body (supports re-runs)."""
+    pid = uuid.UUID(body.pipeline_id)
+    result = await db.execute(select(Pipeline).where(Pipeline.id == pid))
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run = PipelineRun(pipeline_id=pid, status="pending")
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    # Fire-and-forget task dispatch
+    try:
+        from app.tasks.pipeline import run_pipeline_task
+        run_pipeline_task.delay(str(pid), pipeline.definition)
+    except Exception:
+        pass
+
+    return {"run_id": str(run.id), "status": "pending", "rerun_of": body.rerun_of}
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/runs/{run_id}/status — live run status with per-node states
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/runs/{run_id}/status")
+async def get_run_status(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return current run status with per-node progress (stub)."""
+    result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    # In a real implementation, node states would come from the task runner.
+    # For now, return a stub based on the run's overall status.
+    pipeline_result = await db.execute(
+        select(Pipeline).where(Pipeline.id == run.pipeline_id)
+    )
+    pipeline = pipeline_result.scalar_one_or_none()
+    definition = pipeline.definition if pipeline else {}
+    node_defs: list[dict[str, Any]] = definition.get("nodes", [])
+
+    status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
+
+    node_states = []
+    for i, node_def in enumerate(node_defs):
+        if status_str == "completed":
+            node_status = "completed"
+        elif status_str == "failed":
+            node_status = "completed" if i < len(node_defs) - 1 else "failed"
+        elif status_str == "running":
+            node_status = "completed" if i == 0 else ("running" if i == 1 else "pending")
+        else:
+            node_status = "pending"
+
+        node_states.append({
+            "node_id": node_def.get("id", f"node-{i}"),
+            "node_name": node_def.get("type", f"Node {i + 1}"),
+            "status": node_status,
+        })
+
+    elapsed_ms = 0
+    if run.started_at and run.finished_at:
+        elapsed_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+
+    return {
+        "run_id": str(run.id),
+        "pipeline_status": status_str,
+        "nodes": node_states,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/runs — list runs, optionally filtered by pipeline_id
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/runs")
+async def list_pipeline_runs(
+    pipeline_id: uuid.UUID | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List pipeline runs with summary data for the RunHistory table."""
+    query = select(PipelineRun).order_by(PipelineRun.id.desc())
+    if pipeline_id:
+        query = query.where(PipelineRun.pipeline_id == pipeline_id)
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(query)
+    runs = result.scalars().all()
+
+    items = []
+    for idx, run in enumerate(runs):
+        status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
+
+        duration_ms = None
+        if run.started_at and run.finished_at:
+            duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+
+        # Derive node counts from pipeline definition
+        pipeline_result = await db.execute(
+            select(Pipeline).where(Pipeline.id == run.pipeline_id)
+        )
+        pipeline = pipeline_result.scalar_one_or_none()
+        nodes_total = len((pipeline.definition or {}).get("nodes", [])) if pipeline else 0
+        nodes_executed = nodes_total if status_str == "completed" else 0
+
+        items.append({
+            "id": str(run.id),
+            "run_number": idx + 1,
+            "status": status_str,
+            "started_at": run.started_at.isoformat() if run.started_at else "",
+            "duration_ms": duration_ms,
+            "nodes_executed": nodes_executed,
+            "nodes_total": nodes_total,
+            "output_summary": None,
+            "logs": [],
+        })
+
+    return items

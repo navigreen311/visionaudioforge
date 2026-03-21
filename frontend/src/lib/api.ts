@@ -731,6 +731,28 @@ export async function generateFromDescription(
   return data;
 }
 
+export async function listSavedPipelines(
+  page = 1,
+  pageSize = 20,
+): Promise<PaginatedPipelines> {
+  const { data } = await api.get("/api/pipeline/list", {
+    params: { page, page_size: pageSize },
+  });
+  return data;
+}
+
+export async function savePipeline(payload: {
+  name: string;
+  description?: string;
+  definition: Record<string, unknown>;
+}): Promise<Pipeline> {
+  const { data } = await api.post("/api/pipeline/save", {
+    ...payload,
+    workspace_id: getWorkspaceId(),
+  });
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // Alerts API
 // ---------------------------------------------------------------------------
@@ -738,15 +760,30 @@ export async function generateFromDescription(
 export type AlertSeverity = "critical" | "high" | "medium" | "low";
 export type AlertStatus = "firing" | "acknowledged" | "resolved" | "dismissed";
 
+export interface AlertEvidence {
+  type: "image" | "video" | "none";
+  url?: string;
+  thumbnail_url?: string;
+}
+
+export interface AlertHistoryEntry {
+  id: string;
+  status: AlertStatus;
+  created_at: string;
+}
+
 export interface Alert {
   id: string;
   rule_id: string;
+  rule_name?: string;
   severity: AlertSeverity;
   status: AlertStatus;
   message: string;
   metric_value: number;
   threshold: number;
+  source?: string;
   workspace_id: string;
+  evidence?: AlertEvidence;
   created_at: string;
   updated_at: string;
 }
@@ -754,6 +791,9 @@ export interface Alert {
 export interface AlertFilters {
   severity?: AlertSeverity;
   status?: AlertStatus;
+  start_date?: string;
+  end_date?: string;
+  search?: string;
   skip?: number;
   limit?: number;
 }
@@ -762,6 +802,21 @@ export interface AlertStatsData {
   total: number;
   by_severity: Record<AlertSeverity, number>;
   by_status: Record<AlertStatus, number>;
+  critical_24h: number;
+  acknowledged: number;
+  unresolved: number;
+  recent: Alert[];
+}
+
+export interface AlertStatsSummary {
+  critical: number;
+  critical_trend: number;
+  warning: number;
+  warning_trend: number;
+  info: number;
+  info_trend: number;
+  acknowledged_today: number;
+  acknowledged_today_trend: number;
 }
 
 export interface AlertRuleCondition {
@@ -785,6 +840,79 @@ export interface AlertRule {
   workspace_id: string;
   created_at: string;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// AL4 — Alert Rules Tab types
+// ---------------------------------------------------------------------------
+
+export type AL4Severity = "critical" | "warning" | "info";
+export type AL4ConditionField = "confidence" | "class" | "motion" | "audio_level" | "ocr_text" | "custom";
+export type AL4Operator = ">" | "<" | "=" | "contains" | "not_contains";
+export type AL4LogicOperator = "AND" | "OR";
+export type AL4Cooldown = "none" | "1m" | "5m" | "15m" | "1h";
+export type AL4DeliveryChannel = "email" | "slack" | "webhook";
+
+export interface AL4Condition {
+  id: string;
+  field: AL4ConditionField;
+  operator: AL4Operator;
+  value: string;
+}
+
+export interface AL4Actions {
+  email: { enabled: boolean; address: string };
+  slack: { enabled: boolean; webhook_url: string };
+  webhook: { enabled: boolean; post_url: string };
+  auto_clip: boolean;
+}
+
+export interface AL4RulePayload {
+  name: string;
+  severity: AL4Severity;
+  conditions: AL4Condition[];
+  logic_operator: AL4LogicOperator;
+  cooldown: AL4Cooldown;
+  actions: AL4Actions;
+  enabled: boolean;
+}
+
+export interface AL4Rule extends AL4RulePayload {
+  id: string;
+  trigger_count: number;
+  trigger_window_days: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listAL4Rules(): Promise<AL4Rule[]> {
+  const { data } = await api.get("/api/alerts/rules/al4", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function createAL4Rule(payload: AL4RulePayload): Promise<AL4Rule> {
+  const { data } = await api.post("/api/alerts/rules/al4", payload, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function duplicateAL4Rule(ruleId: string): Promise<AL4Rule> {
+  const { data } = await api.post(`/api/alerts/rules/al4/${ruleId}/duplicate`, null, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function deleteAL4Rule(ruleId: string): Promise<void> {
+  await api.delete(`/api/alerts/rules/al4/${ruleId}`);
+}
+
+export async function toggleAL4Rule(ruleId: string, enabled: boolean): Promise<AL4Rule> {
+  const { data } = await api.patch(`/api/alerts/rules/al4/${ruleId}`, { enabled });
+  return data;
 }
 
 export interface AlertRuleCreatePayload {
@@ -831,6 +959,21 @@ export async function getAlertStats(): Promise<AlertStatsData> {
   return data;
 }
 
+export async function getAlertStatsSummary(): Promise<AlertStatsSummary> {
+  const { data } = await api.get("/api/alerts/stats/summary", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function updateAlertStatus(
+  alertId: string,
+  status: AlertStatus,
+): Promise<Alert> {
+  const { data } = await api.patch(`/api/alerts/${alertId}`, { status });
+  return data;
+}
+
 export async function acknowledgeAlert(alertId: string): Promise<Alert> {
   const { data } = await api.post(`/api/alerts/${alertId}/acknowledge`);
   return data;
@@ -843,6 +986,23 @@ export async function resolveAlert(alertId: string): Promise<Alert> {
 
 export async function dismissAlert(alertId: string): Promise<Alert> {
   const { data } = await api.post(`/api/alerts/${alertId}/dismiss`);
+  return data;
+}
+
+export async function patchAlertStatus(
+  alertId: string,
+  status: AlertStatus,
+): Promise<Alert> {
+  const { data } = await api.patch(`/api/alerts/${alertId}`, { status });
+  return data;
+}
+
+export async function getAlertHistory(
+  ruleId: string,
+): Promise<AlertHistoryEntry[]> {
+  const { data } = await api.get("/api/alerts/history", {
+    params: { rule_id: ruleId, limit: 5 },
+  });
   return data;
 }
 
@@ -889,6 +1049,44 @@ export async function testDeliveryChannel(
   config: Record<string, unknown>,
 ): Promise<DeliveryTestResult> {
   const { data } = await api.post("/api/alerts/delivery/test", { channel, config });
+  return data;
+}
+
+export interface NotificationChannelConfig {
+  type: "slack" | "email" | "webhook";
+  enabled: boolean;
+  severity_filter: ("critical" | "warning" | "info")[];
+  slack?: {
+    webhook_url: string;
+    channel_name: string;
+  };
+  email?: {
+    recipients: string[];
+    subject_prefix: string;
+  };
+  webhook?: {
+    url: string;
+    headers: Record<string, string>;
+    payload_template: string;
+  };
+}
+
+export interface ChannelTestResult {
+  success: boolean;
+  message: string;
+}
+
+export async function testNotificationChannel(
+  config: NotificationChannelConfig,
+): Promise<ChannelTestResult> {
+  const { data } = await api.post("/api/alerts/channels/test", config);
+  return data;
+}
+
+export async function saveNotificationChannel(
+  config: NotificationChannelConfig,
+): Promise<NotificationChannelConfig> {
+  const { data } = await api.post("/api/alerts/channels", config);
   return data;
 }
 

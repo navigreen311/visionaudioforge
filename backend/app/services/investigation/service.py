@@ -22,6 +22,10 @@ class InvestigationService:
         name: str,
         description: str,
         workspace_id: UUID,
+        priority: str = "medium",
+        status: str = "open",
+        assignee: str = "",
+        tags: Optional[list[str]] = None,
     ) -> Event:
         """Create a new investigation case (stored as Event with type='case')."""
         case = Event(
@@ -32,7 +36,10 @@ class InvestigationService:
             payload={
                 "name": name,
                 "description": description,
-                "status": "open",
+                "status": status,
+                "priority": priority,
+                "assignee": assignee,
+                "tags": tags or [],
             },
         )
         db.add(case)

@@ -1,25 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 
 import NodeConfig from "@/components/pipeline/NodeConfig";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
-
-interface PipelineRun {
-  id: string;
-  status: string;
-  created_at: string;
-  duration_ms?: number;
-}
+import RunHistory, { type PipelineRunRecord } from "@/components/pipeline/RunHistory";
+import RunProgressBar from "@/components/pipeline/RunProgressBar";
+import ScheduleModal from "@/components/pipeline/ScheduleModal";
 
 interface PipelineTemplate {
   key: string;
   name: string;
   description: string;
   category: string;
-  definition: { nodes: any[]; edges: any[] };
+  definition: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] };
+}
+
+interface DefinitionNode {
+  id: string;
+  type: string;
+  params?: Record<string, unknown>;
+}
+
+interface DefinitionEdge {
+  from: string;
+  to: string;
 }
 
 export default function PipelinePage() {
@@ -27,7 +34,8 @@ export default function PipelinePage() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [pipelineName, setPipelineName] = useState("Untitled Pipeline");
-  const [runs, setRuns] = useState<PipelineRun[]>([]);
+  const [runs, setRuns] = useState<PipelineRunRecord[]>([]);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [validationMsg, setValidationMsg] = useState<string | null>(null);
 
   // Modal states
@@ -40,9 +48,9 @@ export default function PipelinePage() {
   const [loadingTemplates, setLoadingTemplates] = useState(false);
 
   const [showScheduleModal, setShowScheduleModal] = useState(false);
-  const [scheduleFrequency, setScheduleFrequency] = useState("daily");
-  const [scheduleTime, setScheduleTime] = useState("00:00");
-  const [scheduleCron, setScheduleCron] = useState("0 0 * * *");
+
+  // Pipeline ID (for schedule & runs — uses saved pipeline id when available)
+  const currentPipelineId = "00000000-0000-0000-0000-000000000000";
 
   // Build definition from React Flow state
   const buildDefinition = useCallback(() => {
@@ -63,9 +71,9 @@ export default function PipelinePage() {
 
   // Load a pipeline definition into the canvas
   const loadDefinitionToCanvas = useCallback(
-    (definition: { nodes: any[]; edges: any[] }) => {
+    (definition: { nodes: DefinitionNode[]; edges: DefinitionEdge[] }) => {
       const newNodes: Node[] = definition.nodes.map(
-        (n: any, i: number) => ({
+        (n: DefinitionNode, i: number) => ({
           id: n.id,
           type: "default",
           position: { x: 100 + i * 250, y: 100 + (i % 2) * 80 },
@@ -77,7 +85,7 @@ export default function PipelinePage() {
         }),
       );
       const newEdges: Edge[] = definition.edges.map(
-        (e: any, i: number) => ({
+        (e: DefinitionEdge, i: number) => ({
           id: `e-${i}-${e.from}-${e.to}`,
           source: e.from,
           target: e.to,
@@ -135,56 +143,11 @@ export default function PipelinePage() {
   };
 
   const handleSelectTemplate = (template: PipelineTemplate) => {
-    loadDefinitionToCanvas(template.definition);
+    loadDefinitionToCanvas(template.definition as unknown as { nodes: DefinitionNode[]; edges: DefinitionEdge[] });
     setPipelineName(template.name);
     setShowTemplatesPanel(false);
     setValidationMsg(`Loaded template: ${template.name}`);
     setTimeout(() => setValidationMsg(null), 3000);
-  };
-
-  // --- Schedule ---
-  const updateCronFromUI = (frequency: string, time: string) => {
-    const [hours, minutes] = time.split(":").map(Number);
-    switch (frequency) {
-      case "hourly":
-        setScheduleCron(`${minutes} * * * *`);
-        break;
-      case "daily":
-        setScheduleCron(`${minutes} ${hours} * * *`);
-        break;
-      case "weekly":
-        setScheduleCron(`${minutes} ${hours} * * 1`);
-        break;
-      case "monthly":
-        setScheduleCron(`${minutes} ${hours} 1 * *`);
-        break;
-      default:
-        setScheduleCron(`${minutes} ${hours} * * *`);
-    }
-  };
-
-  const handleSchedule = async () => {
-    try {
-      const resp = await fetch("/api/pipeline/schedule", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          pipeline_id: "00000000-0000-0000-0000-000000000000",
-          cron: scheduleCron,
-        }),
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        setValidationMsg(`Scheduled! Next run: ${data.next_run}`);
-        setShowScheduleModal(false);
-      } else {
-        const err = await resp.json();
-        setValidationMsg(`Schedule failed: ${err.detail}`);
-      }
-    } catch {
-      setValidationMsg("Schedule request failed");
-    }
-    setTimeout(() => setValidationMsg(null), 5000);
   };
 
   // Toolbar actions
@@ -232,8 +195,23 @@ export default function PipelinePage() {
 
   const handleRun = async () => {
     setValidationMsg("Running pipeline...");
-    setValidationMsg("Pipeline run dispatched (requires saved pipeline)");
-    setTimeout(() => setValidationMsg(null), 3000);
+    try {
+      const resp = await fetch("/api/pipeline/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline_id: currentPipelineId }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setActiveRunId(data.run_id);
+        setValidationMsg("Pipeline run started!");
+      } else {
+        setValidationMsg("Failed to start pipeline run");
+      }
+    } catch {
+      setValidationMsg("Run request failed");
+    }
+    setTimeout(() => setValidationMsg(null), 5000);
   };
 
   const handleClear = () => {
@@ -401,119 +379,26 @@ export default function PipelinePage() {
       )}
 
       {/* Schedule Modal */}
-      {showScheduleModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">
-              Schedule Pipeline
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Frequency
-                </label>
-                <select
-                  value={scheduleFrequency}
-                  onChange={(e) => {
-                    setScheduleFrequency(e.target.value);
-                    updateCronFromUI(e.target.value, scheduleTime);
-                  }}
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                >
-                  <option value="hourly">Hourly</option>
-                  <option value="daily">Daily</option>
-                  <option value="weekly">Weekly (Monday)</option>
-                  <option value="monthly">Monthly (1st)</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Time
-                </label>
-                <input
-                  type="time"
-                  value={scheduleTime}
-                  onChange={(e) => {
-                    setScheduleTime(e.target.value);
-                    updateCronFromUI(scheduleFrequency, e.target.value);
-                  }}
-                  className="w-full border border-gray-300 rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                />
-              </div>
-              <div className="bg-gray-50 rounded-lg p-3">
-                <span className="text-xs text-gray-500">Cron expression: </span>
-                <code className="text-sm font-mono text-gray-700">
-                  {scheduleCron}
-                </code>
-              </div>
-            </div>
-            <div className="flex justify-end gap-3 mt-6">
-              <button
-                onClick={() => setShowScheduleModal(false)}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSchedule}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
-              >
-                Schedule
-              </button>
-            </div>
-          </div>
+      <ScheduleModal
+        pipelineId={currentPipelineId}
+        open={showScheduleModal}
+        onClose={() => setShowScheduleModal(false)}
+        onSaved={() => setValidationMsg("Schedule saved!")}
+      />
+
+      {/* Live run progress */}
+      {activeRunId && (
+        <div className="px-4 py-2 border-t border-gray-200 bg-white">
+          <RunProgressBar runId={activeRunId} />
         </div>
       )}
 
       {/* Run history panel */}
-      <div className="h-36 bg-white border-t border-gray-200 overflow-y-auto">
+      <div className="h-48 bg-white border-t border-gray-200 overflow-y-auto">
         <div className="px-4 py-2 border-b border-gray-100">
           <h4 className="text-sm font-semibold text-gray-600">Run History</h4>
         </div>
-        {runs.length === 0 ? (
-          <div className="flex items-center justify-center h-20 text-sm text-gray-400">
-            No pipeline runs yet
-          </div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-gray-500 border-b border-gray-100">
-                <th className="px-4 py-1 font-medium">Run ID</th>
-                <th className="px-4 py-1 font-medium">Status</th>
-                <th className="px-4 py-1 font-medium">Duration</th>
-                <th className="px-4 py-1 font-medium">Started</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.map((run) => (
-                <tr key={run.id} className="border-b border-gray-50">
-                  <td className="px-4 py-1 font-mono text-xs">
-                    {run.id.slice(0, 8)}
-                  </td>
-                  <td className="px-4 py-1">
-                    <span
-                      className={`inline-block px-1.5 py-0.5 rounded text-xs font-medium ${
-                        run.status === "completed"
-                          ? "bg-green-100 text-green-700"
-                          : run.status === "failed"
-                            ? "bg-red-100 text-red-700"
-                            : "bg-yellow-100 text-yellow-700"
-                      }`}
-                    >
-                      {run.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-1">
-                    {run.duration_ms ? `${run.duration_ms}ms` : "-"}
-                  </td>
-                  <td className="px-4 py-1 text-gray-500">
-                    {new Date(run.created_at).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+        <RunHistory pipelineId={currentPipelineId} runs={runs.length > 0 ? runs : undefined} />
       </div>
     </div>
   );
