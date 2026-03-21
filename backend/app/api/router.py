@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
+    byom,
     annotate_studio,
     annotations,
     assets,
@@ -87,5 +88,6 @@ api_router.include_router(verticals.router)
 api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
+api_router.include_router(byom.router)
 api_router.include_router(developer.router)
 api_router.include_router(dashboard.router)

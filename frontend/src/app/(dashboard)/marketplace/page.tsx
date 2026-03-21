@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import BYOMTab from "@/components/marketplace/BYOMTab";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -18,12 +19,6 @@ interface Plugin {
   enabled?: boolean;
 }
 
-interface BYOMAdapter {
-  adapter_id: string;
-  model_name: string;
-  framework: string;
-  status: string;
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -69,7 +64,6 @@ const WIDGET_TYPES = [
   "copilot_mini",
 ];
 
-const FRAMEWORKS = ["pytorch", "tensorflow", "onnx", "sklearn", "custom"];
 
 // ---------------------------------------------------------------------------
 // Helper: star rating display
@@ -103,14 +97,8 @@ export default function MarketplacePage() {
   const [search, setSearch] = useState("");
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [installed, setInstalled] = useState<Plugin[]>([]);
-  const [adapters, setAdapters] = useState<BYOMAdapter[]>([]);
   const [embedCode, setEmbedCode] = useState("");
   const [selectedWidget, setSelectedWidget] = useState(WIDGET_TYPES[0]);
-
-  // BYOM form state
-  const [byomName, setByomName] = useState("");
-  const [byomFramework, setByomFramework] = useState(FRAMEWORKS[0]);
-  const [byomUrl, setByomUrl] = useState("");
 
   // Marketplace data — seeded from built-in list
   useEffect(() => {
@@ -148,19 +136,6 @@ export default function MarketplacePage() {
 
   const handleUninstall = (pluginId: string) => {
     setInstalled((prev) => prev.filter((p) => p.plugin_id !== pluginId));
-  };
-
-  const handleByomRegister = () => {
-    if (!byomName || !byomUrl) return;
-    const adapter: BYOMAdapter = {
-      adapter_id: crypto.randomUUID(),
-      model_name: byomName,
-      framework: byomFramework,
-      status: "registered",
-    };
-    setAdapters((prev) => [...prev, adapter]);
-    setByomName("");
-    setByomUrl("");
   };
 
   const handleGenerateEmbed = () => {
@@ -356,83 +331,7 @@ export default function MarketplacePage() {
       {/* ================================================================= */}
       {/* BYOM Tab                                                          */}
       {/* ================================================================= */}
-      {tab === "byom" && (
-        <div className="space-y-6">
-          {/* Register form */}
-          <div className="border border-gray-200 rounded-xl bg-white p-6 shadow-sm space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Register a Model</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Model Name</label>
-                <input
-                  type="text"
-                  value={byomName}
-                  onChange={(e) => setByomName(e.target.value)}
-                  placeholder="my-custom-model"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Framework</label>
-                <select
-                  value={byomFramework}
-                  onChange={(e) => setByomFramework(e.target.value)}
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"
-                >
-                  {FRAMEWORKS.map((fw) => (
-                    <option key={fw} value={fw}>
-                      {fw}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Model URL or Path</label>
-                <input
-                  type="text"
-                  value={byomUrl}
-                  onChange={(e) => setByomUrl(e.target.value)}
-                  placeholder="https://models.example.com/model.pt"
-                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none"
-                />
-              </div>
-            </div>
-            <button
-              onClick={handleByomRegister}
-              disabled={!byomName || !byomUrl}
-              className="px-6 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
-            >
-              Register Model
-            </button>
-          </div>
-
-          {/* Adapter list */}
-          <div className="space-y-3">
-            <h2 className="text-lg font-semibold text-gray-900">Your Models</h2>
-            {adapters.length === 0 && (
-              <p className="text-sm text-gray-400">No models registered yet.</p>
-            )}
-            {adapters.map((a) => (
-              <div
-                key={a.adapter_id}
-                className="flex items-center gap-4 border border-gray-200 rounded-xl bg-white p-4 shadow-sm"
-              >
-                <span className="text-2xl">🧠</span>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-semibold text-gray-900">{a.model_name}</h3>
-                  <p className="text-xs text-gray-500">
-                    Framework: {a.framework} | Status: {a.status}
-                  </p>
-                </div>
-                <button className="px-3 py-1 text-xs border border-brand-300 rounded-lg text-brand-600 hover:bg-brand-50">
-                  Test
-                </button>
-                <span className="text-[10px] text-gray-400 font-mono">{a.adapter_id.slice(0, 8)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {tab === "byom" && <BYOMTab />}
 
       {/* ================================================================= */}
       {/* Widgets Tab                                                       */}
