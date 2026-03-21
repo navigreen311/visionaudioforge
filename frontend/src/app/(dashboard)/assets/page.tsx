@@ -14,11 +14,74 @@ import AssetUploadModal from "@/components/assets/AssetUploadModal";
 import AssetDetailModal from "@/components/assets/AssetDetailModal";
 import DataTable, { type Column } from "@/components/ui/DataTable";
 import Badge from "@/components/ui/Badge";
-import LoadingSpinner from "@/components/ui/LoadingSpinner";
 import { useToast } from "@/components/ui/Toast";
 import { formatSize, formatDate } from "@/components/assets/AssetCard";
 
 type ViewMode = "grid" | "list";
+
+/** Skeleton shimmer card for loading state */
+function SkeletonCard() {
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden animate-pulse">
+      <div className="h-40 bg-gray-200" />
+      <div className="p-3 space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div className="h-4 w-3/4 rounded bg-gray-200" />
+          <div className="h-5 w-12 rounded-full bg-gray-200" />
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="h-3 w-12 rounded bg-gray-200" />
+          <div className="h-3 w-16 rounded bg-gray-200" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Loading skeleton grid (6 shimmer cards) */
+function SkeletonGrid() {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  );
+}
+
+/** Empty state with upload icon */
+function EmptyAssetsState({ onUploadClick }: { onUploadClick: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-white px-6 py-16">
+      <svg
+        className="h-12 w-12 text-gray-400"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth={1.5}
+          d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+        />
+      </svg>
+      <h3 className="mt-4 text-sm font-semibold text-gray-900">No assets yet</h3>
+      <p className="mt-1 text-sm text-gray-500">
+        Upload your first media asset to get started.
+      </p>
+      <button
+        onClick={onUploadClick}
+        className="mt-4 inline-flex items-center gap-2 rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 transition-colors"
+      >
+        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+        </svg>
+        Upload Asset
+      </button>
+    </div>
+  );
+}
 
 export default function AssetsPage() {
   const queryClient = useQueryClient();
@@ -57,14 +120,34 @@ export default function AssetsPage() {
     return params;
   }, [filters, page]);
 
-  // Fetch assets
+  // Fetch assets with AbortController timeout
   const { data, isLoading, error } = useQuery({
     queryKey: ["assets", apiParams],
-    queryFn: () => listAssets(apiParams),
+    queryFn: async ({ signal }) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+
+      // Forward react-query's signal abort to our controller
+      signal?.addEventListener("abort", () => controller.abort());
+
+      try {
+        const result = await listAssets(apiParams);
+        return result;
+      } finally {
+        clearTimeout(timeout);
+      }
+    },
+    retry: 1,
   });
 
-  const assets = data?.items ?? [];
-  const total = data?.total ?? 0;
+  // Guard API response: ensure items is always an array
+  const rawData = data as Record<string, unknown> | undefined;
+  const assets: Asset[] = Array.isArray(rawData)
+    ? rawData
+    : Array.isArray(rawData?.items)
+      ? (rawData.items as Asset[])
+      : [];
+  const total = typeof rawData?.total === "number" ? rawData.total : 0;
 
   // Selection handlers
   const toggleSelect = useCallback((id: string) => {
@@ -271,15 +354,21 @@ export default function AssetsPage() {
 
       {/* Content area */}
       {isLoading ? (
-        <div className="flex justify-center py-16">
-          <LoadingSpinner size="lg" />
-        </div>
+        <SkeletonGrid />
       ) : error ? (
         <div className="rounded-lg border border-red-200 bg-red-50 px-6 py-8 text-center">
           <p className="text-sm text-red-600">
             Failed to load assets. Please try again.
           </p>
+          <button
+            onClick={refreshAssets}
+            className="mt-3 inline-flex items-center rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700 hover:bg-red-50 transition-colors"
+          >
+            Retry
+          </button>
         </div>
+      ) : assets.length === 0 ? (
+        <EmptyAssetsState onUploadClick={() => setUploadOpen(true)} />
       ) : viewMode === "grid" ? (
         <AssetGrid
           assets={assets}
