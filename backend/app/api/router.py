@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
+    annotate,
     annotations,
     assets,
     audio,
@@ -67,6 +68,7 @@ api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
 api_router.include_router(investigation_mock.router)
+api_router.include_router(annotate.router)
 api_router.include_router(annotations.router)
 api_router.include_router(governance.router)
 api_router.include_router(integrations.router)
