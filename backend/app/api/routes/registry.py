@@ -34,6 +34,9 @@ async def register_model(
         backbone=body.backbone,
         metrics=body.metrics,
         workspace_id=body.workspace_id,
+        tags=body.tags,
+        description=body.description,
+        status=body.status,
     )
     return record
 
