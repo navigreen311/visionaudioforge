@@ -11,7 +11,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from app.schemas.audio import AudioAugmentResponse
 from app.services.audio.augmentation import AudioAugmenter
@@ -203,17 +203,94 @@ async def augment(
 @router.post("/transcribe")
 async def transcribe(
     file: UploadFile = File(...),
-    language: str | None = Form(None),
+    model: str = Form("base"),
+    language: str = Form("auto"),
+    task: str = Form("transcribe"),
+    word_timestamps: bool = Form(True),
 ):
-    """Transcribe speech in an uploaded audio file using Whisper."""
+    """Transcribe speech in an uploaded audio file using Whisper.
+
+    Parameters
+    ----------
+    file : UploadFile
+        Audio file to transcribe.
+    model : str
+        Whisper model size (tiny/base/small/medium/large). Default ``"base"``.
+    language : str
+        Language code or ``"auto"`` for auto-detection. Default ``"auto"``.
+    task : str
+        ``"transcribe"`` or ``"translate"`` (translate to English). Default ``"transcribe"``.
+    word_timestamps : bool
+        Whether to include word-level timestamps. Default ``True``.
+
+    Returns
+    -------
+    dict
+        ``{ "transcript": "", "words": [], "language": "en", "speakers": [], "duration_sec": 0.0 }``
+    """
     try:
         audio_bytes = await file.read()
         audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
 
-    result = await _stt.transcribe(audio, sr, language=language)
+    lang_arg = None if language == "auto" else language
+    result = await _stt.transcribe(
+        audio,
+        sr,
+        language=lang_arg,
+        model=model,
+        task=task,
+        word_timestamps=word_timestamps,
+    )
     return result
+
+
+# ---------------------------------------------------------------------------
+# MFCC Export
+# ---------------------------------------------------------------------------
+
+
+@router.post("/export-mfcc")
+async def export_mfcc(
+    file: UploadFile = File(...),
+    n_mfcc: int = Form(13),
+):
+    """Compute MFCCs and return the numpy array as raw bytes.
+
+    Parameters
+    ----------
+    file : UploadFile
+        Audio file to analyse.
+    n_mfcc : int
+        Number of MFCC coefficients to extract. Default ``13``.
+
+    Returns
+    -------
+    StreamingResponse
+        Numpy array serialised via ``np.save`` as ``application/octet-stream``.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    try:
+        mfcc_result = _analyzer.compute_mfcc(audio, sr, n_mfcc=n_mfcc)
+        mfcc_array = mfcc_result["mfcc"]
+
+        buf = io.BytesIO()
+        np.save(buf, mfcc_array)
+        buf.seek(0)
+
+        return StreamingResponse(
+            buf,
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment; filename=mfcc.npy"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"MFCC computation error: {exc}")
 
 
 # ---------------------------------------------------------------------------
