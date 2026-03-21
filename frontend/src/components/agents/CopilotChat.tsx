@@ -17,12 +17,15 @@ interface CopilotChatProps {
   agentId: string;
   skillPack: string;
   wsUrl: string;
+  /** If set, this message is auto-filled and submitted on mount. */
+  initialMessage?: string;
 }
 
 export default function CopilotChat({
   agentId,
   skillPack,
   wsUrl,
+  initialMessage,
 }: CopilotChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -160,6 +163,30 @@ export default function CopilotChat({
       ws!.onopen = sendPayload;
     }
   }, [input, isStreaming, agentId, skillPack, connectWs]);
+
+  // Auto-submit initialMessage on mount (once only)
+  const initialSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (initialMessage && !initialSubmittedRef.current) {
+      initialSubmittedRef.current = true;
+      setInput(initialMessage);
+    }
+  }, [initialMessage]);
+
+  // When input is set from initialMessage, trigger send on next render
+  useEffect(() => {
+    if (
+      initialSubmittedRef.current &&
+      input === initialMessage &&
+      input.trim() &&
+      !isStreaming &&
+      messages.length === 0
+    ) {
+      sendMessage();
+    }
+    // Only run when input changes to the initial message value
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
