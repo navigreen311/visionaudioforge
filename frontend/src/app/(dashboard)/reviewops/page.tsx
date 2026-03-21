@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import ShiftsTabComponent from "@/components/reviewops/ShiftsTab";
 
 // ------------------------------------------------------------------
 // Types
@@ -32,15 +33,6 @@ interface QualityTrend {
   avg_score: number;
   review_count: number;
   sla_compliance: number;
-}
-
-interface Shift {
-  shift_id: string;
-  reviewer_id: string;
-  start_time: string;
-  end_time: string;
-  review_types: string[] | null;
-  active: boolean;
 }
 
 // ------------------------------------------------------------------
@@ -408,164 +400,8 @@ function QualityTab() {
 }
 
 // ------------------------------------------------------------------
-// Tab: Shifts
+// Tab: Shifts (extracted to components/reviewops/ShiftsTab.tsx)
 // ------------------------------------------------------------------
-
-function ShiftsTab() {
-  const [shifts, setShifts] = useState<Shift[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ reviewer_id: "", start: "", end: "", review_types: "" });
-
-  const fetchShifts = useCallback(async () => {
-    try {
-      const res = await fetch(`${API}/shifts?workspace_id=${WS_ID}`);
-      if (res.ok) setShifts(await res.json());
-    } catch {
-      /* empty */
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchShifts();
-  }, [fetchShifts]);
-
-  const handleCreateShift = async () => {
-    try {
-      await fetch(`${API}/shifts?workspace_id=${WS_ID}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          reviewer_id: form.reviewer_id,
-          start: form.start,
-          end: form.end,
-          review_types: form.review_types ? form.review_types.split(",").map((s) => s.trim()) : null,
-        }),
-      });
-      setShowForm(false);
-      setForm({ reviewer_id: "", start: "", end: "", review_types: "" });
-      fetchShifts();
-    } catch {
-      /* empty */
-    }
-  };
-
-  if (loading) return <div className="text-center py-12 text-gray-400">Loading...</div>;
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => setShowForm(!showForm)}
-          className="rounded-lg bg-brand-600 px-4 py-1.5 text-sm text-white hover:bg-brand-700"
-        >
-          {showForm ? "Cancel" : "Create Shift"}
-        </button>
-      </div>
-
-      {/* Create shift form */}
-      {showForm && (
-        <div className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Reviewer ID</label>
-              <input
-                type="text"
-                value={form.reviewer_id}
-                onChange={(e) => setForm({ ...form, reviewer_id: e.target.value })}
-                className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                placeholder="UUID"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Review Types (comma separated)</label>
-              <input
-                type="text"
-                value={form.review_types}
-                onChange={(e) => setForm({ ...form, review_types: e.target.value })}
-                className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-                placeholder="annotation_qa, detection_verify"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Start</label>
-              <input
-                type="datetime-local"
-                value={form.start}
-                onChange={(e) => setForm({ ...form, start: e.target.value })}
-                className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">End</label>
-              <input
-                type="datetime-local"
-                value={form.end}
-                onChange={(e) => setForm({ ...form, end: e.target.value })}
-                className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm"
-              />
-            </div>
-          </div>
-          <button
-            onClick={handleCreateShift}
-            className="rounded-lg bg-green-600 px-4 py-1.5 text-sm text-white hover:bg-green-700"
-          >
-            Save Shift
-          </button>
-        </div>
-      )}
-
-      {/* Shift calendar/list */}
-      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-        <table className="min-w-full divide-y divide-gray-200 text-sm">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Reviewer</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Start</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">End</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Types</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Status</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {shifts.map((s) => (
-              <tr key={s.shift_id} className="hover:bg-gray-50">
-                <td className="px-4 py-3 font-mono text-xs">{s.reviewer_id.slice(0, 8)}...</td>
-                <td className="px-4 py-3 text-gray-600">
-                  {new Date(s.start_time).toLocaleString()}
-                </td>
-                <td className="px-4 py-3 text-gray-600">
-                  {new Date(s.end_time).toLocaleString()}
-                </td>
-                <td className="px-4 py-3 text-gray-600">
-                  {s.review_types?.join(", ") || "All"}
-                </td>
-                <td className="px-4 py-3">
-                  <Badge className={s.active ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-600"}>
-                    {s.active ? "Active" : "Ended"}
-                  </Badge>
-                </td>
-                <td className="px-4 py-3">
-                  {s.active && (
-                    <button className="text-xs text-orange-600 hover:underline">Handoff</button>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {shifts.length === 0 && (
-              <tr>
-                <td colSpan={6} className="text-center py-8 text-gray-400">No shifts scheduled</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
 // ------------------------------------------------------------------
 // Main Page
@@ -607,7 +443,7 @@ export default function ReviewOpsPage() {
       {activeTab === "Review Queue" && <ReviewQueueTab />}
       {activeTab === "Leaderboard" && <LeaderboardTab />}
       {activeTab === "Quality" && <QualityTab />}
-      {activeTab === "Shifts" && <ShiftsTab />}
+      {activeTab === "Shifts" && <ShiftsTabComponent />}
     </div>
   );
 }
