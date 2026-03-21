@@ -4,6 +4,8 @@ model cards, audit trails, and explainability."""
 from __future__ import annotations
 
 import base64
+import random
+from typing import Optional
 from uuid import UUID
 
 import numpy as np
@@ -32,13 +34,67 @@ class CalibrationRequest(BaseModel):
     n_bins: int = Field(default=10, ge=2, le=100)
 
 
-class DriftRequest(BaseModel):
-    reference_stats: dict[str, dict]
-    current_stats: dict[str, dict]
+class DriftFeatureResponse(BaseModel):
+    feature: str
+    reference_mean: float
+    current_mean: float
+    drift_score: float
+    status: str  # "stable" | "minor" | "major"
+    ref_distribution: list[float]
+    cur_distribution: list[float]
+
+
+class DriftAnalysisResponse(BaseModel):
+    overall_psi: float
+    status: str  # "stable" | "minor" | "major"
+    features: list[DriftFeatureResponse]
+    method: str
+    threshold: float
 
 
 class UncertaintyRequest(BaseModel):
     predictions: list[list[float]]
+
+
+# ------------------------------------------------------------------
+# Helpers — mock drift data generator
+# ------------------------------------------------------------------
+
+def _generate_mock_drift_features(
+    feature_names: list[str],
+    threshold: float,
+) -> list[dict]:
+    """Return deterministic-looking mock drift data for each feature."""
+    features: list[dict] = []
+    rng = random.Random(42)
+
+    for name in feature_names:
+        ref_mean = round(rng.uniform(0.2, 0.8), 4)
+        shift = round(rng.uniform(-0.15, 0.25), 4)
+        cur_mean = round(ref_mean + shift, 4)
+        drift_score = round(abs(shift) * rng.uniform(1.5, 4.0), 4)
+
+        if drift_score >= threshold * 2:
+            status = "major"
+        elif drift_score >= threshold:
+            status = "minor"
+        else:
+            status = "stable"
+
+        ref_dist = [round(rng.gauss(ref_mean, 0.12), 4) for _ in range(50)]
+        cur_dist = [round(rng.gauss(cur_mean, 0.14), 4) for _ in range(50)]
+
+        features.append({
+            "feature": name,
+            "reference_mean": ref_mean,
+            "current_mean": cur_mean,
+            "drift_score": drift_score,
+            "status": status,
+            "ref_distribution": ref_dist,
+            "cur_distribution": cur_dist,
+        })
+
+    return features
 
 
 # ------------------------------------------------------------------
@@ -58,10 +114,55 @@ async def calibration_analysis(body: CalibrationRequest):
 
 
 @router.post("/drift")
-async def drift_detection(body: DriftRequest):
-    """Detect data drift between reference and current feature statistics."""
-    result = await _svc.drift_detection(body.reference_stats, body.current_stats)
-    return result
+async def drift_detection(
+    reference_file: Optional[UploadFile] = File(None),
+    current_file: Optional[UploadFile] = File(None),
+    use_prod_data: Optional[str] = Form(None),
+    prod_window_days: Optional[str] = Form(None),
+    feature_names: Optional[str] = Form(None),
+    method: str = Form("psi"),
+    threshold: str = Form("0.1"),
+):
+    """Detect data drift between reference and current feature distributions.
+
+    Accepts CSV file uploads or production-data flag. Returns mock data
+    (V2 will integrate real statistical tests).
+    """
+    thresh = float(threshold)
+
+    if feature_names and feature_names.strip():
+        names = [n.strip() for n in feature_names.split(",") if n.strip()]
+    else:
+        names = [
+            "edge_density",
+            "color_histogram",
+            "brightness",
+            "contrast",
+            "texture_score",
+            "noise_level",
+            "sharpness",
+        ]
+
+    features = _generate_mock_drift_features(names, thresh)
+
+    overall_psi = round(
+        sum(f["drift_score"] for f in features) / max(len(features), 1), 4
+    )
+
+    if overall_psi >= thresh * 2:
+        overall_status = "major"
+    elif overall_psi >= thresh:
+        overall_status = "minor"
+    else:
+        overall_status = "stable"
+
+    return DriftAnalysisResponse(
+        overall_psi=overall_psi,
+        status=overall_status,
+        features=[DriftFeatureResponse(**f) for f in features],
+        method=method,
+        threshold=thresh,
+    )
 
 
 @router.post("/uncertainty")

@@ -6,6 +6,7 @@ import Card from "@/components/ui/Card";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import FileUpload from "@/components/ui/FileUpload";
+import DriftDetectionTab from "@/components/validate/DriftDetectionTab";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -26,13 +27,6 @@ interface CalibrationResult {
   ece: number;
   mce: number;
   is_calibrated: boolean;
-}
-
-interface DriftResult {
-  drift_detected: boolean;
-  drift_score: number;
-  drifted_features: string[];
-  recommendation: string;
 }
 
 interface FeatureAttribution {
@@ -200,105 +194,6 @@ function CalibrationTab() {
             </div>
           </Card>
         </>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Drift Detection Tab                                                */
-/* ------------------------------------------------------------------ */
-
-function DriftTab() {
-  const [result, setResult] = useState<DriftResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [refText, setRefText] = useState(
-    '{"feature_a": {"mean": 0.5, "std": 0.1}, "feature_b": {"mean": 10.0, "std": 1.0}}'
-  );
-  const [curText, setCurText] = useState(
-    '{"feature_a": {"mean": 0.55, "std": 0.1}, "feature_b": {"mean": 10.5, "std": 1.0}}'
-  );
-
-  const handleDetect = async () => {
-    setError(null);
-    try {
-      const reference_stats = JSON.parse(refText);
-      const current_stats = JSON.parse(curText);
-      setLoading(true);
-      const resp = await fetch(`${API_BASE}/api/validate/drift`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference_stats, current_stats }),
-      });
-      if (!resp.ok) throw new Error(await resp.text());
-      setResult(await resp.json());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Invalid JSON or request failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="space-y-6">
-      <Card title="Feature Statistics">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Reference Stats (JSON)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-              rows={5}
-              value={refText}
-              onChange={(e) => setRefText(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Current Stats (JSON)
-            </label>
-            <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono"
-              rows={5}
-              value={curText}
-              onChange={(e) => setCurText(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="mt-4">
-          <Button onClick={handleDetect} disabled={loading}>
-            {loading ? "Detecting..." : "Run Drift Detection"}
-          </Button>
-        </div>
-        {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-      </Card>
-
-      {result && (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Card title="Drift Score">
-            <p className="text-3xl font-bold text-gray-900">{result.drift_score.toFixed(4)}</p>
-            <Badge variant={result.drift_detected ? "error" : "success"}>
-              {result.drift_detected ? "Drift Detected" : "No Drift"}
-            </Badge>
-          </Card>
-          <Card title="Details">
-            {result.drifted_features.length > 0 ? (
-              <ul className="space-y-1">
-                {result.drifted_features.map((f) => (
-                  <li key={f} className="flex items-center gap-2 text-sm">
-                    <span className="inline-block h-2 w-2 rounded-full bg-red-500" />
-                    <span className="font-medium text-red-700">{f}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-gray-500">All features within expected range.</p>
-            )}
-            <p className="mt-3 text-sm text-gray-600">{result.recommendation}</p>
-          </Card>
-        </div>
       )}
     </div>
   );
@@ -585,7 +480,7 @@ export default function ValidatePage() {
 
   const tabs = [
     { id: "calibration", label: "Calibration", content: <CalibrationTab /> },
-    { id: "drift", label: "Drift Detection", content: <DriftTab /> },
+    { id: "drift", label: "Drift Detection", content: <DriftDetectionTab /> },
     { id: "explainability", label: "Explainability", content: <ExplainabilityTab /> },
     { id: "model-cards", label: "Model Cards", content: <ModelCardsTab /> },
   ];
