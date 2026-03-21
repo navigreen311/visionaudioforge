@@ -153,6 +153,7 @@ async def list_experiments(
         items=items,
         total=total,
         page=(skip // limit) + 1,
+        size=limit,
         page_size=limit,
         total_pages=total_pages,
     )

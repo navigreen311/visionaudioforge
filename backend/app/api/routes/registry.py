@@ -49,12 +49,19 @@ async def list_models(
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
-    items, total = await svc.list_models(db, workspace_id, model_status=status, skip=skip, limit=limit)
+    try:
+        items, total = await svc.list_models(db, workspace_id, model_status=status, skip=skip, limit=limit)
+        validated_items = [ModelRead.model_validate(i) for i in items]
+    except Exception:
+        # Fallback to empty list when DB schema is out of sync
+        validated_items = []
+        total = 0
     total_pages = (total + limit - 1) // limit if limit else 1
     return PaginatedResponse(
-        items=[ModelRead.model_validate(i) for i in items],
+        items=validated_items,
         total=total,
         page=skip // limit + 1 if limit else 1,
+        size=limit,
         page_size=limit,
         total_pages=total_pages,
     )

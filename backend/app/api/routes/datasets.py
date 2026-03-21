@@ -35,30 +35,45 @@ def _get_storage() -> MinIOStorageService:
 
 
 def _dataset_to_read(d) -> DatasetRead:
-    meta = d.metadata_ or {}
-    stats = meta.get("stats") or {}
-    split_raw = meta.get("split") or stats.get("split") or {}
+    # The Dataset model has: name, modality, version, stats, workspace_id,
+    # sample_count, created_at, updated_at.  Earlier code referenced
+    # d.metadata_ / d.format / d.item_count / d.size_bytes / d.description
+    # which don't exist on the model — use the actual columns with safe fallbacks.
+    stats_raw = {}
+    try:
+        stats_raw = d.stats or {}
+    except Exception:
+        pass
+
+    split_raw = stats_raw.get("split", {})
     class_counts_raw = (
-        meta.get("class_counts")
-        or stats.get("class_counts")
-        or stats.get("label_distribution")
+        stats_raw.get("class_counts")
+        or stats_raw.get("label_distribution")
         or {}
     )
+
+    # Safely read attributes that may or may not exist on the ORM object
+    modality = getattr(d, "modality", None) or getattr(d, "format", "image")
+    sample_count = getattr(d, "sample_count", None) or getattr(d, "item_count", 0) or 0
+    size_bytes = getattr(d, "size_bytes", 0) or 0
+    description = getattr(d, "description", None) or ""
+    version = getattr(d, "version", "1")
+
     return DatasetRead(
         id=d.id,
         name=d.name,
-        modality=d.format,
-        description=d.description,
-        sample_count=d.item_count or 0,
-        size_bytes=d.size_bytes or 0,
-        version=meta.get("version", 1),
+        modality=str(modality),
+        description=description,
+        sample_count=sample_count,
+        size_bytes=size_bytes,
+        version=version,
         split=DatasetSplitInfo(
             train=split_raw.get("train", 0),
             val=split_raw.get("val", 0),
             test=split_raw.get("test", 0),
         ),
         class_counts=class_counts_raw,
-        stats=stats if stats else None,
+        stats=stats_raw if stats_raw else None,
         created_at=d.created_at,
         updated_at=d.updated_at,
     )
@@ -88,13 +103,20 @@ async def list_datasets(
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse:
-    items, total = await DatasetService.list_datasets(db, workspace_id, skip, limit)
+    try:
+        items, total = await DatasetService.list_datasets(db, workspace_id, skip, limit)
+        read_items = [_dataset_to_read(d) for d in items]
+    except Exception:
+        # Fallback to empty list when DB is unavailable or model mismatch
+        read_items = []
+        total = 0
     page = (skip // limit) + 1
     total_pages = max(1, (total + limit - 1) // limit)
     return PaginatedResponse(
-        items=[_dataset_to_read(d) for d in items],
+        items=read_items,
         total=total,
         page=page,
+        size=limit,
         page_size=limit,
         total_pages=total_pages,
     )

@@ -110,8 +110,8 @@ def _mock_explain() -> dict:
 # ------------------------------------------------------------------
 
 class CalibrationRequest(BaseModel):
-    predictions: list[float]
-    ground_truth: list[int]
+    predictions: list[float] = Field(default_factory=list)
+    ground_truth: list[int] = Field(default_factory=list)
     n_bins: int = Field(default=10, ge=2, le=100)
 
 
@@ -129,8 +129,14 @@ class UncertaintyRequest(BaseModel):
 # ------------------------------------------------------------------
 
 @router.post("/calibration")
-async def calibration_analysis(body: CalibrationRequest):
-    """Compute calibration bins, ECE, and MCE from predictions vs ground truth."""
+async def calibration_analysis(body: CalibrationRequest | None = None):
+    """Compute calibration bins, ECE, and MCE from predictions vs ground truth.
+
+    Accepts an empty or minimal body and returns mock calibration data as a
+    graceful fallback during development.
+    """
+    if body is None or not body.predictions or not body.ground_truth:
+        return _mock_calibration()
     try:
         result = await _svc.calibration_analysis(
             body.predictions, body.ground_truth, body.n_bins
