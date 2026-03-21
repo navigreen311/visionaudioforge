@@ -9,6 +9,16 @@ import NodeDetail from "@/components/knowledge-graph/NodeDetail";
 import GraphFilters, {
   GraphFilterState,
 } from "@/components/knowledge-graph/GraphFilters";
+import PathFinder, {
+  PathHighlight,
+} from "@/components/knowledge-graph/PathFinder";
+import GraphToolbar, {
+  LayoutMode,
+  ToolbarAction,
+} from "@/components/knowledge-graph/GraphToolbar";
+import GraphMinimap, {
+  Viewport,
+} from "@/components/knowledge-graph/GraphMinimap";
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -90,6 +100,24 @@ export default function KnowledgeGraphPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nlAnswer, setNlAnswer] = useState<string | null>(null);
+
+  // KG4/KG5 state
+  const [layout, setLayout] = useState<LayoutMode>("force");
+  const [pathHighlight, setPathHighlight] = useState<PathHighlight | null>(null);
+  const [showPathFinder, setShowPathFinder] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+
+  const viewport: Viewport = useMemo(
+    () => ({
+      x: panOffset.x,
+      y: panOffset.y,
+      width: 900,
+      height: 600,
+      zoom,
+    }),
+    [panOffset, zoom],
+  );
 
   // Filters
   const availableEdgeTypes = useMemo(() => {
@@ -197,6 +225,48 @@ export default function KnowledgeGraphPage() {
     [nodes]
   );
 
+  // Path highlight handlers
+  const handleHighlightPath = useCallback((highlight: PathHighlight) => {
+    setPathHighlight(highlight);
+  }, []);
+
+  const handleClearPath = useCallback(() => {
+    setPathHighlight(null);
+  }, []);
+
+  // Toolbar action handler
+  const handleToolbarAction = useCallback((action: ToolbarAction) => {
+    switch (action) {
+      case "find-path":
+        setShowPathFinder((prev) => !prev);
+        break;
+      case "add-entity":
+      case "add-relationship":
+      case "extract-from-asset":
+      case "export":
+        // Stubs for future implementation
+        break;
+    }
+  }, []);
+
+  // Zoom handlers
+  const handleZoomIn = useCallback(() => {
+    setZoom((z) => Math.min(z * 1.25, 4));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setZoom((z) => Math.max(z / 1.25, 0.25));
+  }, []);
+
+  const handleZoomFit = useCallback(() => {
+    setZoom(1);
+    setPanOffset({ x: 0, y: 0 });
+  }, []);
+
+  const handleMinimapPan = useCallback((x: number, y: number) => {
+    setPanOffset({ x, y });
+  }, []);
+
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
       {/* Top bar */}
@@ -223,6 +293,23 @@ export default function KnowledgeGraphPage() {
         </div>
       )}
 
+      {/* Toolbar */}
+      <GraphToolbar
+        currentLayout={layout}
+        onLayoutChange={setLayout}
+        onAction={handleToolbarAction}
+      />
+
+      {/* Path Finder panel (above canvas) */}
+      {showPathFinder && (
+        <PathFinder
+          nodes={filteredNodes}
+          edges={filteredEdges}
+          onHighlightPath={handleHighlightPath}
+          onClear={handleClearPath}
+        />
+      )}
+
       {/* Main layout: left panel | center graph | right panel */}
       <div className="flex flex-1 min-h-0">
         {/* Left panel: search + filters */}
@@ -237,15 +324,26 @@ export default function KnowledgeGraphPage() {
         </div>
 
         {/* Center: graph canvas */}
-        <div className="flex-1 flex items-center justify-center bg-gray-950 overflow-hidden p-4">
+        <div className="flex-1 flex items-center justify-center bg-gray-950 overflow-hidden p-4 relative">
           <GraphCanvas
             nodes={filteredNodes}
             edges={filteredEdges}
             selectedNodeId={selectedNode?.id}
             highlightedNodeId={highlightedNodeId}
+            pathHighlight={pathHighlight}
             onNodeClick={handleNodeClick}
             width={900}
             height={600}
+          />
+          {/* Minimap + Zoom */}
+          <GraphMinimap
+            nodes={filteredNodes}
+            edges={filteredEdges}
+            viewport={viewport}
+            onPan={handleMinimapPan}
+            onZoomIn={handleZoomIn}
+            onZoomOut={handleZoomOut}
+            onZoomFit={handleZoomFit}
           />
         </div>
 
