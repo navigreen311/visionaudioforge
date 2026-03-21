@@ -19,6 +19,7 @@ from app.services.vision.tracking import (
 from app.services.vision.segmentation import SegmentationService
 from app.services.vision.pose import PoseEstimator, KEYPOINT_NAMES
 from app.services.vision.embedding_viz import EmbeddingVisualizer
+from app.services.vision.vision_service import VisionService
 
 __all__ = [
     "ObjectDetector",
@@ -37,4 +38,5 @@ __all__ = [
     "PoseEstimator",
     "KEYPOINT_NAMES",
     "EmbeddingVisualizer",
+    "VisionService",
 ]
