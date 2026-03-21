@@ -24,7 +24,6 @@ from app.api.routes import (
     investigation,
     investigation_mock,
     knowledge_graph,
-    marketplace_stubs,
     memory,
     metrics,
     mobile,
@@ -37,14 +36,13 @@ from app.api.routes import (
     safety,
     search,
     semantic_memory,
-    settings_audit,
     simulation,
     transfer,
     transform,
     validation,
     verticals,
     vision,
-    settings,
+    settings_stubs,
     workspaces,
 )
 
@@ -90,8 +88,6 @@ api_router.include_router(verticals.router)
 api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
-api_router.include_router(marketplace_stubs.router)
 api_router.include_router(developer.router)
-api_router.include_router(settings.router)
 api_router.include_router(dashboard.router)
-api_router.include_router(settings_audit.router)
+api_router.include_router(settings_stubs.router)
