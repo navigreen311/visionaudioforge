@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import random
 import time
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -31,6 +32,29 @@ class ReviewSubmit(BaseModel):
     verdict: str = Field(..., pattern="^(approved|rejected|needs_changes)$")
     comments: str = ""
     annotations: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrendPoint(BaseModel):
+    day: int
+    value: float
+
+
+class ReviewerEntry(BaseModel):
+    id: str
+    name: str
+    avatar_url: str
+    tasks_completed: int
+    max_tasks: int
+    accuracy: float
+    avg_review_time_sec: int
+    streak_days: int
+    trend: list[TrendPoint]
+
+
+class LeaderboardResponse(BaseModel):
+    range: str
+    entries: list[ReviewerEntry]
+    my_stats: ReviewerEntry | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,3 +128,68 @@ async def check_task_status(task_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Task not found")
     task = _tasks[task_id]
     return {"task_id": task_id, "status": task["status"], "completed": task["status"] == "completed"}
+
+
+# ---------------------------------------------------------------------------
+# Leaderboard — mock data
+# ---------------------------------------------------------------------------
+
+_MOCK_REVIEWERS = [
+    {"id": "r1", "name": "Alice Chen",     "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=alice"},
+    {"id": "r2", "name": "Bob Martinez",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=bob"},
+    {"id": "r3", "name": "Carol Nguyen",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=carol"},
+    {"id": "r4", "name": "David Kim",      "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=david"},
+    {"id": "r5", "name": "Eva Johansson",  "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=eva"},
+    {"id": "r6", "name": "Frank Okafor",   "avatar_url": "https://api.dicebear.com/7.x/avataaars/svg?seed=frank"},
+]
+
+_RANGE_MULTIPLIER: dict[str, float] = {"today": 0.15, "week": 1.0, "month": 4.0}
+
+
+def _build_mock_entries(time_range: str) -> list[ReviewerEntry]:
+    """Generate deterministic-but-varied mock leaderboard entries."""
+    rng = random.Random(42)
+    mult = _RANGE_MULTIPLIER.get(time_range, 1.0)
+    entries: list[ReviewerEntry] = []
+
+    base_tasks = [47, 42, 38, 31, 25, 18]
+    base_accuracy = [97.3, 94.8, 96.1, 88.5, 91.2, 85.0]
+    base_time = [45, 62, 53, 78, 95, 120]
+    base_streak = [12, 5, 8, 3, 0, 7]
+
+    for i, reviewer in enumerate(_MOCK_REVIEWERS):
+        tasks = max(1, int(base_tasks[i] * mult))
+        max_tasks = max(tasks, int(base_tasks[0] * mult))
+        trend = [
+            TrendPoint(day=d, value=round(rng.uniform(0.6, 1.0) * base_tasks[i] * mult / 7, 1))
+            for d in range(7)
+        ]
+        entries.append(
+            ReviewerEntry(
+                id=reviewer["id"],
+                name=reviewer["name"],
+                avatar_url=reviewer["avatar_url"],
+                tasks_completed=tasks,
+                max_tasks=max_tasks,
+                accuracy=base_accuracy[i],
+                avg_review_time_sec=base_time[i],
+                streak_days=base_streak[i],
+                trend=trend,
+            )
+        )
+
+    entries.sort(key=lambda e: e.tasks_completed, reverse=True)
+    return entries
+
+
+@router.get("/leaderboard")
+async def get_leaderboard(
+    time_range: Literal["today", "week", "month"] = Query("week", alias="range"),
+) -> LeaderboardResponse:
+    """Return reviewer leaderboard with mock data."""
+    entries = _build_mock_entries(time_range)
+
+    # Treat the 4th reviewer (David Kim) as "me" for the My Stats panel
+    my_stats = next((e for e in entries if e.id == "r4"), None)
+
+    return LeaderboardResponse(range=time_range, entries=entries, my_stats=my_stats)
