@@ -86,6 +86,7 @@ class SearchResultItem(BaseModel):
 
 class SearchResponse(BaseModel):
     results: list[SearchResultItem]
+    query_type: str = "text"
     total_results: int
     processing_time_ms: float
 
@@ -94,6 +95,13 @@ class IndexResponse(BaseModel):
     asset_id: str
     indexed: bool
     embedding_dim: int = 512
+
+
+class IndexStatusResponse(BaseModel):
+    images: int = 0
+    audio: int = 0
+    videos: int = 0
+    total: int = 0
 
 
 class StatsResponse(BaseModel):
@@ -173,6 +181,7 @@ async def search_query(body: SearchQueryRequest):
 
     return SearchResponse(
         results=results,
+        query_type="text",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -213,6 +222,7 @@ async def search_query_image(file: UploadFile = File(...), k: int = 10):
 
     return SearchResponse(
         results=results,
+        query_type="image",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -271,6 +281,18 @@ async def search_stats():
     )
 
 
+@router.get("/index-status", response_model=IndexStatusResponse)
+async def index_status():
+    """Return per-modality index counts for the frontend status bar.
+
+    In a full implementation this queries the asset database grouped by
+    asset_type.  For now it returns zeros so the frontend can render the
+    amber "no assets indexed" banner until the indexing pipeline is live.
+    """
+    # TODO: replace stub with real DB query once asset table is populated
+    return IndexStatusResponse(images=0, audio=0, videos=0, total=0)
+
+
 @router.post("/similar/{asset_id}", response_model=SearchResponse)
 async def similar_assets(asset_id: str, k: int = 10):
     """Find assets similar to an already-indexed asset."""
@@ -312,6 +334,7 @@ async def similar_assets(asset_id: str, k: int = 10):
 
     return SearchResponse(
         results=results,
+        query_type="similar",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
@@ -357,6 +380,7 @@ async def search_audio_query(file: UploadFile = File(...), k: int = 10):
 
     return SearchResponse(
         results=results,
+        query_type="audio",
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
     )
