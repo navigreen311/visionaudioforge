@@ -24,8 +24,9 @@ const SEVERITY_ORDER: Record<AlertSeverity, number> = {
   low: 3,
 };
 
-function sortAlerts(alerts: Alert[]): Alert[] {
-  return [...alerts].sort((a, b) => {
+function sortAlerts(alerts: Alert[] | undefined | null): Alert[] {
+  const safeAlerts = alerts ?? [];
+  return [...safeAlerts].sort((a, b) => {
     const sevDiff = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
     if (sevDiff !== 0) return sevDiff;
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
@@ -55,16 +56,18 @@ export default function AlertInbox() {
     setFilters(buildFilters());
   }, [buildFilters]);
 
-  const { data: alerts = [], isLoading, isError } = useQuery({
+  const { data: alertsResponse, isLoading, isError } = useQuery({
     queryKey: ["alerts", filters],
     queryFn: () => listAlerts(filters),
     refetchInterval: 30_000,
   });
 
+  const alerts: Alert[] = alertsResponse?.items ?? [];
+
   // Sound/visual indicator for new critical alerts
   useEffect(() => {
     if (!alerts.length) return;
-    const criticalNew = alerts.filter((a) => a.severity === "critical" && a.status === "new").length;
+    const criticalNew = alerts.filter((a) => a.severity === "critical" && a.status === "firing").length;
     if (criticalNew > prevCountRef.current && prevCountRef.current !== 0) {
       // Play a subtle notification sound for new critical alerts
       try {
@@ -122,7 +125,7 @@ export default function AlertInbox() {
             onChange={(e) => setStatusFilter(e.target.value)}
           >
             <option value="">All</option>
-            <option value="new">New</option>
+            <option value="firing">Firing</option>
             <option value="acknowledged">Acknowledged</option>
             <option value="resolved">Resolved</option>
             <option value="dismissed">Dismissed</option>
