@@ -3,7 +3,6 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
-    byom,
     annotate_studio,
     annotations,
     assets,
@@ -37,7 +36,7 @@ from app.api.routes import (
     safety,
     search,
     semantic_memory,
-    settings,
+    settings_api_keys,
     simulation,
     transfer,
     transform,
@@ -81,7 +80,6 @@ api_router.include_router(knowledge_graph.router)
 api_router.include_router(semantic_memory.router)
 api_router.include_router(memory.router)
 api_router.include_router(command_center.router)
-api_router.include_router(settings.router)
 api_router.include_router(simulation.router)
 api_router.include_router(reviewops.router)
 api_router.include_router(edge.router)
@@ -90,6 +88,6 @@ api_router.include_router(verticals.router)
 api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
-api_router.include_router(byom.router)
 api_router.include_router(developer.router)
+api_router.include_router(settings_api_keys.router)
 api_router.include_router(dashboard.router)
