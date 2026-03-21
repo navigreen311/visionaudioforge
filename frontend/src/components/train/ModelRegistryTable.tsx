@@ -32,7 +32,11 @@ interface ModelRegistryTableProps {
   workspaceId: string;
   onRegisterClick: () => void;
   refreshKey?: number;
+  onViewDetail?: (model: ModelItem) => void;
+  onCompare?: (model: ModelItem, allModels: ModelItem[]) => void;
 }
+
+export type { ModelItem };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -164,6 +168,8 @@ export default function ModelRegistryTable({
   workspaceId,
   onRegisterClick,
   refreshKey = 0,
+  onViewDetail,
+  onCompare,
 }: ModelRegistryTableProps) {
   const [models, setModels] = useState<ModelItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -215,8 +221,14 @@ export default function ModelRegistryTable({
           console.error("Promote failed", err);
         }
         break;
+      case "view":
+        onViewDetail?.(model);
+        break;
+      case "compare":
+        onCompare?.(model, models);
+        break;
       default:
-        // view, compare, rollback -- placeholder
+        // rollback -- placeholder
         console.log(`Action "${action}" on model ${model.id}`);
     }
   };

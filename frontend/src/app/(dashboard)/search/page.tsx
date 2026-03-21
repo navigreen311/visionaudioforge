@@ -4,17 +4,15 @@ import { useState, useEffect, useCallback } from "react";
 import SearchBar, { type SearchModality } from "@/components/search/SearchBar";
 import SearchResultsGrid from "@/components/search/SearchResultsGrid";
 import type { SearchResult } from "@/components/search/ResultCard";
-
-// ---------------------------------------------------------------------------
-// Placeholder imports — these components will be built by other agents.
-// Uncomment and wire in once they land on their feature branches.
-// ---------------------------------------------------------------------------
-// import ImageQueryTab from "@/components/search/ImageQueryTab";
-// import AudioQueryTab from "@/components/search/AudioQueryTab";
-// import FiltersSidebar from "@/components/search/FiltersSidebar";
-// import ResultDetailPanel from "@/components/search/ResultDetailPanel";
-// import SearchHistory from "@/components/search/SearchHistory";
-// import CopilotRefinement from "@/components/search/CopilotRefinement";
+import ImageQueryTab from "@/components/search/ImageQueryTab";
+import AudioQueryTab from "@/components/search/AudioQueryTab";
+import FiltersSidebar, {
+  type SearchFilters,
+  DEFAULT_FILTERS,
+} from "@/components/search/FiltersSidebar";
+import ResultDetailPanel from "@/components/search/ResultDetailPanel";
+import SearchHistory from "@/components/search/SearchHistory";
+import CopilotRefinement from "@/components/search/CopilotRefinement";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,9 +40,12 @@ export default function SearchPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState<SearchResponseData | null>(null);
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastQuery, setLastQuery] = useState("");
-  const [showFilters, setShowFilters] = useState(false);
+  const [lastModality, setLastModality] = useState<SearchModality>("text");
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [activeFilters, setActiveFilters] = useState<SearchFilters>(DEFAULT_FILTERS);
 
   // Index status
   const [indexStatus, setIndexStatus] = useState<IndexStatus | null>(null);
@@ -85,6 +86,7 @@ export default function SearchPage() {
       setIsLoading(true);
       setError(null);
       setLastQuery(query);
+      setLastModality(modality);
 
       try {
         let response: Response;
@@ -124,11 +126,65 @@ export default function SearchPage() {
   );
 
   // -----------------------------------------------------------------------
-  // Filter toggle (placeholder until FiltersSidebar lands)
+  // Filter toggle — opens the FiltersSidebar
   // -----------------------------------------------------------------------
   const handleFilterClick = useCallback(() => {
-    setShowFilters((prev) => !prev);
+    setFiltersOpen(true);
   }, []);
+
+  // -----------------------------------------------------------------------
+  // Apply filters from FiltersSidebar
+  // -----------------------------------------------------------------------
+  const handleFiltersApply = useCallback((filters: SearchFilters) => {
+    setActiveFilters(filters);
+    setFiltersOpen(false);
+    // Re-run the current search with new filters if we have an active query
+    // (Filters are applied server-side on next search)
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // Result click — open detail panel
+  // -----------------------------------------------------------------------
+  const handleResultClick = useCallback((result: SearchResult) => {
+    setSelectedResult(result);
+    setDetailOpen(true);
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // History rerun — re-execute a previous search
+  // -----------------------------------------------------------------------
+  const handleHistoryRerun = useCallback(
+    (query: string, modality: SearchModality) => {
+      handleSearch(query, modality);
+    },
+    [handleSearch],
+  );
+
+  // -----------------------------------------------------------------------
+  // History save — no-op for now (SearchHistory handles localStorage)
+  // -----------------------------------------------------------------------
+  const handleHistorySave = useCallback((_query: string, _name: string) => {
+    // SearchHistory manages saves internally via localStorage
+  }, []);
+
+  // -----------------------------------------------------------------------
+  // Copilot filters applied
+  // -----------------------------------------------------------------------
+  const handleCopilotFilters = useCallback(
+    (filters: Record<string, string | boolean | number | undefined>) => {
+      // Merge copilot-suggested filters into active filters where applicable
+      setActiveFilters((prev) => ({
+        ...prev,
+        ...(filters.assetType
+          ? { modalities: [filters.assetType as "image" | "audio" | "video"] }
+          : {}),
+        ...(filters.minConfidence !== undefined
+          ? { similarityThreshold: Number(filters.minConfidence) }
+          : {}),
+      }));
+    },
+    [],
+  );
 
   // -----------------------------------------------------------------------
   // Render
@@ -199,6 +255,26 @@ export default function SearchPage() {
       {/* Search Bar */}
       <SearchBar onSearch={handleSearch} isLoading={isLoading} />
 
+      {/* Image Query Tab — shown when image modality active */}
+      {lastModality === "image" && (
+        <ImageQueryTab onResults={(results) => {
+          setSearchResponse({
+            results,
+            query_type: "image",
+            total_results: results.length,
+            processing_time_ms: 0,
+          });
+        }} />
+      )}
+
+      {/* Audio Query Tab — shown when audio modality active */}
+      {lastModality === "audio" && (
+        <AudioQueryTab onResultClick={handleResultClick} />
+      )}
+
+      {/* Search History */}
+      <SearchHistory onRerun={handleHistoryRerun} onSave={handleHistorySave} />
+
       {/* Error */}
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
@@ -206,12 +282,13 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Filters sidebar placeholder */}
-      {showFilters && (
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-500">
-          FiltersSidebar placeholder -- will be provided by another agent.
-        </div>
-      )}
+      {/* Filters Sidebar */}
+      <FiltersSidebar
+        isOpen={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        onApply={handleFiltersApply}
+        activeFilters={activeFilters}
+      />
 
       {/* Results (S2) */}
       {searchResponse && searchResponse.results.length > 0 && (
@@ -224,7 +301,17 @@ export default function SearchPage() {
             results={searchResponse.results}
             query={lastQuery}
             onFilterClick={handleFilterClick}
-            onResultClick={setSelectedResult}
+            onResultClick={handleResultClick}
+          />
+
+          {/* Copilot Refinement — shown when results exist */}
+          <CopilotRefinement
+            searchContext={{
+              query: lastQuery,
+              resultCount: searchResponse.total_results,
+              filters: activeFilters as unknown as Record<string, string | boolean | number>,
+            }}
+            onFiltersApplied={handleCopilotFilters}
           />
         </div>
       )}
@@ -250,92 +337,15 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* Preview Modal */}
-      {selectedResult && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={() => setSelectedResult(null)}
-        >
-          <div
-            className="bg-white rounded-xl shadow-2xl max-w-lg w-full mx-4 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b">
-              <h3 className="font-semibold text-gray-900">Asset Details</h3>
-              <button
-                onClick={() => setSelectedResult(null)}
-                className="text-gray-400 hover:text-gray-600"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Modal body */}
-            <div className="p-6 space-y-4">
-              <div className="aspect-video bg-gray-100 rounded-lg flex items-center justify-center">
-                {selectedResult.asset_type === "audio" ? (
-                  <svg className="w-16 h-16 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
-                  </svg>
-                ) : selectedResult.asset_type === "video" ? (
-                  <svg className="w-16 h-16 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                ) : (
-                  <svg className="w-16 h-16 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                )}
-              </div>
-
-              <dl className="grid grid-cols-2 gap-3 text-sm">
-                <div>
-                  <dt className="text-gray-500">Asset ID</dt>
-                  <dd className="font-mono text-gray-900 text-xs mt-0.5">{selectedResult.asset_id}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Type</dt>
-                  <dd className="text-gray-900 mt-0.5 capitalize">{selectedResult.asset_type}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Filename</dt>
-                  <dd className="text-gray-900 mt-0.5">{selectedResult.filename || "N/A"}</dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500">Similarity Score</dt>
-                  <dd className="text-gray-900 mt-0.5">{(selectedResult.score * 100).toFixed(1)}%</dd>
-                </div>
-                <div className="col-span-2">
-                  <dt className="text-gray-500">Path</dt>
-                  <dd className="font-mono text-gray-900 text-xs mt-0.5 break-all">
-                    {selectedResult.path || "N/A"}
-                  </dd>
-                </div>
-              </dl>
-
-              {/* Tags */}
-              {(selectedResult.tags ?? []).length > 0 && (
-                <div>
-                  <dt className="text-sm text-gray-500 mb-1">Tags</dt>
-                  <div className="flex flex-wrap gap-1">
-                    {(selectedResult.tags ?? []).map((tag) => (
-                      <span
-                        key={tag}
-                        className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded"
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Result Detail Panel */}
+      <ResultDetailPanel
+        result={selectedResult}
+        isOpen={detailOpen}
+        onClose={() => {
+          setDetailOpen(false);
+          setSelectedResult(null);
+        }}
+      />
     </div>
   );
 }

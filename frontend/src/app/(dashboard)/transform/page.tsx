@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import BeforeAfterViewer from "@/components/transform/BeforeAfterViewer";
+import { saveToTransformHistory } from "@/components/transform/TransformHistory";
+import type { TransformHistoryEntry } from "@/components/transform/TransformHistory";
 
 // Dynamic imports for components created by other agents (with fallbacks)
 const OperationControls = dynamic(
@@ -187,9 +189,21 @@ export default function TransformPage() {
       const res = await fetch(`${API_BASE}${endpoint}`, { method: "POST", body: form });
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const json = await res.json();
-      setResultB64(json.image ?? json.thumbnail ?? null);
+      const outputB64 = json.image ?? json.thumbnail ?? null;
+      setResultB64(outputB64);
       setMeta(json);
       setProcessingTimeMs(json.processing_time_ms ?? (performance.now() - startTime));
+
+      // Save to transform history
+      if (outputB64) {
+        saveToTransformHistory({
+          operationName: mode,
+          thumbnail: `data:image/png;base64,${outputB64.slice(0, 200)}`,
+          inputFilename: srcFile.name,
+          outputB64,
+          outputFilename: `transform-${mode}-result.png`,
+        });
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
@@ -292,6 +306,31 @@ export default function TransformPage() {
   }, [resultB64, mode]);
 
   const resultSrc = resultB64 ? `data:image/png;base64,${resultB64}` : null;
+
+  // ---- restore from history ----
+  const handleHistoryRestore = useCallback((entry: TransformHistoryEntry) => {
+    if (entry.outputB64) {
+      setResultB64(entry.outputB64);
+    }
+    setError(null);
+  }, []);
+
+  // ---- chain transform: feed current output back as input ----
+  const handleChainTransform = useCallback(() => {
+    if (!resultB64) return;
+    // Convert base64 result to a File so it can be used as the next input
+    const byteString = atob(resultB64);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    const blob = new Blob([ab], { type: "image/png" });
+    const file = new File([blob], `chained-${mode}-result.png`, { type: "image/png" });
+    setSrcFile(file);
+    setSrcPreview(`data:image/png;base64,${resultB64}`);
+    setResultB64(null);
+    setMeta(null);
+    setProcessingTimeMs(null);
+  }, [resultB64, mode]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 space-y-6">
@@ -783,8 +822,8 @@ export default function TransformPage() {
               </div>
             )}
 
-            {/* Placeholder for TransformHistory */}
-            {hasTransformHistory && <TransformHistory />}
+            {/* Transform History */}
+            {hasTransformHistory && <TransformHistory onRestore={handleHistoryRestore} />}
           </div>
 
           {/* ── Right column: results viewer ── */}
@@ -851,8 +890,15 @@ export default function TransformPage() {
               </button>
             )}
 
-            {/* Placeholder for TransformExportPanel */}
-            {hasTransformExportPanel && resultSrc && <TransformExportPanel />}
+            {/* Export Panel (visible after transform completes) */}
+            {hasTransformExportPanel && (
+              <TransformExportPanel
+                outputB64={resultB64 ?? undefined}
+                outputFilename={`transform-${mode}-result.png`}
+                onChainTransform={handleChainTransform}
+                isVisible={!!resultSrc}
+              />
+            )}
           </div>
         </div>
       )}
