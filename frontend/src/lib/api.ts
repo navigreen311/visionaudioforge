@@ -754,6 +754,9 @@ export interface Alert {
 export interface AlertFilters {
   severity?: AlertSeverity;
   status?: AlertStatus;
+  start_date?: string;
+  end_date?: string;
+  search?: string;
   skip?: number;
   limit?: number;
 }
@@ -762,6 +765,21 @@ export interface AlertStatsData {
   total: number;
   by_severity: Record<AlertSeverity, number>;
   by_status: Record<AlertStatus, number>;
+  critical_24h: number;
+  acknowledged: number;
+  unresolved: number;
+  recent: Alert[];
+}
+
+export interface AlertStatsSummary {
+  critical: number;
+  critical_trend: number;
+  warning: number;
+  warning_trend: number;
+  info: number;
+  info_trend: number;
+  acknowledged_today: number;
+  acknowledged_today_trend: number;
 }
 
 export interface AlertRuleCondition {
@@ -828,6 +846,21 @@ export async function getAlertStats(): Promise<AlertStatsData> {
   const { data } = await api.get("/api/alerts/stats", {
     params: { workspace_id: getWorkspaceId() },
   });
+  return data;
+}
+
+export async function getAlertStatsSummary(): Promise<AlertStatsSummary> {
+  const { data } = await api.get("/api/alerts/stats/summary", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export async function updateAlertStatus(
+  alertId: string,
+  status: AlertStatus,
+): Promise<Alert> {
+  const { data } = await api.patch(`/api/alerts/${alertId}`, { status });
   return data;
 }
 

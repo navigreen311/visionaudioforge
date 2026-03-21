@@ -13,6 +13,8 @@ from app.schemas.alert import (
     AlertRuleRead,
     AlertRuleUpdate,
     AlertStats,
+    AlertStatsSummary,
+    AlertStatusUpdate,
 )
 from app.services.alerts.actions import AlertActionExecutor
 from app.services.alerts.alert_service import AlertService
@@ -128,6 +130,49 @@ async def alert_stats(
 ):
     """Get alert statistics for a workspace."""
     return await AlertService.get_alert_stats(db, workspace_id)
+
+
+@router.get("/stats/summary", response_model=AlertStatsSummary)
+async def alert_stats_summary(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Get compact alert stats summary (4-card view) for the dashboard.
+
+    Returns mock data until wired to real aggregation queries.
+    """
+    # TODO: Replace with real aggregation from AlertService
+    return AlertStatsSummary(
+        critical=3,
+        critical_trend=1,
+        warning=7,
+        warning_trend=-2,
+        info=12,
+        info_trend=0,
+        acknowledged_today=5,
+        acknowledged_today_trend=3,
+    )
+
+
+@router.patch("/{alert_id}", response_model=AlertRead)
+async def update_alert_status(
+    alert_id: UUID,
+    body: AlertStatusUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Update an alert's status (acknowledge, resolve, dismiss, etc.)."""
+    from sqlalchemy import select
+    from app.models.alert import Alert
+
+    result = await db.execute(select(Alert).where(Alert.id == alert_id))
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+
+    alert.status = body.status
+    await db.commit()
+    await db.refresh(alert)
+    return alert
 
 
 @router.post("/{alert_id}/acknowledge", response_model=AlertRead)
