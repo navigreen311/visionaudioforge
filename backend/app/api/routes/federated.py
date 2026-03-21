@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import random
 import time
 import uuid
 from typing import Any
@@ -23,8 +25,6 @@ class FederationCreate(BaseModel):
     min_participants: int = 2
     rounds: int = 10
     workspace_id: str | None = None
-    privacy_enabled: bool = True
-    epsilon_budget: float = 1.0
 
 
 class JoinFederation(BaseModel):
@@ -60,11 +60,7 @@ async def create_federation(body: FederationCreate) -> dict[str, Any]:
         "total_rounds": body.rounds,
         "current_round": 0,
         "status": "waiting",
-        "privacy_enabled": body.privacy_enabled,
-        "epsilon_budget": body.epsilon_budget,
-        "epsilon_spent": 0.0,
         "participants": [],
-        "metrics_history": [],
         "created_at": time.time(),
     }
     _federations[fid] = federation
@@ -120,68 +116,56 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Training control endpoints (FL3)
+# Round history with mock data (FL4 / FL5 charts)
 # ---------------------------------------------------------------------------
 
-def _get_fed_or_404(federation_id: str) -> dict[str, Any]:
-    """Look up federation or raise 404."""
-    if federation_id not in _federations:
-        raise HTTPException(status_code=404, detail="Federation not found")
-    return _federations[federation_id]
+class RoundDataResponse(BaseModel):
+    round_number: int
+    accuracy: float | None
+    loss: float | None
+    privacy_epsilon_spent: float
+    participants: int
+    duration_s: float | None
 
 
-@router.post("/federations/{federation_id}/pause")
-async def pause_federation(federation_id: str) -> dict[str, str]:
-    """Pause a running federation."""
-    fed = _get_fed_or_404(federation_id)
-    if fed["status"] != "training":
-        raise HTTPException(status_code=400, detail="Federation is not training")
-    fed["status"] = "paused"
-    return {"federation_id": federation_id, "status": "paused"}
+def _generate_mock_rounds(seed: str, count: int = 12) -> list[dict[str, Any]]:
+    """Generate deterministic mock round data for a given federation id."""
+    rng = random.Random(seed)
+    rounds: list[dict[str, Any]] = []
+    for i in range(1, count + 1):
+        # Accuracy climbs from ~55% towards ~93% with noise
+        base_acc = 55 + 38 * (1 - math.exp(-0.25 * i))
+        accuracy = round(min(base_acc + rng.gauss(0, 2.5), 99.5), 2)
+
+        # Loss drops from ~1.8 towards ~0.15
+        base_loss = 1.8 * math.exp(-0.3 * i) + 0.12
+        loss = round(max(base_loss + rng.gauss(0, 0.05), 0.01), 4)
+
+        # Privacy epsilon per round: small value with slight variance
+        epsilon = round(0.4 + rng.uniform(-0.08, 0.12), 4)
+
+        participants = rng.choice([3, 4, 5])
+        duration = round(rng.uniform(8.0, 35.0), 1)
+
+        rounds.append({
+            "round_number": i,
+            "accuracy": accuracy,
+            "loss": loss,
+            "privacy_epsilon_spent": epsilon,
+            "participants": participants,
+            "duration_s": duration,
+        })
+    return rounds
 
 
-@router.post("/federations/{federation_id}/resume")
-async def resume_federation(federation_id: str) -> dict[str, str]:
-    """Resume a paused federation."""
-    fed = _get_fed_or_404(federation_id)
-    if fed["status"] != "paused":
-        raise HTTPException(status_code=400, detail="Federation is not paused")
-    fed["status"] = "training"
-    return {"federation_id": federation_id, "status": "training"}
+@router.get("/federations/{federation_id}/rounds")
+async def get_federation_rounds(federation_id: str) -> list[dict[str, Any]]:
+    """Return per-round training metrics (mock data for now).
 
-
-@router.post("/federations/{federation_id}/stop")
-async def stop_federation(federation_id: str) -> dict[str, str]:
-    """Stop a federation (training or paused)."""
-    fed = _get_fed_or_404(federation_id)
-    if fed["status"] not in ("training", "paused"):
-        raise HTTPException(status_code=400, detail="Federation cannot be stopped from current state")
-    fed["status"] = "stopped"
-    return {"federation_id": federation_id, "status": "stopped"}
-
-
-@router.post("/federations/{federation_id}/export")
-async def export_global_model(federation_id: str) -> dict[str, str]:
-    """Export the global model from a completed federation (stub)."""
-    fed = _get_fed_or_404(federation_id)
-    if fed["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Federation must be completed to export")
-    return {
-        "federation_id": federation_id,
-        "status": "completed",
-        "export_url": f"/exports/{federation_id}/global_model.pt",
-        "message": "Export queued (stub)",
-    }
-
-
-@router.post("/federations/{federation_id}/retrain")
-async def retrain_federation(federation_id: str) -> dict[str, str]:
-    """Re-start training on a completed federation (stub)."""
-    fed = _get_fed_or_404(federation_id)
-    if fed["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Federation must be completed to re-train")
-    fed["current_round"] = 0
-    fed["status"] = "training"
-    fed["metrics_history"] = []
-    fed["epsilon_spent"] = 0.0
-    return {"federation_id": federation_id, "status": "training"}
+    Provides 12 rounds of accuracy, loss, and differential-privacy
+    epsilon spend for the FL4 (Accuracy/Loss) and FL5 (Privacy Budget)
+    charts.
+    """
+    # Return deterministic mock data keyed by federation_id so the same
+    # id always returns the same series.
+    return _generate_mock_rounds(seed=federation_id)
