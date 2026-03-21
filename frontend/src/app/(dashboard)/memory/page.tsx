@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import api from "@/lib/api";
+import MemorySummaryTab from "@/components/memory/MemorySummaryTab";
+import MemoryTimelineTab from "@/components/memory/MemoryTimelineTab";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                               */
@@ -22,15 +24,6 @@ interface Memory {
   created_at: string | null;
 }
 
-interface Summary {
-  total: number;
-  by_category: Record<string, number>;
-  by_scope: Record<string, number>;
-  avg_importance: number;
-  avg_freshness: number;
-  top_memories: { id: string; content: string; importance: number }[];
-  stale_count: number;
-}
 
 const CATEGORIES = ["fact", "event", "preference", "rule", "entity", "relationship"];
 const SCOPES = ["global", "workspace", "user", "agent"];
@@ -49,7 +42,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 /* ------------------------------------------------------------------ */
 export default function MemoryPage() {
   const [memories, setMemories] = useState<Memory[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<"explorer" | "summary" | "timeline" | "conflicts">("explorer");
 
@@ -73,10 +66,6 @@ export default function MemoryPage() {
   const [newTags, setNewTags] = useState("");
   const [newImportance, setNewImportance] = useState(0.5);
 
-  // Timeline
-  const [timelineStart, setTimelineStart] = useState("");
-  const [timelineEnd, setTimelineEnd] = useState("");
-  const [timelineMemories, setTimelineMemories] = useState<Memory[]>([]);
 
   /* ---- Data loading ---- */
   const loadMemories = useCallback(async () => {
@@ -97,19 +86,9 @@ export default function MemoryPage() {
     setLoading(false);
   }, [searchQuery, filterScope, filterCategory, minImportance, showPrivate]);
 
-  const loadSummary = useCallback(async () => {
-    try {
-      const res = await api.get("/api/memory/summary");
-      setSummary(res.data);
-    } catch {
-      setSummary(null);
-    }
-  }, []);
-
   useEffect(() => {
     loadMemories();
-    loadSummary();
-  }, [loadMemories, loadSummary]);
+  }, [loadMemories]);
 
   /* ---- Actions ---- */
   const handleStore = async () => {
@@ -127,7 +106,6 @@ export default function MemoryPage() {
     setNewContent("");
     setNewTags("");
     loadMemories();
-    loadSummary();
   };
 
   const handlePromote = async (id: string) => {
@@ -143,14 +121,12 @@ export default function MemoryPage() {
   const handleDecay = async () => {
     await api.post("/api/memory/decay", { decay_rate: 0.95 });
     loadMemories();
-    loadSummary();
   };
 
   const handleApplyRules = async () => {
     const res = await api.post("/api/memory/apply-rules");
     alert(`Rules applied: ${res.data.promotions} promotions, ${res.data.demotions} demotions, ${res.data.archived} archived`);
     loadMemories();
-    loadSummary();
   };
 
   const handleResolveConflict = async () => {
@@ -172,14 +148,6 @@ export default function MemoryPage() {
     a.href = url;
     a.download = "memories-export.json";
     a.click();
-  };
-
-  const loadTimeline = async () => {
-    if (!timelineStart || !timelineEnd) return;
-    const res = await api.get("/api/memory/timeline", {
-      params: { start: timelineStart, end: timelineEnd },
-    });
-    setTimelineMemories(res.data);
   };
 
   /* ---- Bar helper ---- */
@@ -416,115 +384,10 @@ export default function MemoryPage() {
       )}
 
       {/* ---- Summary Tab ---- */}
-      {tab === "summary" && summary && (
-        <div className="space-y-6">
-          {/* Stats cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <div className="border rounded-xl p-4">
-              <p className="text-xs text-gray-500">Total Memories</p>
-              <p className="text-2xl font-bold text-gray-900">{summary.total}</p>
-            </div>
-            <div className="border rounded-xl p-4">
-              <p className="text-xs text-gray-500">Avg Importance</p>
-              <p className="text-2xl font-bold text-brand-600">{summary.avg_importance.toFixed(3)}</p>
-            </div>
-            <div className="border rounded-xl p-4">
-              <p className="text-xs text-gray-500">Avg Freshness</p>
-              <p className="text-2xl font-bold text-green-600">{summary.avg_freshness.toFixed(3)}</p>
-            </div>
-            <div className="border rounded-xl p-4">
-              <p className="text-xs text-gray-500">Stale Count</p>
-              <p className="text-2xl font-bold text-amber-600">{summary.stale_count}</p>
-            </div>
-          </div>
-
-          {/* By category */}
-          <div className="border rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-4">By Category</h3>
-            <div className="space-y-2">
-              {Object.entries(summary.by_category).map(([cat, count]) => (
-                <div key={cat} className="flex items-center gap-3">
-                  <span className={`w-3 h-3 rounded-full ${CATEGORY_COLORS[cat] || "bg-gray-400"}`} />
-                  <span className="text-sm text-gray-700 w-28">{cat}</span>
-                  <div className="flex-1 bg-gray-100 rounded-full h-4">
-                    <div
-                      className={`${CATEGORY_COLORS[cat] || "bg-gray-400"} h-4 rounded-full`}
-                      style={{ width: `${summary.total ? (count / summary.total) * 100 : 0}%` }}
-                    />
-                  </div>
-                  <span className="text-sm font-medium text-gray-600 w-10 text-right">{count}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* By scope */}
-          <div className="border rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-4">By Scope</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {Object.entries(summary.by_scope).map(([scope, count]) => (
-                <div key={scope} className="border rounded-lg p-3 text-center">
-                  <p className="text-xs text-gray-500">{scope}</p>
-                  <p className="text-xl font-bold text-gray-800">{count}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Top memories */}
-          <div className="border rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-4">Top Memories</h3>
-            <div className="space-y-2">
-              {summary.top_memories.map((m) => (
-                <div key={m.id} className="flex items-center gap-3 text-sm">
-                  <Bar value={m.importance} color="bg-brand-500" />
-                  <span className="text-gray-700 truncate flex-1">{m.content}</span>
-                  <span className="text-xs text-gray-400 shrink-0">{m.importance.toFixed(2)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
+      {tab === "summary" && <MemorySummaryTab />}
 
       {/* ---- Timeline Tab ---- */}
-      {tab === "timeline" && (
-        <div className="space-y-4">
-          <div className="flex gap-3 items-end">
-            <div>
-              <label className="text-xs text-gray-500">Start</label>
-              <input type="datetime-local" value={timelineStart} onChange={(e) => setTimelineStart(e.target.value)} className="border rounded p-2 text-sm" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-500">End</label>
-              <input type="datetime-local" value={timelineEnd} onChange={(e) => setTimelineEnd(e.target.value)} className="border rounded p-2 text-sm" />
-            </div>
-            <button onClick={loadTimeline} className="px-4 py-2 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700">
-              Load
-            </button>
-          </div>
-
-          {timelineMemories.length === 0 ? (
-            <div className="text-center py-12 text-gray-400">Select a date range and click Load.</div>
-          ) : (
-            <div className="relative pl-6 border-l-2 border-gray-200 space-y-4">
-              {timelineMemories.map((m) => (
-                <div key={m.id} className="relative">
-                  <div className="absolute -left-[29px] top-1 w-3 h-3 rounded-full bg-brand-500 border-2 border-white" />
-                  <div className="border rounded-lg p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs text-gray-400">{m.created_at ? new Date(m.created_at).toLocaleString() : ""}</span>
-                      <span className={`w-2 h-2 rounded-full ${CATEGORY_COLORS[m.category] || "bg-gray-400"}`} />
-                      <span className="text-xs text-gray-500">{m.category}</span>
-                    </div>
-                    <p className="text-sm text-gray-800">{m.content}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      {tab === "timeline" && <MemoryTimelineTab />}
 
       {/* ---- Conflicts Tab ---- */}
       {tab === "conflicts" && (
