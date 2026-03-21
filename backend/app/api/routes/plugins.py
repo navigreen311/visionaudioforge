@@ -114,3 +114,65 @@ async def marketplace_featured() -> list[dict]:
         {"name": "Video Summarizer", "description": "AI video summarization", "downloads": 980},
         {"name": "Data Augmentor", "description": "Smart data augmentation", "downloads": 2100},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Marketplace Install / Update flow (MK4 + MK8 stubs)
+# ---------------------------------------------------------------------------
+
+marketplace_router = APIRouter(prefix="/api/marketplace/plugins", tags=["marketplace"])
+
+# In-memory install tracking
+_installs: dict[str, dict[str, str | int]] = {}
+
+
+@marketplace_router.post("/{plugin_id}/install")
+async def marketplace_install(plugin_id: str) -> dict[str, str]:
+    """Start installing a marketplace plugin (stub).
+
+    Returns an install_id that the frontend polls via the status endpoint.
+    """
+    install_id = str(uuid.uuid4())
+    _installs[install_id] = {
+        "install_id": install_id,
+        "plugin_id": plugin_id,
+        "status": "completed",
+        "step": "done",
+        "progress": 100,
+    }
+    return {"install_id": install_id}
+
+
+@marketplace_router.get("/{plugin_id}/install/status")
+async def marketplace_install_status(plugin_id: str) -> dict[str, Any]:
+    """Poll the install progress for a plugin (stub).
+
+    Returns completed immediately so the frontend advances to the success step.
+    """
+    # Find the latest install for this plugin
+    for install in reversed(list(_installs.values())):
+        if install["plugin_id"] == plugin_id:
+            return {
+                "status": install["status"],
+                "step": install["step"],
+                "progress": int(install["progress"]),
+            }
+    # If no install found, return completed anyway (idempotent stub)
+    return {"status": "completed", "step": "done", "progress": 100}
+
+
+@marketplace_router.post("/{plugin_id}/update")
+async def marketplace_update(plugin_id: str) -> dict[str, str]:
+    """Start updating a marketplace plugin to the latest version (stub).
+
+    Behaves identically to install for now — returns an install_id.
+    """
+    install_id = str(uuid.uuid4())
+    _installs[install_id] = {
+        "install_id": install_id,
+        "plugin_id": plugin_id,
+        "status": "completed",
+        "step": "done",
+        "progress": 100,
+    }
+    return {"install_id": install_id}
