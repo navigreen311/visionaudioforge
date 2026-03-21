@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble from "./MessageBubble";
+import StarterPrompts from "./StarterPrompts";
+import AttachmentInput, { type Attachment } from "./AttachmentInput";
 
 interface Message {
   id: string;
@@ -31,6 +33,7 @@ export default function CopilotChat({
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [attachment, setAttachment] = useState<Attachment | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const streamBufferRef = useRef("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -131,38 +134,53 @@ export default function CopilotChat({
     return ws;
   }, [wsUrl]);
 
-  const sendMessage = useCallback(() => {
-    const trimmed = input.trim();
-    if (!trimmed || isStreaming) return;
+  const sendMessage = useCallback(
+    (overrideText?: string) => {
+      const trimmed = (overrideText ?? input).trim();
+      if (!trimmed || isStreaming) return;
 
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: trimmed,
-      timestamp: new Date().toLocaleTimeString(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
-    setIsStreaming(true);
-    streamBufferRef.current = "";
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: attachment
+          ? `${trimmed} [${attachment.type}: ${attachment.file.name}]`
+          : trimmed,
+        timestamp: new Date().toLocaleTimeString(),
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      setInput("");
+      setIsStreaming(true);
+      streamBufferRef.current = "";
 
-    const ws = connectWs();
-    const sendPayload = () => {
-      ws!.send(
-        JSON.stringify({
+      const currentAttachment = attachment;
+      setAttachment(null);
+
+      const ws = connectWs();
+      const sendPayload = () => {
+        const payload: Record<string, unknown> = {
           message: trimmed,
           agent_id: agentId,
           skill_pack: skillPack,
-        })
-      );
-    };
+        };
+        if (currentAttachment) {
+          payload.attachment = {
+            filename: currentAttachment.file.name,
+            mime_type: currentAttachment.file.type,
+            type: currentAttachment.type,
+            base64: currentAttachment.base64,
+          };
+        }
+        ws!.send(JSON.stringify(payload));
+      };
 
-    if (ws!.readyState === WebSocket.OPEN) {
-      sendPayload();
-    } else {
-      ws!.onopen = sendPayload;
-    }
-  }, [input, isStreaming, agentId, skillPack, connectWs]);
+      if (ws!.readyState === WebSocket.OPEN) {
+        sendPayload();
+      } else {
+        ws!.onopen = sendPayload;
+      }
+    },
+    [input, isStreaming, agentId, skillPack, connectWs, attachment]
+  );
 
   // Auto-submit initialMessage on mount (once only)
   const initialSubmittedRef = useRef(false);
@@ -195,12 +213,16 @@ export default function CopilotChat({
     }
   };
 
+  const handleStarterSelect = (prompt: string) => {
+    sendMessage(prompt);
+  };
+
   return (
     <div className="flex flex-col h-full bg-white rounded-xl border border-gray-200">
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-1">
         {messages.length === 0 && (
-          <div className="flex items-center justify-center h-full">
+          <div className="flex flex-col items-center justify-center h-full gap-8">
             <div className="text-center text-gray-400">
               <div className="w-16 h-16 bg-brand-50 rounded-full flex items-center justify-center mx-auto mb-4">
                 <span className="text-2xl text-brand-600 font-bold">C</span>
@@ -210,6 +232,10 @@ export default function CopilotChat({
                 Ask me anything about your media, events, or system status.
               </p>
             </div>
+            <StarterPrompts
+              visible={messages.length === 0}
+              onSelect={handleStarterSelect}
+            />
           </div>
         )}
         {messages.map((msg) => (
@@ -242,7 +268,23 @@ export default function CopilotChat({
 
       {/* Input bar */}
       <div className="border-t border-gray-200 p-4">
+        {attachment && (
+          <div className="mb-2">
+            <AttachmentInput
+              attachment={attachment}
+              onAttach={setAttachment}
+              onRemove={() => setAttachment(null)}
+            />
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          {!attachment && (
+            <AttachmentInput
+              attachment={null}
+              onAttach={setAttachment}
+              onRemove={() => setAttachment(null)}
+            />
+          )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -253,7 +295,7 @@ export default function CopilotChat({
             disabled={isStreaming}
           />
           <button
-            onClick={sendMessage}
+            onClick={() => sendMessage()}
             disabled={isStreaming || !input.trim()}
             className="bg-brand-600 text-white px-4 py-2.5 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
