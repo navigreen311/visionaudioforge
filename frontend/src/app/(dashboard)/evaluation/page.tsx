@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
+import TournamentTab from "@/components/evaluation/TournamentTab";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -17,22 +18,6 @@ interface ThresholdPoint {
   recall: number;
   f1: number;
   accuracy: number;
-}
-
-interface MatchupResult {
-  model_a: string;
-  model_b: string;
-  winner: string;
-  metric_diffs: Record<string, number>;
-  scores_a: Record<string, number>;
-  scores_b: Record<string, number>;
-}
-
-interface TournamentResult {
-  matchups: MatchupResult[];
-  rankings: string[];
-  overall_winner: string;
-  wins: Record<string, number>;
 }
 
 interface BenchmarkResult {
@@ -244,123 +229,7 @@ function BenchmarksTab() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Tournament Tab
-// ---------------------------------------------------------------------------
-
-function TournamentTab() {
-  const [modelIdsRaw, setModelIdsRaw] = useState("model-a, model-b, model-c, model-d");
-  const [datasetId, setDatasetId] = useState("dataset-001");
-  const [result, setResult] = useState<TournamentResult | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const parse = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
-
-  async function handleRun() {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/api/evaluation/tournament`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_ids: parse(modelIdsRaw), dataset_id: datasetId }),
-      });
-      const data: TournamentResult = await res.json();
-      setResult(data);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card title="Model Tournament">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Model IDs (comma-separated)</label>
-            <input
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              value={modelIdsRaw}
-              onChange={(e) => setModelIdsRaw(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Dataset ID</label>
-            <input
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-              value={datasetId}
-              onChange={(e) => setDatasetId(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="mt-4">
-          <Button onClick={handleRun} loading={loading}>Run Tournament</Button>
-        </div>
-      </Card>
-
-      {result && (
-        <>
-          <Card title="Rankings">
-            <div className="space-y-2">
-              {result.rankings.map((modelId, idx) => (
-                <div
-                  key={modelId}
-                  className={`flex items-center justify-between rounded-lg px-4 py-3 ${
-                    idx === 0
-                      ? "bg-yellow-50 border border-yellow-200"
-                      : "bg-gray-50 border border-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className={`text-lg font-bold ${idx === 0 ? "text-yellow-600" : "text-gray-500"}`}>
-                      #{idx + 1}
-                    </span>
-                    <span className="text-sm font-medium text-gray-900">{modelId}</span>
-                    {idx === 0 && (
-                      <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-800">
-                        Champion
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-sm text-gray-600">
-                    {result.wins[modelId]} win{result.wins[modelId] !== 1 ? "s" : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <Card title="Matchups">
-            <div className="space-y-3">
-              {result.matchups.map((m, idx) => (
-                <div key={idx} className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className={`text-sm font-medium ${m.winner === m.model_a ? "text-green-700" : "text-gray-700"}`}>
-                      {m.model_a} {m.winner === m.model_a && "(W)"}
-                    </span>
-                    <span className="text-xs text-gray-400">vs</span>
-                    <span className={`text-sm font-medium ${m.winner === m.model_b ? "text-green-700" : "text-gray-700"}`}>
-                      {m.winner === m.model_b && "(W) "}{m.model_b}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {Object.entries(m.metric_diffs).map(([metric, diff]) => (
-                      <div key={metric} className="text-center">
-                        <p className="text-xs text-gray-500">{metric}</p>
-                        <p className={`text-sm font-mono ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-600" : "text-gray-600"}`}>
-                          {diff > 0 ? "+" : ""}{diff.toFixed(4)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
+// TournamentTab is imported from @/components/evaluation/TournamentTab
 
 // ---------------------------------------------------------------------------
 // Threshold Tuning Tab
