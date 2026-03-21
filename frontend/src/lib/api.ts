@@ -738,15 +738,30 @@ export async function generateFromDescription(
 export type AlertSeverity = "critical" | "high" | "medium" | "low";
 export type AlertStatus = "firing" | "acknowledged" | "resolved" | "dismissed";
 
+export interface AlertEvidence {
+  type: "image" | "video" | "none";
+  url?: string;
+  thumbnail_url?: string;
+}
+
+export interface AlertHistoryEntry {
+  id: string;
+  status: AlertStatus;
+  created_at: string;
+}
+
 export interface Alert {
   id: string;
   rule_id: string;
+  rule_name?: string;
   severity: AlertSeverity;
   status: AlertStatus;
   message: string;
   metric_value: number;
   threshold: number;
+  source?: string;
   workspace_id: string;
+  evidence?: AlertEvidence;
   created_at: string;
   updated_at: string;
 }
@@ -876,6 +891,23 @@ export async function resolveAlert(alertId: string): Promise<Alert> {
 
 export async function dismissAlert(alertId: string): Promise<Alert> {
   const { data } = await api.post(`/api/alerts/${alertId}/dismiss`);
+  return data;
+}
+
+export async function patchAlertStatus(
+  alertId: string,
+  status: AlertStatus,
+): Promise<Alert> {
+  const { data } = await api.patch(`/api/alerts/${alertId}`, { status });
+  return data;
+}
+
+export async function getAlertHistory(
+  ruleId: string,
+): Promise<AlertHistoryEntry[]> {
+  const { data } = await api.get("/api/alerts/history", {
+    params: { rule_id: ruleId, limit: 5 },
+  });
   return data;
 }
 
