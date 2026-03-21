@@ -79,6 +79,10 @@ const DB_CEIL = 0;
 const PEAK_HOLD_DECAY_MS = 1500;
 const CAPTURE_DURATION_S = 5;
 
+// dB thresholds for level bar coloring
+const DB_GREEN_THRESHOLD = -20; // < -20 dB -> green
+const DB_AMBER_THRESHOLD = -6; // -20 to -6 dB -> amber, > -6 dB -> red
+
 // ---------------------------------------------------------------------------
 // Utility: autocorrelation-based pitch estimation
 // ---------------------------------------------------------------------------
@@ -122,6 +126,17 @@ function estimatePitch(
 
   if (bestOffset < 1) return 0;
   return sampleRate / bestOffset;
+}
+
+// ---------------------------------------------------------------------------
+// Utility: map a dB value to a color for the level bar
+// Green when < -20 dB, amber between -20 and -6 dB, red above -6 dB
+// ---------------------------------------------------------------------------
+
+function dbToLevelColor(db: number): string {
+  if (db < DB_GREEN_THRESHOLD) return "#22c55e";
+  if (db < DB_AMBER_THRESHOLD) return "#f59e0b";
+  return "#ef4444";
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +304,11 @@ export default function LiveMicSpectrogram() {
       if (freq > nyquist) continue;
       const yPos = plotH - (freq / nyquist) * plotH;
       if (yPos < 8 || yPos > plotH - 2) continue;
-      ctx.fillText(`${freq >= 1000 ? `${(freq / 1000).toFixed(0)}k` : freq.toString()}`, AXIS_PADDING_LEFT - 4, yPos + 3);
+      ctx.fillText(
+        `${freq >= 1000 ? `${(freq / 1000).toFixed(0)}k` : freq.toString()}`,
+        AXIS_PADDING_LEFT - 4,
+        yPos + 3
+      );
     }
 
     // X axis: time labels
@@ -303,16 +322,14 @@ export default function LiveMicSpectrogram() {
       ctx.fillText(timeLabel, xPos, canvas.height - 4);
     }
 
-    // --- Level meter ---
+    // --- Level meter (dB-based color thresholds) ---
     const lw = levelCanvas.width;
     const lh = levelCanvas.height;
     levelCtx.fillStyle = "#111827";
     levelCtx.fillRect(0, 0, lw, lh);
 
-    const dbNorm = Math.max(
-      0,
-      Math.min(1, (currentDb - DB_FLOOR) / (DB_CEIL - DB_FLOOR))
-    );
+    const clampedDb = Math.max(DB_FLOOR, Math.min(DB_CEIL, currentDb));
+    const dbNorm = (clampedDb - DB_FLOOR) / (DB_CEIL - DB_FLOOR);
     const peakNorm = Math.max(
       0,
       Math.min(
@@ -325,21 +342,12 @@ export default function LiveMicSpectrogram() {
     const meterX = 8;
     const meterW = lw - 16;
 
-    // Green zone (bottom 60%)
-    const greenEnd = lh * 0.6;
-    // Amber zone (60-85%)
-    const amberEnd = lh * 0.85;
-
-    // Draw bar from bottom
+    // Draw bar from bottom, color each pixel row based on its dB value
     for (let y = lh; y > lh - barHeight; y--) {
       const fraction = (lh - y) / lh;
-      if (fraction < 0.6) {
-        levelCtx.fillStyle = "#22c55e";
-      } else if (fraction < 0.85) {
-        levelCtx.fillStyle = "#f59e0b";
-      } else {
-        levelCtx.fillStyle = "#ef4444";
-      }
+      // Map pixel fraction back to dB scale
+      const pixelDb = DB_FLOOR + fraction * (DB_CEIL - DB_FLOOR);
+      levelCtx.fillStyle = dbToLevelColor(pixelDb);
       levelCtx.fillRect(meterX, y, meterW, 1);
     }
 
@@ -348,12 +356,28 @@ export default function LiveMicSpectrogram() {
     levelCtx.fillStyle = "#ffffff";
     levelCtx.fillRect(meterX, peakY - 1, meterW, 2);
 
-    // Zone labels
+    // dB threshold markers
     levelCtx.fillStyle = "#6b7280";
     levelCtx.font = "9px monospace";
     levelCtx.textAlign = "center";
     const cx = lw / 2;
+
+    // 0 dB label at top
     levelCtx.fillText("0", cx, 12);
+    // -20 dB marker
+    const greenY = lh - ((DB_GREEN_THRESHOLD - DB_FLOOR) / (DB_CEIL - DB_FLOOR)) * lh;
+    levelCtx.fillStyle = "#4b5563";
+    levelCtx.fillRect(meterX, greenY, meterW, 1);
+    levelCtx.fillStyle = "#6b7280";
+    levelCtx.fillText("-20", cx, greenY - 2);
+    // -6 dB marker
+    const amberY = lh - ((DB_AMBER_THRESHOLD - DB_FLOOR) / (DB_CEIL - DB_FLOOR)) * lh;
+    levelCtx.fillStyle = "#4b5563";
+    levelCtx.fillRect(meterX, amberY, meterW, 1);
+    levelCtx.fillStyle = "#6b7280";
+    levelCtx.fillText("-6", cx, amberY - 2);
+    // Floor label at bottom
+    levelCtx.fillStyle = "#6b7280";
     levelCtx.fillText(`${DB_FLOOR}`, cx, lh - 4);
   }, []);
 
@@ -442,7 +466,10 @@ export default function LiveMicSpectrogram() {
       const blob = new Blob(chunks, { type: "audio/webm" });
       const formData = new FormData();
       formData.append("file", blob, "mic-capture.webm");
-      formData.append("operations", JSON.stringify(["waveform", "stft", "mfcc"]));
+      formData.append(
+        "operations",
+        JSON.stringify(["waveform", "stft", "mfcc"])
+      );
 
       try {
         const response = await fetch("/api/audio/analyze", {
@@ -526,7 +553,7 @@ export default function LiveMicSpectrogram() {
               : "An error occurred while accessing the microphone. Please check your device and try again."}
           </p>
           <Button variant="danger" size="sm" onClick={requestPermission}>
-            Request Permission
+            Grant Permission
           </Button>
         </div>
       )}
