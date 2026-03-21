@@ -115,25 +115,39 @@ async def current_schedule():
 # System metrics
 # ---------------------------------------------------------------------------
 
-@router.get("/metrics")
-async def runtime_metrics():
-    """Return system resource utilisation metrics.
+class RuntimeMetricsResponse(BaseModel):
+    """Resource-usage percentages (0-100) consumed by the dashboard gauges."""
 
-    Uses *psutil* for real CPU percentage when available; falls back to
+    gpu: float = Field(ge=0, le=100, description="GPU utilisation %")
+    cpu: float = Field(ge=0, le=100, description="CPU utilisation %")
+    storage: float = Field(ge=0, le=100, description="Storage utilisation %")
+
+
+@router.get("/metrics", response_model=RuntimeMetricsResponse)
+async def runtime_metrics():
+    """Return system resource utilisation metrics as percentages (0-100).
+
+    Uses *psutil* for real CPU / disk metrics when available; falls back to
     hard-coded stub values so the endpoint always returns a valid response.
     """
     cpu_pct: float = 12.0
+    storage_pct: float = 4.8  # fallback: 2.4 / 50 * 100
+
     try:
         import psutil  # noqa: WPS433 — optional runtime import
 
         cpu_pct = psutil.cpu_percent(interval=0.1)
+
+        disk = psutil.disk_usage("/")
+        storage_pct = round(disk.percent, 1)
     except ImportError:
         pass
 
-    # Storage: stub values — replace with real disk inspection later.
-    return {
-        "gpu_pct": 0,
-        "cpu_pct": round(cpu_pct, 1),
-        "storage_used_gb": 2.4,
-        "storage_total_gb": 50,
-    }
+    # GPU: requires pynvml or similar — stub until integrated.
+    gpu_pct: float = 0.0
+
+    return RuntimeMetricsResponse(
+        gpu=round(gpu_pct, 1),
+        cpu=round(cpu_pct, 1),
+        storage=round(storage_pct, 1),
+    )
