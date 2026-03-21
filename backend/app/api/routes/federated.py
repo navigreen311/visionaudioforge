@@ -35,6 +35,13 @@ class StartRoundRequest(BaseModel):
     round_number: int | None = None
 
 
+class AddParticipantRequest(BaseModel):
+    site_id: str
+    site_name: str
+    location: str = ""
+    connection_url: str = ""
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
@@ -111,3 +118,79 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
         "participants": len(fed["participants"]),
         "status": "training",
     }
+
+
+# ---------------------------------------------------------------------------
+# Participant management endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/federations/{federation_id}/participants")
+async def add_participant(
+    federation_id: str, body: AddParticipantRequest
+) -> dict[str, str | dict[str, str | float]]:
+    """Invite / add a participant site to a federation."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+
+    fed = _federations[federation_id]
+    # Check for duplicate site_id
+    for p in fed["participants"]:
+        if p["id"] == body.site_id:
+            raise HTTPException(
+                status_code=409, detail=f"Participant {body.site_id} already exists"
+            )
+
+    participant = {
+        "id": body.site_id,
+        "name": body.site_name,
+        "location": body.location,
+        "connection_url": body.connection_url,
+        "status": "idle",
+        "samples": 0,
+        "contribution_pct": 0.0,
+        "local_accuracy": 0.0,
+        "data_quality": 0.0,
+        "joined_at": time.time(),
+    }
+    fed["participants"].append(participant)
+
+    if len(fed["participants"]) >= fed["min_participants"]:
+        fed["status"] = "ready"
+
+    return {"federation_id": federation_id, "participant": participant}
+
+
+@router.delete("/federations/{federation_id}/participants/{site_id}")
+async def remove_participant(federation_id: str, site_id: str) -> dict[str, str]:
+    """Remove a participant site from a federation."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+
+    fed = _federations[federation_id]
+    original_len = len(fed["participants"])
+    fed["participants"] = [p for p in fed["participants"] if p["id"] != site_id]
+
+    if len(fed["participants"]) == original_len:
+        raise HTTPException(status_code=404, detail=f"Participant {site_id} not found")
+
+    return {"status": "removed", "site_id": site_id}
+
+
+@router.post("/federations/{federation_id}/participants/{site_id}/reconnect")
+async def reconnect_participant(federation_id: str, site_id: str) -> dict[str, str]:
+    """Attempt to reconnect a disconnected participant."""
+    if federation_id not in _federations:
+        raise HTTPException(status_code=404, detail="Federation not found")
+
+    fed = _federations[federation_id]
+    for p in fed["participants"]:
+        if p["id"] == site_id:
+            if p.get("status") != "disconnected":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Participant {site_id} is not disconnected (status: {p.get('status')})",
+                )
+            p["status"] = "active"
+            return {"status": "reconnected", "site_id": site_id}
+
+    raise HTTPException(status_code=404, detail=f"Participant {site_id} not found")
