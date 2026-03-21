@@ -1,5 +1,7 @@
 """Observability routes — SRE dashboard, SLA, alert fatigue analytics."""
 
+import random
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -101,3 +103,60 @@ async def alert_fatigue(
 ):
     """Analyse alert fatigue for a workspace."""
     return await AlertAnalytics.analyze_alert_fatigue(db, workspace_id, days=days)
+
+
+# ------------------------------------------------------------------
+# Request volume (OB3)
+# ------------------------------------------------------------------
+
+
+def _mock_request_volume() -> list[dict[str, int]]:
+    """Generate 24 hours of mock request-volume data."""
+    now_hour = datetime.now(timezone.utc).hour
+    buckets: list[dict[str, int]] = []
+    for h in range(24):
+        base = random.randint(200, 1200) if h != now_hour else random.randint(80, 400)
+        errors = max(0, int(base * random.uniform(0.01, 0.08)))
+        buckets.append({"hour": h, "success": base - errors, "errors": errors})
+    return buckets
+
+
+@router.get("/request-volume")
+async def request_volume() -> dict[str, object]:
+    """Hourly request volume for the last 24 hours (mock data)."""
+    return {
+        "period": "24h",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "buckets": _mock_request_volume(),
+    }
+
+
+# ------------------------------------------------------------------
+# SLA history (OB4)
+# ------------------------------------------------------------------
+
+
+def _mock_sla_history(days: int = 7) -> list[dict[str, object]]:
+    """Generate daily SLA compliance percentages."""
+    today = datetime.now(timezone.utc).date()
+    history: list[dict[str, object]] = []
+    for i in range(days - 1, -1, -1):
+        day = today - timedelta(days=i)
+        # Mostly above 99.9, occasionally dip below
+        pct = round(random.uniform(99.5, 100.0), 3) if random.random() < 0.7 else round(random.uniform(98.5, 99.85), 3)
+        pct = min(pct, 100.0)
+        history.append({"date": day.isoformat(), "pct": pct})
+    return history
+
+
+@router.get("/sla-history")
+async def sla_history(
+    days: int = Query(7, ge=1, le=90, description="Number of days of history"),
+) -> dict[str, object]:
+    """Daily SLA compliance history (mock data)."""
+    return {
+        "days": days,
+        "target_pct": 99.9,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "history": _mock_sla_history(days),
+    }
