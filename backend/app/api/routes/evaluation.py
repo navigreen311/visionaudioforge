@@ -1,8 +1,9 @@
 """API routes for the Evaluation Lab — benchmarks, tournament, threshold analysis, scorecards."""
 
+import math
 import random
-import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -81,6 +82,43 @@ class ScorecardOut(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Bracket-style single-elimination tournament schemas
+# ---------------------------------------------------------------------------
+
+
+class BracketMatchup(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    model_a: str
+    model_b: str
+    winner: str
+    score_a: float
+    score_b: float
+
+
+class BracketRound(BaseModel):
+    round: int
+    label: str
+    matchups: list[BracketMatchup]
+
+
+class BracketTournamentRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    title: str = "Untitled Tournament"
+    model_ids: list[str]
+    dataset_id: str
+    metric: str = "accuracy"
+
+
+class BracketTournamentOut(BaseModel):
+    id: str
+    title: str
+    metric: str
+    rounds: list[BracketRound]
+    winner: str
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -115,6 +153,99 @@ async def run_benchmark(
     return BenchmarkRunOut(**result)
 
 
+@router.post("/tournament/bracket", response_model=BracketTournamentOut)
+async def run_bracket_tournament(
+    body: BracketTournamentRequest,
+) -> BracketTournamentOut:
+    """Run a single-elimination bracket tournament (mock/stub).
+
+    Accepts 4, 8, or 16 models. Pads to the next power-of-two if needed.
+    Returns round-by-round matchups with scores and an overall winner.
+    """
+    if len(body.model_ids) < 4:
+        raise HTTPException(
+            status_code=400,
+            detail="At least 4 models are required for a bracket tournament",
+        )
+
+    # Pad to next power of two with BYE entries
+    n = len(body.model_ids)
+    bracket_size = 2 ** math.ceil(math.log2(n))
+    participants = list(body.model_ids)
+    while len(participants) < bracket_size:
+        participants.append(f"BYE-{len(participants)}")
+
+    # Shuffle for seeding
+    random.shuffle(participants)
+
+    # Generate per-model base score for the chosen metric
+    model_strength: dict[str, float] = {
+        mid: random.uniform(0.60, 0.96) for mid in participants
+    }
+    # BYE models always lose
+    for mid in participants:
+        if mid.startswith("BYE-"):
+            model_strength[mid] = 0.0
+
+    rounds: list[BracketRound] = []
+    current_participants = list(participants)
+    total_rounds = int(math.log2(bracket_size))
+
+    round_labels = {
+        1: "Finals",
+        2: "Semifinals",
+        3: "Quarterfinals",
+    }
+
+    for r_idx in range(total_rounds):
+        round_num = r_idx + 1
+        rounds_remaining = total_rounds - r_idx
+        label = round_labels.get(rounds_remaining, f"Round {round_num}")
+
+        matchups: list[BracketMatchup] = []
+        next_round: list[str] = []
+
+        for i in range(0, len(current_participants), 2):
+            ma = current_participants[i]
+            mb = current_participants[i + 1]
+
+            # Simulate scores with some noise
+            sa = round(
+                min(1.0, max(0.0, model_strength[ma] + random.uniform(-0.05, 0.05))),
+                4,
+            )
+            sb = round(
+                min(1.0, max(0.0, model_strength[mb] + random.uniform(-0.05, 0.05))),
+                4,
+            )
+
+            winner = ma if sa >= sb else mb
+            matchups.append(
+                BracketMatchup(
+                    model_a=ma,
+                    model_b=mb,
+                    winner=winner,
+                    score_a=sa,
+                    score_b=sb,
+                )
+            )
+            next_round.append(winner)
+
+        rounds.append(BracketRound(round=round_num, label=label, matchups=matchups))
+        current_participants = next_round
+
+    overall_winner = current_participants[0]
+
+    return BracketTournamentOut(
+        id=str(uuid.uuid4()),
+        title=body.title,
+        metric=body.metric,
+        rounds=rounds,
+        winner=overall_winner,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 @router.post("/tournament", response_model=TournamentOut)
 async def run_tournament(
     body: TournamentRequest,
@@ -139,43 +270,6 @@ async def threshold_analysis(body: ThresholdRequest) -> list[ThresholdPoint]:
         body.predictions, body.ground_truth, body.thresholds
     )
     return [ThresholdPoint(**r) for r in results]
-
-
-class BenchmarkRunRequest(BaseModel):
-    """Standalone benchmark run — create + execute in one call."""
-
-    model_config = {"protected_namespaces": ()}
-    name: str
-    dataset_id: str
-    model_ids: list[str] = Field(..., min_length=2, max_length=10)
-    metrics: list[str] = Field(default_factory=lambda: ["accuracy", "precision", "recall", "f1"])
-    workspace_id: str | None = None
-
-
-@router.post("/benchmark", response_model=BenchmarkRunOut)
-async def run_benchmark_standalone(body: BenchmarkRunRequest) -> BenchmarkRunOut:
-    """Create and run a benchmark in a single call, returning mock results."""
-    start = time.monotonic()
-
-    # Generate deterministic-ish mock scores per model per metric
-    results: dict[str, dict[str, float]] = {}
-    for model_id in body.model_ids:
-        seed = hash(model_id + body.dataset_id) & 0xFFFFFFFF
-        rng = random.Random(seed)
-        scores: dict[str, float] = {}
-        for metric in body.metrics:
-            scores[metric] = round(rng.uniform(0.55, 0.98), 4)
-        results[model_id] = scores
-
-    # Rank by average score descending
-    def avg_score(mid: str) -> float:
-        vals = results[mid].values()
-        return sum(vals) / len(vals) if vals else 0.0
-
-    ranking = sorted(body.model_ids, key=avg_score, reverse=True)
-    duration_ms = round((time.monotonic() - start) * 1000, 2)
-
-    return BenchmarkRunOut(results=results, ranking=ranking, duration_ms=duration_ms)
 
 
 @router.get("/scorecard/{model_id}", response_model=ScorecardOut)

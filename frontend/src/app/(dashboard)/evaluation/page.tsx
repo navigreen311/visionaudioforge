@@ -4,7 +4,7 @@ import React, { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
-import BenchmarkForm from "@/components/evaluation/BenchmarkForm";
+import TournamentTab from "@/components/evaluation/TournamentTab";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -18,22 +18,6 @@ interface ThresholdPoint {
   recall: number;
   f1: number;
   accuracy: number;
-}
-
-interface MatchupResult {
-  model_a: string;
-  model_b: string;
-  winner: string;
-  metric_diffs: Record<string, number>;
-  scores_a: Record<string, number>;
-  scores_b: Record<string, number>;
-}
-
-interface TournamentResult {
-  matchups: MatchupResult[];
-  rankings: string[];
-  overall_winner: string;
-  wins: Record<string, number>;
 }
 
 interface BenchmarkResult {
@@ -51,12 +35,57 @@ interface ScorecardData {
 }
 
 // ---------------------------------------------------------------------------
-// Benchmarks Tab — uses BenchmarkForm + inline results display
+// Benchmarks Tab
 // ---------------------------------------------------------------------------
 
 function BenchmarksTab() {
+  const [name, setName] = useState("benchmark-1");
+  const [datasetId, setDatasetId] = useState("dataset-001");
+  const [modelIdsRaw, setModelIdsRaw] = useState("model-a, model-b, model-c");
+  const [metricsRaw, setMetricsRaw] = useState("accuracy, precision, recall, f1");
+  const [workspaceId, setWorkspaceId] = useState("00000000-0000-0000-0000-000000000001");
+  const [benchmarkId, setBenchmarkId] = useState<string | null>(null);
   const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkResult | null>(null);
   const [scorecard, setScorecard] = useState<ScorecardData | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const parse = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
+
+  async function handleCreate() {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/evaluation/benchmarks`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          dataset_id: datasetId,
+          model_ids: parse(modelIdsRaw),
+          metrics: parse(metricsRaw),
+          workspace_id: workspaceId,
+        }),
+      });
+      const data = await res.json();
+      setBenchmarkId(data.id);
+      setBenchmarkResults(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleRun() {
+    if (!benchmarkId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/api/evaluation/benchmarks/${benchmarkId}/run`, {
+        method: "POST",
+      });
+      const data: BenchmarkResult = await res.json();
+      setBenchmarkResults(data);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function handleScorecard(modelId: string) {
     const res = await fetch(`${API}/api/evaluation/scorecard/${modelId}`);
@@ -66,7 +95,63 @@ function BenchmarksTab() {
 
   return (
     <div className="space-y-6">
-      <BenchmarkForm onResults={(results) => setBenchmarkResults(results)} />
+      <Card title="Create Benchmark">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
+            <input
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Dataset ID</label>
+            <input
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+              value={datasetId}
+              onChange={(e) => setDatasetId(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Model IDs (comma-separated)</label>
+            <input
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+              value={modelIdsRaw}
+              onChange={(e) => setModelIdsRaw(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Metrics (comma-separated)</label>
+            <input
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+              value={metricsRaw}
+              onChange={(e) => setMetricsRaw(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Workspace ID</label>
+            <input
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
+              value={workspaceId}
+              onChange={(e) => setWorkspaceId(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex gap-3">
+          <Button onClick={handleCreate} loading={loading && !benchmarkId}>
+            Create Benchmark
+          </Button>
+          {benchmarkId && (
+            <Button variant="secondary" onClick={handleRun} loading={loading && !!benchmarkId}>
+              Run Benchmark
+            </Button>
+          )}
+        </div>
+        {benchmarkId && (
+          <p className="mt-2 text-sm text-gray-500">Benchmark ID: {benchmarkId}</p>
+        )}
+      </Card>
 
       {benchmarkResults && (
         <Card title={`Results (${benchmarkResults.duration_ms}ms)`}>
@@ -93,7 +178,7 @@ function BenchmarksTab() {
                     <td className="px-4 py-3">
                       <button
                         onClick={() => handleScorecard(modelId)}
-                        className="text-sm text-[#185FA5] hover:text-[#134a84] underline"
+                        className="text-sm text-brand-600 hover:text-brand-800 underline"
                       >
                         Scorecard
                       </button>
@@ -144,123 +229,7 @@ function BenchmarksTab() {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Tournament Tab — placeholder for other agent
-// ---------------------------------------------------------------------------
-
-function TournamentTab() {
-  const [modelIdsRaw, setModelIdsRaw] = useState("model-a, model-b, model-c, model-d");
-  const [datasetId, setDatasetId] = useState("dataset-001");
-  const [result, setResult] = useState<TournamentResult | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const parse = (s: string) => s.split(",").map((x) => x.trim()).filter(Boolean);
-
-  async function handleRun() {
-    setLoading(true);
-    try {
-      const res = await fetch(`${API}/api/evaluation/tournament`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_ids: parse(modelIdsRaw), dataset_id: datasetId }),
-      });
-      const data: TournamentResult = await res.json();
-      setResult(data);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card title="Model Tournament">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Model IDs (comma-separated)</label>
-            <input
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-[#185FA5] focus:ring-1 focus:ring-[#185FA5] outline-none"
-              value={modelIdsRaw}
-              onChange={(e) => setModelIdsRaw(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Dataset ID</label>
-            <input
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-[#185FA5] focus:ring-1 focus:ring-[#185FA5] outline-none"
-              value={datasetId}
-              onChange={(e) => setDatasetId(e.target.value)}
-            />
-          </div>
-        </div>
-        <div className="mt-4">
-          <Button onClick={handleRun} loading={loading}>Run Tournament</Button>
-        </div>
-      </Card>
-
-      {result && (
-        <>
-          <Card title="Rankings">
-            <div className="space-y-2">
-              {result.rankings.map((modelId, idx) => (
-                <div
-                  key={modelId}
-                  className={`flex items-center justify-between rounded-lg px-4 py-3 ${
-                    idx === 0
-                      ? "bg-yellow-50 border border-yellow-200"
-                      : "bg-gray-50 border border-gray-200"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <span className={`text-lg font-bold ${idx === 0 ? "text-yellow-600" : "text-gray-500"}`}>
-                      #{idx + 1}
-                    </span>
-                    <span className="text-sm font-medium text-gray-900">{modelId}</span>
-                    {idx === 0 && (
-                      <span className="rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-semibold text-yellow-800">
-                        Champion
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-sm text-gray-600">
-                    {result.wins[modelId]} win{result.wins[modelId] !== 1 ? "s" : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Card>
-
-          <Card title="Matchups">
-            <div className="space-y-3">
-              {result.matchups.map((m, idx) => (
-                <div key={idx} className="rounded-lg border border-gray-200 p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className={`text-sm font-medium ${m.winner === m.model_a ? "text-green-700" : "text-gray-700"}`}>
-                      {m.model_a} {m.winner === m.model_a && "(W)"}
-                    </span>
-                    <span className="text-xs text-gray-400">vs</span>
-                    <span className={`text-sm font-medium ${m.winner === m.model_b ? "text-green-700" : "text-gray-700"}`}>
-                      {m.winner === m.model_b && "(W) "}{m.model_b}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {Object.entries(m.metric_diffs).map(([metric, diff]) => (
-                      <div key={metric} className="text-center">
-                        <p className="text-xs text-gray-500">{metric}</p>
-                        <p className={`text-sm font-mono ${diff > 0 ? "text-green-600" : diff < 0 ? "text-red-600" : "text-gray-600"}`}>
-                          {diff > 0 ? "+" : ""}{diff.toFixed(4)}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
+// TournamentTab is imported from @/components/evaluation/TournamentTab
 
 // ---------------------------------------------------------------------------
 // Threshold Tuning Tab
@@ -303,7 +272,7 @@ function ThresholdTuningTab() {
               Predictions (comma-separated floats 0-1)
             </label>
             <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-[#185FA5] focus:ring-1 focus:ring-[#185FA5] outline-none"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
               rows={2}
               value={predictionsRaw}
               onChange={(e) => setPredictionsRaw(e.target.value)}
@@ -314,7 +283,7 @@ function ThresholdTuningTab() {
               Ground Truth (comma-separated 0 or 1)
             </label>
             <textarea
-              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-[#185FA5] focus:ring-1 focus:ring-[#185FA5] outline-none"
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm font-mono focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
               rows={2}
               value={truthRaw}
               onChange={(e) => setTruthRaw(e.target.value)}
@@ -336,13 +305,13 @@ function ThresholdTuningTab() {
                 return (
                   <div
                     key={pt.threshold}
-                    className={`rounded-lg p-3 ${isOptimal ? "bg-[#185FA5]/5 border border-[#185FA5]/20" : "bg-gray-50"}`}
+                    className={`rounded-lg p-3 ${isOptimal ? "bg-brand-50 border border-brand-200" : "bg-gray-50"}`}
                   >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-gray-900">
                         Threshold: {pt.threshold}
                         {isOptimal && (
-                          <span className="ml-2 rounded-full bg-[#185FA5]/10 px-2 py-0.5 text-xs font-semibold text-[#185FA5]">
+                          <span className="ml-2 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-800">
                             Optimal F1
                           </span>
                         )}
@@ -375,7 +344,7 @@ function ThresholdTuningTab() {
                   {results.map((pt) => {
                     const isOptimal = bestF1 && pt.threshold === bestF1.threshold;
                     return (
-                      <tr key={pt.threshold} className={isOptimal ? "bg-[#185FA5]/5" : "hover:bg-gray-50"}>
+                      <tr key={pt.threshold} className={isOptimal ? "bg-brand-50" : "hover:bg-gray-50"}>
                         <td className="px-4 py-3 text-sm font-medium text-gray-900">{pt.threshold}</td>
                         <td className="px-4 py-3 text-sm text-gray-700">{pt.precision}</td>
                         <td className="px-4 py-3 text-sm text-gray-700">{pt.recall}</td>
