@@ -1,6 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import ExportHistory from "@/components/edge/ExportHistory";
+import DeviceFleet from "@/components/edge/DeviceFleet";
+import RegisterDeviceModal from "@/components/edge/RegisterDeviceModal";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -51,6 +54,8 @@ export default function EdgePage() {
   const [packageFormat, setPackageFormat] = useState("onnx");
 
   const [error, setError] = useState<string | null>(null);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [fleetKey, setFleetKey] = useState(0);
 
   const toggleFormat = (id: string) => {
     setSelectedFormats((prev) =>
@@ -406,6 +411,29 @@ export default function EdgePage() {
           </div>
         )}
       </section>
+
+      {/* ---- Export History (ED6) ---- */}
+      <ExportHistory />
+
+      {/* ---- Device Fleet (ED7) ---- */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-800">Fleet Management</h2>
+          <button
+            onClick={() => setRegisterOpen(true)}
+            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 transition-colors"
+          >
+            Register Device
+          </button>
+        </div>
+        <DeviceFleet key={fleetKey} />
+      </div>
+
+      <RegisterDeviceModal
+        open={registerOpen}
+        onClose={() => setRegisterOpen(false)}
+        onRegistered={() => setFleetKey((k) => k + 1)}
+      />
     </div>
   );
 }
