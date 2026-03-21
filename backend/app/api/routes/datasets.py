@@ -15,6 +15,7 @@ from app.schemas.common import PaginatedResponse
 from app.schemas.dataset import (
     DatasetCreate,
     DatasetRead,
+    DatasetSplitInfo,
     SplitRequest,
     SplitResponse,
     UploadSummary,
@@ -35,6 +36,14 @@ def _get_storage() -> MinIOStorageService:
 
 def _dataset_to_read(d) -> DatasetRead:
     meta = d.metadata_ or {}
+    stats = meta.get("stats") or {}
+    split_raw = meta.get("split") or stats.get("split") or {}
+    class_counts_raw = (
+        meta.get("class_counts")
+        or stats.get("class_counts")
+        or stats.get("label_distribution")
+        or {}
+    )
     return DatasetRead(
         id=d.id,
         name=d.name,
@@ -43,7 +52,13 @@ def _dataset_to_read(d) -> DatasetRead:
         sample_count=d.item_count or 0,
         size_bytes=d.size_bytes or 0,
         version=meta.get("version", 1),
-        stats=meta.get("stats"),
+        split=DatasetSplitInfo(
+            train=split_raw.get("train", 0),
+            val=split_raw.get("val", 0),
+            test=split_raw.get("test", 0),
+        ),
+        class_counts=class_counts_raw,
+        stats=stats if stats else None,
         created_at=d.created_at,
         updated_at=d.updated_at,
     )

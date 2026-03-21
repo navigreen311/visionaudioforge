@@ -32,15 +32,20 @@ class ModelRegistryService:
         backbone: str | None,
         metrics: dict | None,
         workspace_id: UUID,
+        tags: list[str] | None = None,
+        description: str | None = None,
+        status: str = "registered",
     ) -> ModelRecord:
-        """Create a new model record with status='registered'."""
+        """Create a new model record with the given status (default 'registered')."""
         record = ModelRecord(
             name=name,
             version=version,
             backbone=backbone,
             metrics=metrics or {},
+            tags=tags,
+            description=description,
             workspace_id=workspace_id,
-            status="registered",
+            status=status,
         )
         db.add(record)
         await db.commit()

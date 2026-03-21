@@ -2,6 +2,9 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import axios from "axios";
+import Tabs from "@/components/ui/Tabs";
+import ModelRegistryTable from "@/components/train/ModelRegistryTable";
+import RegisterModelModal from "@/components/train/RegisterModelModal";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,8 +28,10 @@ interface DatasetStats {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Constants
 // ---------------------------------------------------------------------------
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
 const MODALITY_COLORS: Record<string, string> = {
   image: "bg-blue-100 text-blue-800",
   video: "bg-purple-100 text-purple-800",
@@ -34,6 +39,12 @@ const MODALITY_COLORS: Record<string, string> = {
   multimodal: "bg-orange-100 text-orange-800",
 };
 
+// ASSUMPTION: workspace_id comes from context/auth in real app. Placeholder for now.
+const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function humanSize(bytes: number): string {
   if (bytes === 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -44,7 +55,6 @@ function humanSize(bytes: number): string {
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
-
 function ModalityBadge({ modality }: { modality: string }) {
   const cls = MODALITY_COLORS[modality] || "bg-gray-100 text-gray-800";
   return (
@@ -74,7 +84,7 @@ function CreateDatasetModal({
   const handleCreate = async () => {
     setLoading(true);
     try {
-      await axios.post("/api/datasets", { name, modality, workspace_id: workspaceId });
+      await axios.post(`${API_BASE}/api/datasets`, { name, modality, workspace_id: workspaceId });
       onCreated();
       onClose();
       setName("");
@@ -140,7 +150,7 @@ function UploadZone({ datasetId, onDone }: { datasetId: string; onDone: () => vo
     Array.from(fileList).forEach((f) => formData.append("files", f));
     setProgress(0);
     try {
-      await axios.post(`/api/datasets/${datasetId}/upload`, formData, {
+      await axios.post(`${API_BASE}/api/datasets/${datasetId}/upload`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
         onUploadProgress: (e) => {
           if (e.total) setProgress(Math.round((e.loaded / e.total) * 100));
@@ -191,7 +201,7 @@ function UploadZone({ datasetId, onDone }: { datasetId: string; onDone: () => vo
 }
 
 // ---------------------------------------------------------------------------
-// Stats panel (simple pie via CSS conic-gradient)
+// Stats panel
 // ---------------------------------------------------------------------------
 function StatsPanel({ stats }: { stats: DatasetStats | null }) {
   if (!stats) return <p className="text-sm text-gray-400">No stats computed yet.</p>;
@@ -199,7 +209,6 @@ function StatsPanel({ stats }: { stats: DatasetStats | null }) {
   const labels = Object.entries(stats.label_distribution);
   const total = labels.reduce((s, [, v]) => s + v, 0);
 
-  // Build conic-gradient segments
   const colors = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444", "#6366f1", "#ec4899"];
   let cumPct = 0;
   const segments = labels.map(([, count], i) => {
@@ -248,7 +257,7 @@ function SplitControls({ datasetId, onDone }: { datasetId: string; onDone: () =>
   const handleSplit = async () => {
     setLoading(true);
     try {
-      const resp = await axios.post(`/api/datasets/${datasetId}/split`, {
+      const resp = await axios.post(`${API_BASE}/api/datasets/${datasetId}/split`, {
         train: train / 100,
         val: val / 100,
         test: test / 100,
@@ -292,7 +301,7 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
 
   const recomputeStats = async () => {
     try {
-      const resp = await axios.post(`/api/datasets/${dataset.id}/stats`);
+      const resp = await axios.post(`${API_BASE}/api/datasets/${dataset.id}/stats`);
       setStats(resp.data);
     } catch (e) {
       console.error(e);
@@ -300,7 +309,7 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
   };
 
   const handleExport = () => {
-    window.open(`/api/datasets/${dataset.id}/export?format=json`, "_blank");
+    window.open(`${API_BASE}/api/datasets/${dataset.id}/export?format=json`, "_blank");
   };
 
   return (
@@ -318,13 +327,11 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
         <button onClick={handleExport} className="px-4 py-2 text-sm border border-gray-300 rounded-lg hover:bg-gray-50">Export JSON</button>
       </div>
 
-      {/* Upload zone */}
       <section>
         <h3 className="text-sm font-medium text-gray-700 mb-2">Upload Samples</h3>
         <UploadZone datasetId={dataset.id} onDone={recomputeStats} />
       </section>
 
-      {/* Sample preview grid (placeholder thumbnails) */}
       <section>
         <h3 className="text-sm font-medium text-gray-700 mb-2">Sample Preview</h3>
         <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
@@ -337,7 +344,6 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
         </div>
       </section>
 
-      {/* Stats */}
       <section>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-medium text-gray-700">Statistics</h3>
@@ -346,7 +352,6 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
         <StatsPanel stats={stats} />
       </section>
 
-      {/* Split */}
       <section>
         <h3 className="text-sm font-medium text-gray-700 mb-2">Train / Val / Test Split</h3>
         <SplitControls datasetId={dataset.id} onDone={recomputeStats} />
@@ -356,144 +361,183 @@ function DatasetDetail({ dataset, onBack }: { dataset: DatasetItem; onBack: () =
 }
 
 // ---------------------------------------------------------------------------
-// Main page
+// Tab content: Models
 // ---------------------------------------------------------------------------
-export default function TrainPage() {
-  const [tab, setTab] = useState<"models" | "experiments" | "datasets">("models");
+function ModelsTab() {
+  const [showRegister, setShowRegister] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  return (
+    <>
+      <ModelRegistryTable
+        workspaceId={WORKSPACE_ID}
+        onRegisterClick={() => setShowRegister(true)}
+        refreshKey={refreshKey}
+      />
+      <RegisterModelModal
+        isOpen={showRegister}
+        onClose={() => setShowRegister(false)}
+        onRegistered={() => setRefreshKey((k) => k + 1)}
+        workspaceId={WORKSPACE_ID}
+      />
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab content: Experiments (placeholder for another agent)
+// ---------------------------------------------------------------------------
+function ExperimentsTab() {
+  return (
+    <div className="flex items-center justify-center min-h-[40vh]">
+      <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
+        <div className="mb-4 mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-50">
+          <svg className="w-8 h-8 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+          </svg>
+        </div>
+        <h2 className="text-xl font-semibold text-gray-900 mb-2">Experiments</h2>
+        <p className="text-gray-500 text-sm">
+          Experiment tracking, training curves, and hyperparameter comparison.
+        </p>
+        <div className="mt-4 inline-block px-3 py-1 bg-amber-50 text-amber-700 text-sm rounded-full border border-amber-200">
+          Coming Soon
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab content: Datasets
+// ---------------------------------------------------------------------------
+function DatasetsTab() {
   const [datasets, setDatasets] = useState<DatasetItem[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<DatasetItem | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // ASSUMPTION: workspace_id comes from context/auth in real app. Placeholder for now.
-  const workspaceId = "00000000-0000-0000-0000-000000000001";
-
   const fetchDatasets = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await axios.get(`/api/datasets?workspace_id=${workspaceId}`);
+      const resp = await axios.get(`${API_BASE}/api/datasets?workspace_id=${WORKSPACE_ID}`);
       setDatasets(resp.data.items || []);
     } catch (e) {
       console.error(e);
     } finally {
       setLoading(false);
     }
-  }, [workspaceId]);
+  }, []);
 
   useEffect(() => {
-    if (tab === "datasets") fetchDatasets();
-  }, [tab]);
+    fetchDatasets();
+  }, [fetchDatasets]);
 
-  const TAB_LABELS: Record<string, string> = {
-    models: "Models",
-    experiments: "Experiments",
-    datasets: "Datasets",
-  };
+  if (selectedDataset) {
+    return (
+      <DatasetDetail
+        dataset={selectedDataset}
+        onBack={() => {
+          setSelectedDataset(null);
+          fetchDatasets();
+        }}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold">Datasets</h2>
+        <button
+          onClick={() => setShowCreate(true)}
+          className="px-4 py-2 bg-[#185FA5] text-white text-sm rounded-lg hover:bg-[#14508a] transition-colors"
+        >
+          Create Dataset
+        </button>
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <div className="animate-spin h-6 w-6 border-2 border-[#185FA5] border-t-transparent rounded-full" />
+          <span className="ml-3 text-sm text-gray-500">Loading...</span>
+        </div>
+      ) : datasets.length === 0 ? (
+        <p className="text-sm text-gray-400">No datasets yet. Create one to get started.</p>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
+              <tr>
+                <th className="text-left px-4 py-3">Name</th>
+                <th className="text-left px-4 py-3">Modality</th>
+                <th className="text-right px-4 py-3">Samples</th>
+                <th className="text-right px-4 py-3">Size</th>
+                <th className="text-right px-4 py-3">Version</th>
+                <th className="text-left px-4 py-3">Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              {datasets.map((ds) => (
+                <tr
+                  key={ds.id}
+                  onClick={() => setSelectedDataset(ds)}
+                  className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
+                >
+                  <td className="px-4 py-3 font-medium">{ds.name}</td>
+                  <td className="px-4 py-3"><ModalityBadge modality={ds.modality} /></td>
+                  <td className="px-4 py-3 text-right">{ds.sample_count}</td>
+                  <td className="px-4 py-3 text-right">{humanSize(ds.size_bytes)}</td>
+                  <td className="px-4 py-3 text-right">v{ds.version}</td>
+                  <td className="px-4 py-3 text-gray-500">{new Date(ds.created_at).toLocaleDateString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <CreateDatasetModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onCreated={fetchDatasets}
+        workspaceId={WORKSPACE_ID}
+      />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
+export default function TrainPage() {
+  const [activeTab, setActiveTab] = useState("models");
+
+  const tabs = [
+    {
+      id: "models",
+      label: "Models",
+      content: <ModelsTab />,
+    },
+    {
+      id: "experiments",
+      label: "Experiments",
+      content: <ExperimentsTab />,
+    },
+    {
+      id: "datasets",
+      label: "Datasets",
+      content: <DatasetsTab />,
+    },
+  ];
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      {/* Tab bar */}
-      <div className="flex gap-4 border-b mb-6">
-        {(["models", "experiments", "datasets"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => { setTab(t); setSelectedDataset(null); }}
-            className={`pb-2 px-1 text-sm font-medium border-b-2 transition ${
-              tab === t ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            {TAB_LABELS[t]}
-          </button>
-        ))}
+      <div className="mb-2">
+        <h1 className="text-2xl font-bold text-gray-900">Train</h1>
+        <p className="text-sm text-gray-500 mt-1">
+          Model registry, experiments, and dataset management.
+        </p>
       </div>
-
-      {/* Models tab */}
-      {tab === "models" && (
-        <div className="flex items-center justify-center min-h-[40vh]">
-          <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Models</h2>
-            <p className="text-gray-500">Model registry, versioning, and lifecycle management.</p>
-            <div className="mt-4 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
-              Not Implemented
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Experiments tab */}
-      {tab === "experiments" && (
-        <div className="flex items-center justify-center min-h-[40vh]">
-          <div className="bg-white rounded-xl shadow-lg p-8 max-w-md w-full text-center border border-gray-100">
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Experiments</h2>
-            <p className="text-gray-500">Experiment tracking, training curves, and hyperparameter comparison.</p>
-            <div className="mt-4 inline-block px-3 py-1 bg-yellow-50 text-yellow-700 text-sm rounded-full border border-yellow-200">
-              Not Implemented
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Datasets tab */}
-      {tab === "datasets" && !selectedDataset && (
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Datasets</h2>
-            <button
-              onClick={() => setShowCreate(true)}
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
-            >
-              Create Dataset
-            </button>
-          </div>
-          {loading ? (
-            <p className="text-sm text-gray-400">Loading...</p>
-          ) : datasets.length === 0 ? (
-            <p className="text-sm text-gray-400">No datasets yet. Create one to get started.</p>
-          ) : (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-gray-500 text-xs uppercase">
-                  <tr>
-                    <th className="text-left px-4 py-3">Name</th>
-                    <th className="text-left px-4 py-3">Modality</th>
-                    <th className="text-right px-4 py-3">Samples</th>
-                    <th className="text-right px-4 py-3">Size</th>
-                    <th className="text-right px-4 py-3">Version</th>
-                    <th className="text-left px-4 py-3">Created</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {datasets.map((ds) => (
-                    <tr
-                      key={ds.id}
-                      onClick={() => setSelectedDataset(ds)}
-                      className="border-t border-gray-100 hover:bg-gray-50 cursor-pointer"
-                    >
-                      <td className="px-4 py-3 font-medium">{ds.name}</td>
-                      <td className="px-4 py-3"><ModalityBadge modality={ds.modality} /></td>
-                      <td className="px-4 py-3 text-right">{ds.sample_count}</td>
-                      <td className="px-4 py-3 text-right">{humanSize(ds.size_bytes)}</td>
-                      <td className="px-4 py-3 text-right">v{ds.version}</td>
-                      <td className="px-4 py-3 text-gray-500">{new Date(ds.created_at).toLocaleDateString()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <CreateDatasetModal
-            open={showCreate}
-            onClose={() => setShowCreate(false)}
-            onCreated={fetchDatasets}
-            workspaceId={workspaceId}
-          />
-        </div>
-      )}
-
-      {/* Dataset detail */}
-      {tab === "datasets" && selectedDataset && (
-        <DatasetDetail dataset={selectedDataset} onBack={() => { setSelectedDataset(null); fetchDatasets(); }} />
-      )}
+      <Tabs tabs={tabs} activeTab={activeTab} onChange={setActiveTab} />
     </div>
   );
 }

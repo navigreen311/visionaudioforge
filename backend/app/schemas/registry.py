@@ -11,6 +11,9 @@ class ModelCreate(BaseModel):
     version: str = Field(..., min_length=1, max_length=50)
     backbone: str | None = None
     metrics: dict | None = None
+    tags: list[str] | None = None
+    description: str | None = None
+    status: str = "registered"
     workspace_id: UUID
 
 
@@ -21,6 +24,8 @@ class ModelRead(BaseModel):
     status: str
     backbone: str | None
     metrics: dict | None
+    tags: list[str] | None = None
+    description: str | None = None
     workspace_id: UUID
     created_at: datetime
     updated_at: datetime

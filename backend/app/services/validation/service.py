@@ -82,11 +82,66 @@ class ValidationService:
 
         is_calibrated = ece < 0.05  # industry-standard threshold
 
+        # --- Extended classification metrics (VA1) ---
+        threshold = 0.5
+        tp = sum(
+            1 for p, g in zip(predictions, ground_truth) if p >= threshold and g == 1
+        )
+        fp = sum(
+            1 for p, g in zip(predictions, ground_truth) if p >= threshold and g == 0
+        )
+        tn = sum(
+            1 for p, g in zip(predictions, ground_truth) if p < threshold and g == 0
+        )
+        fn = sum(
+            1 for p, g in zip(predictions, ground_truth) if p < threshold and g == 1
+        )
+
+        accuracy = (tp + tn) / n if n > 0 else 0.0
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (
+            2 * precision * recall / (precision + recall)
+            if (precision + recall) > 0
+            else 0.0
+        )
+
+        # Approximate AUC-ROC via trapezoidal rule (simple ranked approach)
+        # Sort by descending prediction score and compute TPR/FPR curve
+        total_pos = sum(ground_truth)
+        total_neg = n - total_pos
+        if total_pos > 0 and total_neg > 0:
+            sorted_pairs = sorted(
+                zip(predictions, ground_truth), key=lambda x: -x[0]
+            )
+            auc_roc = 0.0
+            tp_count = 0
+            fp_count = 0
+            prev_fpr = 0.0
+            prev_tpr = 0.0
+            for pred_val, gt_val in sorted_pairs:
+                if gt_val == 1:
+                    tp_count += 1
+                else:
+                    fp_count += 1
+                fpr = fp_count / total_neg
+                tpr = tp_count / total_pos
+                auc_roc += (fpr - prev_fpr) * (tpr + prev_tpr) / 2
+                prev_fpr = fpr
+                prev_tpr = tpr
+        else:
+            auc_roc = 0.0
+
         return {
             "bins": bins,
             "ece": round(ece, 6),
             "mce": round(mce, 6),
             "is_calibrated": is_calibrated,
+            "accuracy": round(accuracy, 6),
+            "precision": round(precision, 6),
+            "recall": round(recall, 6),
+            "f1": round(f1, 6),
+            "auc_roc": round(auc_roc, 6),
         }
 
     # ------------------------------------------------------------------
