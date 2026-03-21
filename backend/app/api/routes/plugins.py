@@ -30,6 +30,19 @@ class PluginExecute(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class PluginReview(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    text: str = Field(min_length=20)
+
+
+class WidgetGenerateRequest(BaseModel):
+    widget_type: str
+    theme: str = "dark"
+    width: int = 480
+    height: int = 320
+    refresh_interval: int = 5
+
+
 # ---------------------------------------------------------------------------
 # In-memory store
 # ---------------------------------------------------------------------------
@@ -117,62 +130,48 @@ async def marketplace_featured() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Marketplace Install / Update flow (MK4 + MK8 stubs)
+# Review endpoint
+# ---------------------------------------------------------------------------
+_reviews: dict[str, list[dict[str, Any]]] = {}
+
+
+@router.post("/{plugin_id}/reviews")
+async def submit_review(plugin_id: str, body: PluginReview) -> dict[str, Any]:
+    """Submit a review for a plugin."""
+    review = {
+        "id": str(uuid.uuid4()),
+        "plugin_id": plugin_id,
+        "rating": body.rating,
+        "text": body.text,
+        "created_at": time.time(),
+    }
+    _reviews.setdefault(plugin_id, []).append(review)
+    return review
+
+
+@router.get("/{plugin_id}/reviews")
+async def list_reviews(plugin_id: str) -> list[dict[str, Any]]:
+    """List reviews for a plugin."""
+    return _reviews.get(plugin_id, [])
+
+
+# ---------------------------------------------------------------------------
+# Widget embed generation
 # ---------------------------------------------------------------------------
 
-marketplace_router = APIRouter(prefix="/api/marketplace/plugins", tags=["marketplace"])
-
-# In-memory install tracking
-_installs: dict[str, dict[str, str | int]] = {}
-
-
-@marketplace_router.post("/{plugin_id}/install")
-async def marketplace_install(plugin_id: str) -> dict[str, str]:
-    """Start installing a marketplace plugin (stub).
-
-    Returns an install_id that the frontend polls via the status endpoint.
-    """
-    install_id = str(uuid.uuid4())
-    _installs[install_id] = {
-        "install_id": install_id,
-        "plugin_id": plugin_id,
-        "status": "completed",
-        "step": "done",
-        "progress": 100,
+@router.post("/widgets/generate")
+async def generate_widget(body: WidgetGenerateRequest) -> dict[str, Any]:
+    """Generate an embeddable widget token and URL."""
+    token = str(uuid.uuid4())
+    url = f"https://app.vaf.io/embed/{body.widget_type}?token={token}"
+    return {
+        "widget_type": body.widget_type,
+        "token": token,
+        "embed_url": url,
+        "config": {
+            "theme": body.theme,
+            "width": body.width,
+            "height": body.height,
+            "refresh_interval": body.refresh_interval,
+        },
     }
-    return {"install_id": install_id}
-
-
-@marketplace_router.get("/{plugin_id}/install/status")
-async def marketplace_install_status(plugin_id: str) -> dict[str, Any]:
-    """Poll the install progress for a plugin (stub).
-
-    Returns completed immediately so the frontend advances to the success step.
-    """
-    # Find the latest install for this plugin
-    for install in reversed(list(_installs.values())):
-        if install["plugin_id"] == plugin_id:
-            return {
-                "status": install["status"],
-                "step": install["step"],
-                "progress": int(install["progress"]),
-            }
-    # If no install found, return completed anyway (idempotent stub)
-    return {"status": "completed", "step": "done", "progress": 100}
-
-
-@marketplace_router.post("/{plugin_id}/update")
-async def marketplace_update(plugin_id: str) -> dict[str, str]:
-    """Start updating a marketplace plugin to the latest version (stub).
-
-    Behaves identically to install for now — returns an install_id.
-    """
-    install_id = str(uuid.uuid4())
-    _installs[install_id] = {
-        "install_id": install_id,
-        "plugin_id": plugin_id,
-        "status": "completed",
-        "step": "done",
-        "progress": 100,
-    }
-    return {"install_id": install_id}
