@@ -1,6 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import PluginDetailPanel, {
+  type PluginDetail,
+} from "@/components/marketplace/PluginDetailPanel";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,6 +110,10 @@ export default function MarketplacePage() {
   const [embedCode, setEmbedCode] = useState("");
   const [selectedWidget, setSelectedWidget] = useState(WIDGET_TYPES[0]);
 
+  // Detail panel state
+  const [detailPlugin, setDetailPlugin] = useState<PluginDetail | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+
   // BYOM form state
   const [byomName, setByomName] = useState("");
   const [byomFramework, setByomFramework] = useState(FRAMEWORKS[0]);
@@ -161,6 +168,40 @@ export default function MarketplacePage() {
     setAdapters((prev) => [...prev, adapter]);
     setByomName("");
     setByomUrl("");
+  };
+
+  const handleOpenDetail = async (plugin: Plugin) => {
+    const slug = plugin.name.toLowerCase().replace(/\s+/g, "-");
+    try {
+      const res = await fetch(`/api/plugins/marketplace/plugins/${slug}`);
+      if (!res.ok) throw new Error("not found");
+      const data: PluginDetail = await res.json();
+      setDetailPlugin(data);
+      setDetailOpen(true);
+    } catch {
+      // Fallback: build a minimal PluginDetail from the browse-level data
+      setDetailPlugin({
+        name: plugin.name,
+        category: plugin.category,
+        description: plugin.description,
+        version: plugin.version,
+        author: plugin.author || "Unknown",
+        install_count: plugin.install_count || 0,
+        avg_rating: plugin.avg_rating || 0,
+        icon: plugin.category,
+        full_description: plugin.description,
+        features: [],
+        requirements: [],
+        compatibility: [],
+        license: "MIT",
+        screenshots: [],
+        reviews: [],
+        rating_breakdown: [],
+        total_reviews: 0,
+        changelog: [],
+      });
+      setDetailOpen(true);
+    }
   };
 
   const handleGenerateEmbed = () => {
@@ -238,7 +279,8 @@ export default function MarketplacePage() {
               return (
                 <div
                   key={plugin.name}
-                  className="border border-gray-200 rounded-xl bg-white p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow"
+                  onClick={() => handleOpenDetail(plugin)}
+                  className="border border-gray-200 rounded-xl bg-white p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
                 >
                   {/* Icon + Category */}
                   <div className="flex items-start justify-between">
@@ -273,7 +315,10 @@ export default function MarketplacePage() {
 
                   {/* Install button */}
                   <button
-                    onClick={() => handleInstall(plugin)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleInstall(plugin);
+                    }}
                     disabled={isInstalled}
                     className={`w-full py-1.5 rounded-lg text-sm font-medium transition-colors ${
                       isInstalled
@@ -489,6 +534,25 @@ export default function MarketplacePage() {
           </div>
         </div>
       )}
+
+      {/* Plugin detail slide-over */}
+      <PluginDetailPanel
+        plugin={detailPlugin}
+        isOpen={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        onInstall={(p) => {
+          handleInstall({
+            name: p.name,
+            category: p.category,
+            description: p.description,
+            version: p.version,
+            author: p.author,
+            install_count: p.install_count,
+            avg_rating: p.avg_rating,
+          });
+          setDetailOpen(false);
+        }}
+      />
     </div>
   );
 }
