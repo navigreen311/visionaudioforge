@@ -1,17 +1,13 @@
 "use client";
 
 import { useState } from "react";
+import ParticipantTable from "@/components/federated/ParticipantTable";
+import AddParticipantModal from "@/components/federated/AddParticipantModal";
+import type { FLParticipant } from "@/components/federated/ParticipantTable";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-interface Participant {
-  id: string;
-  status: "active" | "idle" | "disconnected";
-  samplesContributed: number;
-  lastSeen: string;
-}
 
 interface RoundMetric {
   round: number;
@@ -29,7 +25,7 @@ interface Federation {
   aggregationMethod: string;
   epsilonSpent: number;
   epsilonBudget: number;
-  participants: Participant[];
+  participants: FLParticipant[];
   metricsHistory: RoundMetric[];
 }
 
@@ -47,10 +43,42 @@ const MOCK_FEDERATION: Federation = {
   epsilonSpent: 0.24,
   epsilonBudget: 1.0,
   participants: [
-    { id: "site-alpha", status: "active", samplesContributed: 12400, lastSeen: "2 min ago" },
-    { id: "site-beta", status: "active", samplesContributed: 8900, lastSeen: "1 min ago" },
-    { id: "site-gamma", status: "idle", samplesContributed: 6200, lastSeen: "15 min ago" },
-    { id: "site-delta", status: "disconnected", samplesContributed: 3100, lastSeen: "2 hr ago" },
+    {
+      id: "site-alpha",
+      name: "Alpha Campus",
+      status: "active",
+      samples: 12400,
+      contributionPct: 40.5,
+      localAccuracy: 0.912,
+      dataQuality: 0.95,
+    },
+    {
+      id: "site-beta",
+      name: "Beta Research Lab",
+      status: "active",
+      samples: 8900,
+      contributionPct: 29.1,
+      localAccuracy: 0.887,
+      dataQuality: 0.91,
+    },
+    {
+      id: "site-gamma",
+      name: "Gamma Clinic",
+      status: "idle",
+      samples: 6200,
+      contributionPct: 20.3,
+      localAccuracy: 0.845,
+      dataQuality: 0.78,
+    },
+    {
+      id: "site-delta",
+      name: "Delta Edge Node",
+      status: "disconnected",
+      samples: 3100,
+      contributionPct: 10.1,
+      localAccuracy: 0.791,
+      dataQuality: 0.62,
+    },
   ],
   metricsHistory: Array.from({ length: 12 }, (_, i) => ({
     round: i + 1,
@@ -115,57 +143,44 @@ function MetricsChart({ metrics }: { metrics: RoundMetric[] }) {
   );
 }
 
-function ParticipantTable({ participants }: { participants: Participant[] }) {
-  const statusColor: Record<string, string> = {
-    active: "bg-green-100 text-green-800",
-    idle: "bg-yellow-100 text-yellow-800",
-    disconnected: "bg-red-100 text-red-800",
-  };
-
-  return (
-    <div className="rounded-lg border overflow-hidden">
-      <table className="min-w-full text-sm">
-        <thead className="bg-gray-50">
-          <tr>
-            <th className="text-left px-4 py-2 font-medium text-gray-500">Participant</th>
-            <th className="text-left px-4 py-2 font-medium text-gray-500">Status</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Samples</th>
-            <th className="text-right px-4 py-2 font-medium text-gray-500">Last Seen</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {participants.map((p) => (
-            <tr key={p.id} className="hover:bg-gray-50">
-              <td className="px-4 py-2 font-mono text-xs">{p.id}</td>
-              <td className="px-4 py-2">
-                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${statusColor[p.status]}`}>
-                  {p.status}
-                </span>
-              </td>
-              <td className="px-4 py-2 text-right tabular-nums">{p.samplesContributed.toLocaleString()}</td>
-              <td className="px-4 py-2 text-right text-gray-500">{p.lastSeen}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function FederatedPage() {
-  const [fed] = useState<Federation>(MOCK_FEDERATION);
+  const [fed, setFed] = useState<Federation>(MOCK_FEDERATION);
   const [formName, setFormName] = useState("");
   const [formModel, setFormModel] = useState("");
   const [formMethod, setFormMethod] = useState("fedavg");
+  const [showAddModal, setShowAddModal] = useState(false);
 
   const handleCreate = (e: React.FormEvent) => {
     e.preventDefault();
     // In production: POST /api/federated/create
     alert(`Would create federation "${formName}" with model ${formModel}`);
+  };
+
+  const handleRetry = (siteId: string) => {
+    // In production: POST /api/federated/federations/{id}/participants/{site}/reconnect
+    setFed((prev) => ({
+      ...prev,
+      participants: prev.participants.map((p) =>
+        p.id === siteId ? { ...p, status: "active" as const } : p
+      ),
+    }));
+  };
+
+  const handleRemove = (siteId: string) => {
+    // In production: DELETE /api/federated/federations/{id}/participants/{site}
+    setFed((prev) => ({
+      ...prev,
+      participants: prev.participants.filter((p) => p.id !== siteId),
+    }));
+  };
+
+  const handleViewLogs = (siteId: string) => {
+    // In production: navigate to log viewer
+    alert(`View logs for ${siteId}`);
   };
 
   return (
@@ -251,11 +266,29 @@ export default function FederatedPage() {
         <MetricsChart metrics={fed.metricsHistory} />
       </div>
 
-      {/* Participants */}
+      {/* Participants — enhanced table */}
       <div>
         <h2 className="font-semibold mb-3">Participant Health</h2>
-        <ParticipantTable participants={fed.participants} />
+        <ParticipantTable
+          federationId={fed.id}
+          participants={fed.participants}
+          onAddParticipant={() => setShowAddModal(true)}
+          onRetry={handleRetry}
+          onRemove={handleRemove}
+          onViewLogs={handleViewLogs}
+        />
       </div>
+
+      {/* Add Participant Modal */}
+      <AddParticipantModal
+        isOpen={showAddModal}
+        onClose={() => setShowAddModal(false)}
+        federationId={fed.id}
+        onParticipantAdded={() => {
+          // In production: re-fetch participants
+          setShowAddModal(false);
+        }}
+      />
     </div>
   );
 }
