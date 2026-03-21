@@ -51,10 +51,12 @@ class SpectralAnalyzer:
         n_mels: int = 128,
         n_fft: int = 2048,
         hop_length: int = 512,
+        window: str = "hann",
     ) -> dict[str, np.ndarray]:
         """Mel-scaled spectrogram converted to dB."""
         mel = librosa.feature.melspectrogram(
-            y=audio, sr=sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length
+            y=audio, sr=sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length,
+            window=window,
         )
         mel_db = librosa.power_to_db(mel, ref=np.max)
         mel_freqs = librosa.mel_frequencies(n_mels=n_mels, fmax=sr / 2)
@@ -133,10 +135,11 @@ class SpectralAnalyzer:
         hop_length = cfg.get("hop_length", 512)
         n_mels = cfg.get("n_mels", 128)
         n_mfcc = cfg.get("n_mfcc", 13)
+        window = cfg.get("window", "hann")
 
-        stft = self.compute_stft(audio, sr, n_fft=n_fft, hop_length=hop_length)
+        stft = self.compute_stft(audio, sr, n_fft=n_fft, hop_length=hop_length, window=window)
         mel = self.compute_mel_spectrogram(
-            audio, sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length
+            audio, sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length, window=window,
         )
         mfcc = self.compute_mfcc(
             audio, sr, n_mfcc=n_mfcc, n_fft=n_fft, hop_length=hop_length

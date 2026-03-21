@@ -11,7 +11,7 @@ import librosa
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 
 from app.schemas.audio import AudioAugmentResponse
 from app.services.audio.augmentation import AudioAugmenter
@@ -84,28 +84,57 @@ async def analyze(
     try:
         if run_all or "stft" in ops:
             stft = _analyzer.compute_stft(audio, sr)
+            mag_db = librosa.amplitude_to_db(stft["magnitude"], ref=np.max)
             features["stft"] = {
                 "shape": list(stft["magnitude"].shape),
                 "freqs_count": len(stft["freqs"]),
                 "times_count": len(stft["times"]),
+                "stats": {
+                    "n_frames": int(stft["magnitude"].shape[1]),
+                    "n_freq_bins": int(stft["magnitude"].shape[0]),
+                    "duration": round(float(len(audio) / sr), 4),
+                    "db_min": round(float(np.min(mag_db)), 2),
+                    "db_max": round(float(np.max(mag_db)), 2),
+                },
             }
             visualizations["spectrogram"] = plot_spectrogram(stft["magnitude"], sr)
 
         if run_all or "mel" in ops:
             mel = _analyzer.compute_mel_spectrogram(audio, sr)
+            mel_db = mel["mel_spectrogram"]
             features["mel"] = {
-                "shape": list(mel["mel_spectrogram"].shape),
-                "n_mels": mel["mel_spectrogram"].shape[0],
+                "shape": list(mel_db.shape),
+                "n_mels": int(mel_db.shape[0]),
+                "stats": {
+                    "n_frames": int(mel_db.shape[1]),
+                    "n_freq_bins": int(mel_db.shape[0]),
+                    "duration": round(float(len(audio) / sr), 4),
+                    "db_min": round(float(np.min(mel_db)), 2),
+                    "db_max": round(float(np.max(mel_db)), 2),
+                },
             }
-            visualizations["mel_spectrogram"] = plot_mel_spectrogram(mel["mel_spectrogram"], sr)
+            visualizations["mel_spectrogram"] = plot_mel_spectrogram(mel_db, sr)
 
         if run_all or "mfcc" in ops:
             mfcc = _analyzer.compute_mfcc(audio, sr)
+            mfcc_arr = mfcc["mfcc"]
+            coefficients = []
+            for i in range(mfcc_arr.shape[0]):
+                row = mfcc_arr[i]
+                # Downsample values for transport (max 200 points)
+                step = max(1, len(row) // 200)
+                coefficients.append({
+                    "index": i,
+                    "mean": round(float(np.mean(row)), 6),
+                    "std": round(float(np.std(row)), 6),
+                    "values": [round(float(v), 4) for v in row[::step]],
+                })
             features["mfcc"] = {
-                "shape": list(mfcc["mfcc"].shape),
-                "n_mfcc": mfcc["mfcc"].shape[0],
+                "shape": list(mfcc_arr.shape),
+                "n_mfcc": int(mfcc_arr.shape[0]),
+                "coefficients": coefficients,
             }
-            visualizations["mfcc"] = plot_mfcc(mfcc["mfcc"], sr)
+            visualizations["mfcc"] = plot_mfcc(mfcc_arr, sr)
 
         if run_all or "power" in ops:
             power = _analyzer.compute_power_spectrogram(audio, sr)
@@ -132,6 +161,45 @@ async def analyze(
         },
         "processing_time_ms": round(elapsed_ms, 2),
     }
+
+
+@router.post("/export-mfcc")
+async def export_mfcc(
+    file: UploadFile = File(...),
+    n_mfcc: int = Form(13),
+    normalize: bool = Form(False),
+):
+    """Export MFCC coefficients as a .npy binary file.
+
+    Returns the raw numpy bytes with content-type ``application/octet-stream``.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    try:
+        result = _analyzer.compute_mfcc(audio, sr, n_mfcc=n_mfcc)
+        mfcc_data = result["mfcc"]
+
+        if normalize:
+            mean = np.mean(mfcc_data, axis=1, keepdims=True)
+            std = np.std(mfcc_data, axis=1, keepdims=True)
+            std[std == 0] = 1.0
+            mfcc_data = (mfcc_data - mean) / std
+
+        buf = io.BytesIO()
+        np.save(buf, mfcc_data)
+        buf.seek(0)
+
+        return Response(
+            content=buf.read(),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": "attachment; filename=mfcc.npy"},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"MFCC export error: {exc}")
 
 
 @router.post("/augment", response_model=AudioAugmentResponse)

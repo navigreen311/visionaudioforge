@@ -3,73 +3,84 @@
 import React, { useCallback, useMemo, useState } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
 
 /* ------------------------------------------------------------------ */
 /* Public types                                                        */
 /* ------------------------------------------------------------------ */
 
-export interface MFCCCoefficient {
+export interface MFCCCoefficientData {
+  index: number;
   mean: number;
   std: number;
   values: number[];
 }
 
-export interface MFCCControls {
+export interface MFCCData {
+  image_b64: string;
+  coefficients: MFCCCoefficientData[];
+}
+
+export interface MFCCReanalyzeParams {
   n_mfcc: number;
   showDeltas: boolean;
   normalize: boolean;
 }
 
 interface MFCCHeatmapProps {
-  imageSrc: string | null;
-  coefficients: MFCCCoefficient[] | null;
-  onCoefficientSelect: (index: number) => void;
-  /** Called when the user changes MFCC params and clicks re-analyze */
-  onControlsChange?: (controls: MFCCControls) => void;
-  /** URL for the MFCC .npy export endpoint */
-  exportNpyUrl?: string;
-  loading?: boolean;
+  mfccData?: MFCCData;
+  onReanalyze: (params: MFCCReanalyzeParams) => void;
 }
 
 const N_MFCC_OPTIONS = [13, 20, 40] as const;
+const HISTOGRAM_BINS = 30;
 
 /* ------------------------------------------------------------------ */
 /* Component                                                           */
 /* ------------------------------------------------------------------ */
 
-export default function MFCCHeatmap({
-  imageSrc,
-  coefficients,
-  onCoefficientSelect,
-  onControlsChange,
-  exportNpyUrl = "/api/audio/export-mfcc",
-  loading = false,
-}: MFCCHeatmapProps) {
+export default function MFCCHeatmap({ mfccData, onReanalyze }: MFCCHeatmapProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [histogramIndex, setHistogramIndex] = useState<number | null>(null);
   const [nMfcc, setNMfcc] = useState<number>(13);
   const [showDeltas, setShowDeltas] = useState(false);
   const [normalize, setNormalize] = useState(false);
 
-  const handleSelect = useCallback(
-    (index: number) => {
-      setSelectedIndex(index);
-      onCoefficientSelect(index);
-    },
-    [onCoefficientSelect],
-  );
+  const imageSrc = mfccData?.image_b64
+    ? mfccData.image_b64.startsWith("data:")
+      ? mfccData.image_b64
+      : `data:image/png;base64,${mfccData.image_b64}`
+    : null;
+
+  const coefficients = mfccData?.coefficients ?? null;
+
+  /* ----- Handlers ----- */
+  const handleSelect = useCallback((index: number) => {
+    setSelectedIndex(index);
+  }, []);
+
+  const handleCardClick = useCallback((index: number) => {
+    setSelectedIndex(index);
+    setHistogramIndex(index);
+  }, []);
 
   const handleApplyControls = useCallback(() => {
-    onControlsChange?.({ n_mfcc: nMfcc, showDeltas, normalize });
-  }, [nMfcc, showDeltas, normalize, onControlsChange]);
+    onReanalyze({ n_mfcc: nMfcc, showDeltas, normalize });
+  }, [nMfcc, showDeltas, normalize, onReanalyze]);
 
   /* ----- Export: Download as CSV (client-side) ----- */
   const handleDownloadCSV = useCallback(() => {
     if (!coefficients || coefficients.length === 0) return;
 
     const maxLen = Math.max(...coefficients.map((c) => c.values.length));
-    const header = ["coefficient", "mean", "std", ...Array.from({ length: maxLen }, (_, i) => `t${i}`)];
-    const rows = coefficients.map((c, i) => [
-      `C${i}`,
+    const header = [
+      "coefficient",
+      "mean",
+      "std",
+      ...Array.from({ length: maxLen }, (_, i) => `t${i}`),
+    ];
+    const rows = coefficients.map((c) => [
+      `C${c.index}`,
       c.mean.toFixed(6),
       c.std.toFixed(6),
       ...c.values.map((v) => v.toFixed(6)),
@@ -88,7 +99,7 @@ export default function MFCCHeatmap({
   /* ----- Export: Download .npy via POST ----- */
   const handleDownloadNpy = useCallback(async () => {
     try {
-      const response = await fetch(exportNpyUrl, {
+      const response = await fetch("/api/audio/export-mfcc", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ n_mfcc: nMfcc, normalize, showDeltas }),
@@ -102,9 +113,9 @@ export default function MFCCHeatmap({
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      // Silently fail — in production, surface via toast/notification
+      // Silently fail -- in production, surface via toast/notification
     }
-  }, [exportNpyUrl, nMfcc, normalize, showDeltas]);
+  }, [nMfcc, normalize, showDeltas]);
 
   /* ----- Export: Copy feature vector to clipboard ----- */
   const featureVector = useMemo(() => {
@@ -117,7 +128,6 @@ export default function MFCCHeatmap({
     try {
       await navigator.clipboard.writeText(featureVector);
     } catch {
-      // Fallback for older browsers
       const textarea = document.createElement("textarea");
       textarea.value = featureVector;
       document.body.appendChild(textarea);
@@ -126,6 +136,28 @@ export default function MFCCHeatmap({
       document.body.removeChild(textarea);
     }
   }, [featureVector]);
+
+  /* ----- Histogram data for modal ----- */
+  const histogramData = useMemo(() => {
+    if (histogramIndex === null || !coefficients) return null;
+    const coeff = coefficients.find((c) => c.index === histogramIndex);
+    if (!coeff || coeff.values.length === 0) return null;
+
+    const vals = coeff.values;
+    const min = Math.min(...vals);
+    const max = Math.max(...vals);
+    const range = max - min || 1;
+    const binWidth = range / HISTOGRAM_BINS;
+
+    const bins = Array.from({ length: HISTOGRAM_BINS }, () => 0);
+    for (const v of vals) {
+      const idx = Math.min(Math.floor((v - min) / binWidth), HISTOGRAM_BINS - 1);
+      bins[idx]++;
+    }
+    const maxCount = Math.max(...bins);
+
+    return { bins, min, max, binWidth, maxCount, coeff };
+  }, [histogramIndex, coefficients]);
 
   /* ----- Empty state ----- */
   if (!imageSrc && !coefficients) {
@@ -153,115 +185,161 @@ export default function MFCCHeatmap({
   }
 
   return (
-    <Card title="MFCC Heatmap">
-      <div className="space-y-4">
-        {/* Controls */}
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
-              n_mfcc
-            </label>
-            <select
-              value={nMfcc}
-              onChange={(e) => setNMfcc(Number(e.target.value))}
-              className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-700 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-            >
-              {N_MFCC_OPTIONS.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </div>
+    <>
+      <Card title="MFCC Heatmap">
+        <div className="space-y-4">
+          {/* Controls */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                n_mfcc
+              </label>
+              <select
+                value={nMfcc}
+                onChange={(e) => setNMfcc(Number(e.target.value))}
+                className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-700 shadow-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              >
+                {N_MFCC_OPTIONS.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          <ToggleControl
-            label="Show Deltas"
-            checked={showDeltas}
-            onChange={setShowDeltas}
-          />
-          <ToggleControl
-            label="Normalize"
-            checked={normalize}
-            onChange={setNormalize}
-          />
+            <ToggleControl
+              label="Show Deltas"
+              checked={showDeltas}
+              onChange={setShowDeltas}
+            />
+            <ToggleControl
+              label="Normalize"
+              checked={normalize}
+              onChange={setNormalize}
+            />
 
-          {onControlsChange && (
             <Button size="sm" onClick={handleApplyControls}>
               Re-analyze
             </Button>
+          </div>
+
+          {/* Heatmap image with selected-row indicator */}
+          {imageSrc && (
+            <div className="relative overflow-hidden rounded-lg border border-gray-200 bg-gray-900">
+              <img
+                src={imageSrc}
+                alt="MFCC Heatmap"
+                className="w-full object-contain"
+                draggable={false}
+              />
+              {/* Visual indicator for selected coefficient row */}
+              {selectedIndex !== null && coefficients && coefficients.length > 0 && (
+                <div
+                  className="absolute left-0 right-0 border-y-2 border-brand-400 bg-brand-400/15 pointer-events-none transition-all duration-200"
+                  style={{
+                    top: `${(selectedIndex / coefficients.length) * 100}%`,
+                    height: `${(1 / coefficients.length) * 100}%`,
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Coefficient cards (C0-C12+) */}
+          {coefficients && coefficients.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+              {coefficients.map((coeff) => (
+                <CoefficientCard
+                  key={coeff.index}
+                  coefficient={coeff}
+                  selected={selectedIndex === coeff.index}
+                  onClick={() => handleCardClick(coeff.index)}
+                  onHover={() => handleSelect(coeff.index)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Export buttons */}
+          {coefficients && coefficients.length > 0 && (
+            <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-3">
+              <Button size="sm" variant="secondary" onClick={handleDownloadNpy}>
+                Download MFCC (.npy)
+              </Button>
+              <Button size="sm" variant="secondary" onClick={handleDownloadCSV}>
+                Download as CSV
+              </Button>
+              <Button size="sm" variant="ghost" onClick={handleCopyFeatureVector}>
+                Copy Feature Vector
+              </Button>
+            </div>
           )}
         </div>
+      </Card>
 
-        {/* Loading state */}
-        {loading && (
-          <div className="flex items-center justify-center py-12">
-            <svg
-              className="animate-spin h-8 w-8 text-brand-500"
-              xmlns="http://www.w3.org/2000/svg"
-              fill="none"
-              viewBox="0 0 24 24"
-            >
-              <circle
-                className="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                strokeWidth="4"
-              />
-              <path
-                className="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-              />
+      {/* Histogram modal */}
+      <Modal
+        isOpen={histogramIndex !== null && histogramData !== null}
+        onClose={() => setHistogramIndex(null)}
+        title={histogramData ? `Histogram - C${histogramData.coeff.index}` : "Histogram"}
+      >
+        {histogramData && (
+          <div className="space-y-3">
+            <div className="flex gap-4 text-sm text-gray-600">
+              <span>
+                Mean:{" "}
+                <span className="font-semibold text-gray-900 tabular-nums">
+                  {histogramData.coeff.mean.toFixed(4)}
+                </span>
+              </span>
+              <span>
+                Std:{" "}
+                <span className="font-semibold text-gray-900 tabular-nums">
+                  {histogramData.coeff.std.toFixed(4)}
+                </span>
+              </span>
+              <span>
+                N:{" "}
+                <span className="font-semibold text-gray-900 tabular-nums">
+                  {histogramData.coeff.values.length}
+                </span>
+              </span>
+            </div>
+
+            {/* SVG histogram */}
+            <svg viewBox="0 0 300 140" className="w-full" preserveAspectRatio="xMidYMid meet">
+              {histogramData.bins.map((count, i) => {
+                const barHeight =
+                  histogramData.maxCount > 0
+                    ? (count / histogramData.maxCount) * 120
+                    : 0;
+                const barWidth = 300 / HISTOGRAM_BINS - 1;
+                const x = i * (300 / HISTOGRAM_BINS) + 0.5;
+                return (
+                  <rect
+                    key={i}
+                    x={x}
+                    y={120 - barHeight}
+                    width={barWidth}
+                    height={barHeight}
+                    fill="#6366f1"
+                    opacity={0.85}
+                    rx={1}
+                  />
+                );
+              })}
+              {/* X-axis labels */}
+              <text x="0" y="135" fontSize="8" fill="#6b7280">
+                {histogramData.min.toFixed(2)}
+              </text>
+              <text x="300" y="135" fontSize="8" fill="#6b7280" textAnchor="end">
+                {histogramData.max.toFixed(2)}
+              </text>
             </svg>
-            <span className="ml-3 text-sm text-gray-500">Computing MFCCs...</span>
           </div>
         )}
-
-        {/* Heatmap image */}
-        {!loading && imageSrc && (
-          <div className="overflow-hidden rounded-lg border border-gray-200 bg-gray-900">
-            <img
-              src={imageSrc}
-              alt="MFCC Heatmap"
-              className="w-full object-contain"
-              draggable={false}
-            />
-          </div>
-        )}
-
-        {/* Coefficient cards */}
-        {!loading && coefficients && coefficients.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {coefficients.map((coeff, index) => (
-              <CoefficientCard
-                key={index}
-                index={index}
-                coefficient={coeff}
-                selected={selectedIndex === index}
-                onClick={() => handleSelect(index)}
-              />
-            ))}
-          </div>
-        )}
-
-        {/* Export buttons */}
-        {!loading && coefficients && coefficients.length > 0 && (
-          <div className="flex flex-wrap gap-2 border-t border-gray-200 pt-3">
-            <Button size="sm" variant="secondary" onClick={handleDownloadNpy}>
-              Download MFCC (.npy)
-            </Button>
-            <Button size="sm" variant="secondary" onClick={handleDownloadCSV}>
-              Download as CSV
-            </Button>
-            <Button size="sm" variant="ghost" onClick={handleCopyFeatureVector}>
-              Copy Feature Vector
-            </Button>
-          </div>
-        )}
-      </div>
-    </Card>
+      </Modal>
+    </>
   );
 }
 
@@ -270,19 +348,25 @@ export default function MFCCHeatmap({
 /* ------------------------------------------------------------------ */
 
 interface CoefficientCardProps {
-  index: number;
-  coefficient: MFCCCoefficient;
+  coefficient: MFCCCoefficientData;
   selected: boolean;
   onClick: () => void;
+  onHover: () => void;
 }
 
-function CoefficientCard({ index, coefficient, selected, onClick }: CoefficientCardProps) {
-  const { mean, std, values } = coefficient;
+function CoefficientCard({
+  coefficient,
+  selected,
+  onClick,
+  onHover,
+}: CoefficientCardProps) {
+  const { index, mean, std, values } = coefficient;
 
   return (
     <button
       type="button"
       onClick={onClick}
+      onMouseEnter={onHover}
       className={`rounded-lg border p-3 text-left transition-colors hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-brand-500 ${
         selected
           ? "border-brand-500 bg-brand-50 ring-1 ring-brand-500"
@@ -292,10 +376,16 @@ function CoefficientCard({ index, coefficient, selected, onClick }: CoefficientC
       <p className="text-xs font-semibold text-gray-900">C{index}</p>
       <div className="mt-1 space-y-0.5">
         <p className="text-xs text-gray-500">
-          Mean: <span className="tabular-nums font-medium text-gray-700">{mean.toFixed(3)}</span>
+          Mean:{" "}
+          <span className="tabular-nums font-medium text-gray-700">
+            {mean.toFixed(3)}
+          </span>
         </p>
         <p className="text-xs text-gray-500">
-          Std: <span className="tabular-nums font-medium text-gray-700">{std.toFixed(3)}</span>
+          Std:{" "}
+          <span className="tabular-nums font-medium text-gray-700">
+            {std.toFixed(3)}
+          </span>
         </p>
       </div>
       {/* Mini sparkline */}
