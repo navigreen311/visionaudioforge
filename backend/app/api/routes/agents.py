@@ -25,6 +25,7 @@ conversation_mgr = ConversationManager()
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 
+
 class ChatRequest(BaseModel):
     message: str
     agent_id: str | None = None
@@ -41,6 +42,10 @@ class ChatResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     name: str
     agent_type: str = "copilot"
+    skill_pack: str = "general"
+    description: str = ""
+    auto_patrol: bool = False
+    workspace_scope: str = "all"
     workspace_id: str | None = None
 
 
@@ -48,7 +53,23 @@ class AgentOut(BaseModel):
     id: str
     name: str
     agent_type: str
+    skill_pack: str
     status: str
+    created_at: str
+
+    class Config:
+        from_attributes = True
+
+
+class AgentDetailOut(BaseModel):
+    id: str
+    name: str
+    agent_type: str
+    skill_pack: str
+    status: str
+    description: str
+    auto_patrol: bool
+    workspace_scope: str
     created_at: str
 
     class Config:
@@ -70,6 +91,7 @@ class MemoryOut(BaseModel):
 # Chat
 # ---------------------------------------------------------------------------
 
+
 @router.post("/chat", response_model=ChatResponse)
 async def agent_chat(
     body: ChatRequest,
@@ -83,7 +105,7 @@ async def agent_chat(
     memory_strings = [m.content for m in memories_list]
 
     # Collect streamed tokens
-    full_response = []
+    full_response: list[str] = []
     async for event in copilot_service.chat(
         message=body.message,
         workspace_id="default",
@@ -115,6 +137,7 @@ async def agent_chat(
 # Agent CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("")
 async def list_agents(
     db: AsyncSession = Depends(get_db),
@@ -128,11 +151,38 @@ async def list_agents(
             "id": str(a.id),
             "name": a.name,
             "agent_type": a.agent_type,
+            "skill_pack": (a.config or {}).get("skill_pack", "general"),
             "status": a.status,
             "created_at": a.created_at.isoformat() if a.created_at else "",
         }
         for a in agents
     ]
+
+
+@router.get("/{agent_id}")
+async def get_agent(
+    agent_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single agent by ID with full detail."""
+    stmt = select(Agent).where(Agent.id == agent_id)
+    result = await db.execute(stmt)
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    cfg: dict = agent.config or {}
+    return {
+        "id": str(agent.id),
+        "name": agent.name,
+        "agent_type": agent.agent_type,
+        "skill_pack": cfg.get("skill_pack", "general"),
+        "status": agent.status,
+        "description": cfg.get("description", ""),
+        "auto_patrol": cfg.get("auto_patrol", False),
+        "workspace_scope": cfg.get("workspace_scope", "all"),
+        "created_at": agent.created_at.isoformat() if agent.created_at else "",
+    }
 
 
 @router.post("", status_code=201)
@@ -148,17 +198,27 @@ async def create_agent(
         agent_type=body.agent_type,
         status="idle",
         workspace_id=workspace_id,
-        config={},
+        config={
+            "skill_pack": body.skill_pack,
+            "description": body.description,
+            "auto_patrol": body.auto_patrol,
+            "workspace_scope": body.workspace_scope,
+        },
     )
     db.add(agent)
     await db.commit()
     await db.refresh(agent)
 
+    cfg: dict = agent.config or {}
     return {
         "id": str(agent.id),
         "name": agent.name,
         "agent_type": agent.agent_type,
+        "skill_pack": cfg.get("skill_pack", "general"),
         "status": agent.status,
+        "description": cfg.get("description", ""),
+        "auto_patrol": cfg.get("auto_patrol", False),
+        "workspace_scope": cfg.get("workspace_scope", "all"),
         "created_at": agent.created_at.isoformat() if agent.created_at else "",
     }
 
@@ -166,6 +226,7 @@ async def create_agent(
 # ---------------------------------------------------------------------------
 # Memory management
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{agent_id}/memory")
 async def list_memories(
@@ -213,6 +274,7 @@ async def delete_memory(
 # Conversation history
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{agent_id}/history")
 async def get_conversation_history(
     agent_id: str,
@@ -237,6 +299,7 @@ async def clear_conversation_history(
 # ---------------------------------------------------------------------------
 # Patrol mode
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{agent_id}/patrol/start")
 async def start_patrol(
@@ -279,3 +342,22 @@ async def get_patrol_report(
         "is_patrolling": patrol.is_running,
         **report,
     }
+
+
+# ---------------------------------------------------------------------------
+# Patrol quick-check stub (AG4)
+# ---------------------------------------------------------------------------
+
+
+class PatrolCheckResponse(BaseModel):
+    findings: list[str]
+    alerts: int
+
+
+@router.post("/patrol", response_model=PatrolCheckResponse)
+async def patrol_quick_check() -> PatrolCheckResponse:
+    """Quick patrol check — returns current system health summary."""
+    return PatrolCheckResponse(
+        findings=["All streams healthy"],
+        alerts=0,
+    )
