@@ -12,6 +12,8 @@ import AssetFilters, { type AssetFilterValues } from "@/components/assets/AssetF
 import AssetGrid from "@/components/assets/AssetGrid";
 import AssetUploadModal from "@/components/assets/AssetUploadModal";
 import AssetDetailModal from "@/components/assets/AssetDetailModal";
+import DropUploadZone from "@/components/assets/DropUploadZone";
+import StorageUsageBar from "@/components/assets/StorageUsageBar";
 import DataTable, { type Column } from "@/components/ui/DataTable";
 import Badge from "@/components/ui/Badge";
 import LoadingSpinner from "@/components/ui/LoadingSpinner";
@@ -257,6 +259,9 @@ export default function AssetsPage() {
         </p>
       </div>
 
+      {/* Storage usage */}
+      <StorageUsageBar />
+
       {/* Toolbar / Filters */}
       <AssetFilters
         filters={filters}
@@ -335,6 +340,9 @@ export default function AssetsPage() {
         onClose={() => setUploadOpen(false)}
         onUploadComplete={refreshAssets}
       />
+
+      {/* Drop upload zone (full-page drag overlay) */}
+      <DropUploadZone onUploadComplete={refreshAssets} />
 
       {/* Detail Modal */}
       <AssetDetailModal

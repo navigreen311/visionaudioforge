@@ -157,6 +157,25 @@ async def delete_asset(
 
 
 # ------------------------------------------------------------------
+# Storage stats (stub)
+# ------------------------------------------------------------------
+
+
+@router.get("/storage-stats")
+async def storage_stats():
+    """Return storage usage breakdown (stub — replace with real query)."""
+    return {
+        "used_gb": 2.4,
+        "total_gb": 50,
+        "by_type": {
+            "image": 1.2,
+            "audio": 0.8,
+            "video": 0.4,
+        },
+    }
+
+
+# ------------------------------------------------------------------
 # Download
 # ------------------------------------------------------------------
 
