@@ -23,6 +23,7 @@ import {
   getKPIs,
   getTimelineFeed,
   getIncidentQueue,
+  removeStream,
   setLayout as setLayoutApi,
 } from "@/lib/api";
 
@@ -30,14 +31,6 @@ const statusColors: Record<string, string> = {
   green: "bg-green-500",
   yellow: "bg-yellow-500",
   red: "bg-red-500",
-};
-
-const layoutSlotCounts: Record<GridLayout, number> = {
-  "2x2": 4,
-  "3x3": 9,
-  "4x4": 16,
-  "1+3": 4,
-  "1+5": 6,
 };
 
 function formatShiftTimer(startedAt: string): string {
@@ -90,6 +83,13 @@ export default function CommandCenterPage() {
     fetchAll();
   }, [fetchAll]);
 
+  // Clean up streams on unmount
+  useEffect(() => {
+    return () => {
+      setStreams([]);
+    };
+  }, []);
+
   // Shift timer tick
   useEffect(() => {
     if (!currentShift || currentShift.ended_at) {
@@ -111,16 +111,22 @@ export default function CommandCenterPage() {
     }
   };
 
-  const handleCopilotSend = () => {
-    if (!copilotInput.trim()) return;
-    setCopilotResponses((prev) => [
-      `Analyzing: "${copilotInput.trim()}"...`,
-      ...prev,
-    ].slice(0, 3));
-    setCopilotInput("");
+  const handleRemoveStream = async (streamId: string) => {
+    try {
+      await removeStream(streamId);
+      setStreams((prev) => prev.filter((s) => s.id !== streamId));
+    } catch {
+      // silent
+    }
   };
 
-  const totalSlots = layoutSlotCounts[layout] || 4;
+  const handleCopilotSend = () => {
+    if (!copilotInput.trim()) return;
+    setCopilotResponses((prev) =>
+      [`Analyzing: "${copilotInput.trim()}"...`, ...prev].slice(0, 3)
+    );
+    setCopilotInput("");
+  };
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)] -m-4 lg:-m-8">
@@ -295,6 +301,7 @@ export default function CommandCenterPage() {
           <VideoWall
             layout={layout}
             streams={streams}
+            onRemoveStream={handleRemoveStream}
             onAddStream={() => setShowAddStream(true)}
           />
         </main>
@@ -380,9 +387,7 @@ export default function CommandCenterPage() {
       <AddStreamModal
         isOpen={showAddStream}
         onClose={() => setShowAddStream(false)}
-        onAdded={fetchAll}
-        totalSlots={totalSlots}
-        usedPositions={streams.map((s) => s.position)}
+        onStreamAdded={fetchAll}
       />
     </div>
   );

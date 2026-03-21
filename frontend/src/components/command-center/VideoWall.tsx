@@ -1,14 +1,13 @@
 "use client";
 
 import React from "react";
-import VideoPanel from "./VideoPanel";
+import StreamCell from "./StreamCell";
 import type { GridLayout, Stream } from "@/lib/api";
 
 interface VideoWallProps {
   layout: GridLayout;
   streams: Stream[];
-  onClickEnlarge?: (stream: Stream) => void;
-  onDoubleClickPrimary?: (stream: Stream) => void;
+  onRemoveStream: (streamId: string) => void;
   onAddStream?: () => void;
 }
 
@@ -86,8 +85,7 @@ function getGridConfig(layout: GridLayout): {
 export default function VideoWall({
   layout,
   streams,
-  onClickEnlarge,
-  onDoubleClickPrimary,
+  onRemoveStream,
   onAddStream,
 }: VideoWallProps) {
   const { style, totalSlots, primaryIndex } = getGridConfig(layout);
@@ -109,16 +107,46 @@ export default function VideoWall({
       {slots.map((stream, i) => {
         const isPrimarySlot = primaryIndex !== undefined && i === primaryIndex;
         const spanStyle: React.CSSProperties = isPrimarySlot
-          ? { gridRow: `1 / -1` }
+          ? { gridRow: "1 / -1" }
           : {};
 
+        if (!stream) {
+          return (
+            <div
+              key={`empty-${i}`}
+              style={spanStyle}
+              className="flex flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-900/5 h-full min-h-[140px]"
+            >
+              <svg
+                className="h-10 w-10 text-gray-300 mb-2"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={1.5}
+                  d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                />
+              </svg>
+              <span className="text-sm text-gray-400 mb-2">No Stream</span>
+              <button
+                onClick={onAddStream}
+                className="rounded-md bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700 transition-colors"
+              >
+                Add Stream
+              </button>
+            </div>
+          );
+        }
+
         return (
-          <div key={stream?.id ?? `empty-${i}`} style={spanStyle}>
-            <VideoPanel
+          <div key={stream.id} style={spanStyle}>
+            <StreamCell
               stream={stream}
-              onClickEnlarge={onClickEnlarge}
-              onDoubleClickPrimary={onDoubleClickPrimary}
-              onAddStream={onAddStream}
+              onRemove={onRemoveStream}
+              gridSize={layout}
             />
           </div>
         );
