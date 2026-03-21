@@ -469,16 +469,16 @@ function DetectionTab() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {result.detections.map((d: { class_name: string; confidence: number; bbox: number[] }, i: number) => (
+                    {result.detections.map((d, i) => (
                       <tr key={i} className="hover:bg-gray-50">
                         <td className="px-3 py-2 font-medium text-gray-900">
-                          {d.class_name}
+                          {d.class_name ?? d.label}
                         </td>
                         <td className="px-3 py-2 text-gray-600">
                           {(d.confidence * 100).toFixed(1)}%
                         </td>
                         <td className="px-3 py-2 font-mono text-xs text-gray-500">
-                          {d.bbox.join(", ")}
+                          {d.bbox?.join(", ")}
                         </td>
                       </tr>
                     ))}
@@ -489,7 +489,7 @@ function DetectionTab() {
           )}
 
           <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms.toFixed(1)} ms
+            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
           </p>
         </div>
       )}
@@ -599,7 +599,7 @@ function OCRTab() {
           )}
 
           <p className="text-xs text-gray-500">
-            Processed in {result.processing_time_ms.toFixed(1)} ms
+            Processed in {result.processing_time_ms?.toFixed(1) ?? "N/A"} ms
           </p>
         </div>
       )}

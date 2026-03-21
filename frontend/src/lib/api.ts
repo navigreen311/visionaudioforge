@@ -82,7 +82,17 @@ export async function getMe(): Promise<UserResponse> {
 // Vision API
 // ---------------------------------------------------------------------------
 
+export interface VisionImageStats {
+  shape: number[];
+  dtype: string;
+  mean: number[];
+  std: number[];
+}
+
 export interface VisionAnalyzeResult {
+  processed_image?: string;
+  stats?: VisionImageStats;
+  processing_time_ms?: number;
   stft?: unknown;
   mel?: unknown;
   mfcc?: unknown;
@@ -90,28 +100,48 @@ export interface VisionAnalyzeResult {
   [key: string]: unknown;
 }
 
+export interface OpticalFlowStats {
+  mean_magnitude: number;
+  max_magnitude: number;
+  motion_area_pct: number;
+}
+
 export interface OpticalFlowResult {
   flow_magnitude: number;
   flow_image?: string;
+  visualization?: string;
+  stats?: OpticalFlowStats;
+  processing_time_ms?: number;
   [key: string]: unknown;
 }
 
+export interface Detection {
+  label?: string;
+  class_name?: string;
+  class_id?: number;
+  confidence: number;
+  bbox: number[];
+}
+
 export interface DetectResult {
-  detections: Array<{
-    label?: string;
-    class_name?: string;
-    class_id?: number;
-    confidence: number;
-    bbox: [number, number, number, number];
-  }>;
+  detections: Detection[];
   count: number;
+  visualization?: string;
   image_b64?: string;
   processing_time_ms?: number;
   [key: string]: unknown;
 }
 
-export interface OCRResult {
+export interface OCRBlock {
   text: string;
+  confidence: number;
+  bbox: number[];
+}
+
+export interface OCRResult {
+  full_text?: string;
+  text: string;
+  blocks: OCRBlock[];
   words: Array<{ text: string; confidence: number; bbox: number[] }>;
   language?: string;
   confidence?: number;
@@ -119,7 +149,26 @@ export interface OCRResult {
   [key: string]: unknown;
 }
 
+export interface PerClassMetric {
+  class_name: string;
+  precision: number;
+  recall: number;
+  f1: number;
+  support: number;
+}
+
+export interface TopConfusion {
+  true_label: string;
+  predicted_label: string;
+  count: number;
+}
+
 export interface ErrorAnalysisResult {
+  overall_accuracy: number;
+  classes: string[];
+  confusion_matrix: number[][];
+  per_class_metrics: PerClassMetric[];
+  top_confusions: TopConfusion[];
   summary: string;
   errors: Array<{ type: string; description: string; severity: string }>;
   [key: string]: unknown;
@@ -193,12 +242,16 @@ export async function extractText(
   return data;
 }
 
-export async function analyzeErrors(body: {
-  model_id: string;
-  dataset_id: string;
-  metric?: string;
-}): Promise<ErrorAnalysisResult> {
-  const { data } = await api.post("/api/vision/error-analysis", body);
+export async function analyzeErrors(
+  predictions: string[],
+  groundTruth: string[],
+  classes: string[],
+): Promise<ErrorAnalysisResult> {
+  const { data } = await api.post("/api/vision/error-analysis", {
+    predictions,
+    ground_truth: groundTruth,
+    classes,
+  });
   return data;
 }
 
@@ -206,11 +259,30 @@ export async function analyzeErrors(body: {
 // Audio API
 // ---------------------------------------------------------------------------
 
+export interface SpectrogramData {
+  image?: string;
+  [key: string]: unknown;
+}
+
+export interface MfccData extends SpectrogramData {
+  coefficients?: number[][];
+}
+
+export interface WaveformData {
+  image?: string;
+  duration: number;
+  sample_rate: number;
+  rms: number;
+  peak: number;
+  samples: number;
+  [key: string]: unknown;
+}
+
 export interface AudioAnalysisResult {
-  stft?: unknown;
-  mel?: unknown;
-  mfcc?: unknown;
-  waveform?: unknown;
+  stft?: SpectrogramData;
+  mel?: SpectrogramData;
+  mfcc?: MfccData;
+  waveform?: WaveformData;
   [key: string]: unknown;
 }
 
@@ -221,21 +293,50 @@ export interface AugmentationStep {
 
 export interface AugmentationConfig {
   preset?: string;
-  steps: AugmentationStep[];
+  steps?: AugmentationStep[];
 }
 
 export interface AugmentationResult {
   audio_base64: string;
+  mime_type: string;
   sample_rate: number;
   duration: number;
+  original_duration: number;
+  augmented_duration: number;
+  applied: string[];
   steps_applied: string[];
+}
+
+export interface SpeakerSentiment {
+  overall: string;
+  scores: {
+    positive: number;
+    negative: number;
+    neutral: number;
+  };
+}
+
+export interface TalkRatioEntry {
+  percentage: number;
+  time_s: number;
+  interruptions: number;
+}
+
+export interface SpeakerSegment {
+  speaker: string;
+  start_s: number;
+  end_s: number;
 }
 
 export interface CallAnalysisResult {
   transcript: string;
-  sentiment: string;
+  sentiment: Record<string, SpeakerSentiment>;
   topics: string[];
   summary: string;
+  duration_s: number;
+  speakers: SpeakerSegment[];
+  action_items: string[];
+  talk_ratio: Record<string, TalkRatioEntry>;
   [key: string]: unknown;
 }
 
