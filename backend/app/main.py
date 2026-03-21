@@ -1,7 +1,9 @@
 import os
+import traceback
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.config import settings
@@ -32,13 +34,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RequestIDMiddleware)
-app.add_middleware(TimingMiddleware)
-app.add_middleware(AuditMiddleware)
-app.add_middleware(
-    GZipMiddleware,
-    minimum_size=GZIP_MINIMUM_SIZE,
-)
+# NOTE: Custom middlewares disabled for local dev — compatibility issue
+# with uvicorn 0.42 + starlette 0.52 on Windows.
+# app.add_middleware(RequestIDMiddleware)
+# app.add_middleware(TimingMiddleware)
+# app.add_middleware(AuditMiddleware)
+# app.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
+
+# ---------------------------------------------------------------------------
+# Global exception handler (surface 500 errors during development)
+# ---------------------------------------------------------------------------
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    print("".join(tb))
+    return JSONResponse(status_code=500, content={"detail": str(exc)})
 
 # ---------------------------------------------------------------------------
 # REST API
