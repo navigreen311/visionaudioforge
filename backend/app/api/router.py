@@ -35,6 +35,7 @@ from app.api.routes import (
     runtime,
     safety,
     search,
+    security,
     semantic_memory,
     simulation,
     transfer,
@@ -88,4 +89,5 @@ api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
 api_router.include_router(developer.router)
+api_router.include_router(security.router)
 api_router.include_router(dashboard.router)
