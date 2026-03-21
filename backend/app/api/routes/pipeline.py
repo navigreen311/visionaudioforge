@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -48,6 +49,171 @@ class ScheduleRequest(BaseModel):
 
 class SuggestNextRequest(BaseModel):
     current_nodes: list[str]
+
+
+class PipelineSaveRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str | None = None
+    definition: dict[str, Any] = Field(default_factory=dict)
+
+
+class PipelineScheduleUpdate(BaseModel):
+    cron: str | None = None
+    enabled: bool = True
+    timezone: str = "UTC"
+
+
+# --------------------------------------------------------------------------
+# Mock-data stubs for Pipeline page UI
+# --------------------------------------------------------------------------
+
+MOCK_PIPELINES = [
+    {
+        "id": "pipe_001",
+        "name": "Audio Feature Extraction",
+        "node_count": 4,
+        "status": "active",
+        "updated_at": "2026-03-19T14:30:00Z",
+    },
+    {
+        "id": "pipe_002",
+        "name": "Vision Preprocessing + CLIP Embedding",
+        "node_count": 6,
+        "status": "draft",
+        "updated_at": "2026-03-18T09:15:00Z",
+    },
+    {
+        "id": "pipe_003",
+        "name": "Multimodal Fusion Pipeline",
+        "node_count": 8,
+        "status": "scheduled",
+        "updated_at": "2026-03-17T22:45:00Z",
+    },
+]
+
+MOCK_RUNS = [
+    {
+        "run_id": "run_001",
+        "pipeline_id": "pipe_001",
+        "pipeline_name": "Audio Feature Extraction",
+        "status": "completed",
+        "started_at": "2026-03-19T14:35:00Z",
+        "finished_at": "2026-03-19T14:42:00Z",
+        "nodes_completed": 4,
+        "nodes_total": 4,
+        "log": [
+            {"timestamp": "2026-03-19T14:35:01Z", "node": "ingest", "level": "info", "message": "Loading audio files from /data/raw"},
+            {"timestamp": "2026-03-19T14:36:10Z", "node": "normalize", "level": "info", "message": "Normalized 128 audio clips"},
+            {"timestamp": "2026-03-19T14:38:45Z", "node": "extract_mfcc", "level": "info", "message": "Extracted 13 MFCCs per clip"},
+            {"timestamp": "2026-03-19T14:42:00Z", "node": "export", "level": "info", "message": "Saved features to /data/processed/mfcc.npy"},
+        ],
+    },
+    {
+        "run_id": "run_002",
+        "pipeline_id": "pipe_002",
+        "pipeline_name": "Vision Preprocessing + CLIP Embedding",
+        "status": "failed",
+        "started_at": "2026-03-18T10:00:00Z",
+        "finished_at": "2026-03-18T10:05:30Z",
+        "nodes_completed": 3,
+        "nodes_total": 6,
+        "log": [
+            {"timestamp": "2026-03-18T10:00:01Z", "node": "load_images", "level": "info", "message": "Loaded 256 images"},
+            {"timestamp": "2026-03-18T10:02:00Z", "node": "resize", "level": "info", "message": "Resized to 224x224"},
+            {"timestamp": "2026-03-18T10:03:30Z", "node": "color_convert", "level": "info", "message": "Converted BGR to RGB"},
+            {"timestamp": "2026-03-18T10:05:30Z", "node": "clip_embed", "level": "error", "message": "CUDA out of memory — reduce batch size"},
+        ],
+    },
+    {
+        "run_id": "run_003",
+        "pipeline_id": "pipe_003",
+        "pipeline_name": "Multimodal Fusion Pipeline",
+        "status": "running",
+        "started_at": "2026-03-19T15:00:00Z",
+        "finished_at": None,
+        "nodes_completed": 5,
+        "nodes_total": 8,
+        "log": [
+            {"timestamp": "2026-03-19T15:00:01Z", "node": "audio_ingest", "level": "info", "message": "Ingested 64 audio samples"},
+            {"timestamp": "2026-03-19T15:01:30Z", "node": "vision_ingest", "level": "info", "message": "Ingested 64 image samples"},
+            {"timestamp": "2026-03-19T15:03:00Z", "node": "audio_features", "level": "info", "message": "Extracted MEL spectrograms"},
+            {"timestamp": "2026-03-19T15:05:00Z", "node": "vision_features", "level": "info", "message": "Extracted CLIP embeddings"},
+            {"timestamp": "2026-03-19T15:07:00Z", "node": "align", "level": "info", "message": "Temporal alignment complete"},
+        ],
+    },
+]
+
+
+@router.get("/pipeline/list")
+async def list_pipelines_mock() -> list[dict[str, Any]]:
+    """Return mock pipeline list for Pipeline page UI."""
+    return MOCK_PIPELINES
+
+
+@router.post("/pipeline/save")
+async def save_pipeline_mock(body: PipelineSaveRequest) -> dict[str, Any]:
+    """Accept a pipeline definition and return a draft stub."""
+    return {
+        "id": f"pipe_{uuid.uuid4().hex[:6]}",
+        "name": body.name,
+        "status": "draft",
+    }
+
+
+@router.patch("/pipeline/{pipeline_id}/schedule")
+async def update_pipeline_schedule(
+    pipeline_id: str,
+    body: PipelineScheduleUpdate,
+) -> dict[str, Any]:
+    """Accept schedule config and return the updated pipeline stub."""
+    return {
+        "id": pipeline_id,
+        "name": next(
+            (p["name"] for p in MOCK_PIPELINES if p["id"] == pipeline_id),
+            "Unknown Pipeline",
+        ),
+        "status": "scheduled" if body.enabled else "draft",
+        "schedule": {
+            "cron": body.cron,
+            "enabled": body.enabled,
+            "timezone": body.timezone,
+        },
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@router.post("/pipeline/run")
+async def run_pipeline_mock() -> dict[str, Any]:
+    """Start a mock pipeline run and return a run stub."""
+    return {"run_id": "run_001", "status": "running"}
+
+
+@router.get("/pipeline/runs/{run_id}/status")
+async def get_run_status(run_id: str) -> dict[str, Any]:
+    """Return mock status for a specific pipeline run."""
+    run = next((r for r in MOCK_RUNS if r["run_id"] == run_id), None)
+    if run:
+        return {
+            "run_id": run["run_id"],
+            "status": run["status"],
+            "nodes_completed": run["nodes_completed"],
+            "nodes_total": run["nodes_total"],
+            "current_node": None if run["status"] == "completed" else run["log"][-1]["node"],
+        }
+    # Default fallback for unknown run_id
+    return {
+        "run_id": run_id,
+        "status": "completed",
+        "nodes_completed": 5,
+        "nodes_total": 5,
+        "current_node": None,
+    }
+
+
+@router.get("/pipeline/runs")
+async def list_pipeline_runs_mock() -> list[dict[str, Any]]:
+    """Return mock run history for Pipeline page UI."""
+    return MOCK_RUNS
 
 
 # --------------------------------------------------------------------------
