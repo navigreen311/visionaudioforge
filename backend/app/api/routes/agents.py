@@ -1,12 +1,10 @@
-"""Agent API routes — chat, CRUD, memory, conversation history, patrol, and feedback."""
+"""Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
 
-import json
-import logging
 import uuid
-from collections.abc import AsyncGenerator
+from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,8 +15,6 @@ from app.services.agents.conversation import ConversationManager
 from app.services.agents.copilot import CopilotService
 from app.services.agents.memory import AgentMemoryService
 from app.services.agents.patrol import get_patrol_agent
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -42,24 +38,6 @@ class ChatResponse(BaseModel):
     response: str
     agent_id: str
     memories_used: int
-
-
-class FeedbackRequest(BaseModel):
-    message_id: str
-    agent_id: str
-    rating: str = Field(..., pattern="^(up|down)$")
-
-
-class FeedbackResponse(BaseModel):
-    status: str
-    message_id: str
-
-
-class SaveMemoryRequest(BaseModel):
-    agent_id: str
-    content: str
-    category: str = "general"
-    importance: int = Field(5, ge=1, le=10)
 
 
 class CreateAgentRequest(BaseModel):
@@ -88,6 +66,37 @@ class MemoryOut(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class ConversationMessageIn(BaseModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    timestamp: str
+    tool_name: str | None = None
+
+
+class SaveConversationRequest(BaseModel):
+    summary: str
+    skill_pack: str = "general"
+    messages: list[ConversationMessageIn] = Field(default_factory=list)
+
+
+class ConversationSummaryOut(BaseModel):
+    id: str
+    summary: str
+    skill_pack: str
+    message_count: int
+    created_at: str
+    updated_at: str
+
+
+class ConversationDetailOut(BaseModel):
+    id: str
+    summary: str
+    skill_pack: str
+    messages: list[ConversationMessageIn]
+    created_at: str
+    updated_at: str
 
 
 # ---------------------------------------------------------------------------
@@ -133,121 +142,6 @@ async def agent_chat(
         agent_id=agent_id,
         memories_used=len(memories_list),
     )
-
-
-# ---------------------------------------------------------------------------
-# Streaming chat (SSE via text/event-stream)
-# ---------------------------------------------------------------------------
-
-
-async def _stream_chat_events(
-    body: ChatRequest,
-    db: AsyncSession,
-) -> AsyncGenerator[str, None]:
-    """Yield SSE-formatted events from the copilot service."""
-    agent_id = body.agent_id or str(uuid.uuid4())
-
-    try:
-        # Recall relevant memories
-        memories_list = await memory_service.recall(
-            db, agent_id, query=body.message, k=5
-        )
-        memory_strings = [m.content for m in memories_list]
-
-        full_response: list[str] = []
-
-        async for event in copilot_service.chat(
-            message=body.message,
-            workspace_id="default",
-            agent_id=agent_id,
-            context=body.context,
-            skill_pack=body.skill_pack,
-            memories=memory_strings,
-            db=db,
-        ):
-            # Forward each event as SSE
-            yield f"data: {json.dumps(event)}\n\n"
-
-            if event.get("type") == "token":
-                full_response.append(event.get("content", ""))
-
-        # Store response as memory if substantive
-        response_text = "".join(full_response)
-        if len(response_text) > 50:
-            await memory_service.store_memory(
-                db, agent_id, response_text[:500], importance_score=0.4
-            )
-    except Exception:
-        logger.exception("Error during streaming chat")
-        yield f"data: {json.dumps({'type': 'error', 'content': 'Internal server error'})}\n\n"
-
-    # End-of-stream signal
-    yield "data: [DONE]\n\n"
-
-
-@router.post("/chat/stream")
-async def agent_chat_stream(
-    body: ChatRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Streaming chat endpoint — returns text/event-stream SSE."""
-    return StreamingResponse(
-        _stream_chat_events(body, db),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-# ---------------------------------------------------------------------------
-# Feedback
-# ---------------------------------------------------------------------------
-
-
-@router.post("/feedback", response_model=FeedbackResponse)
-async def submit_feedback(
-    body: FeedbackRequest,
-):
-    """Record user feedback (thumbs up/down) for a message.
-
-    Stub: logs the feedback and returns success. A future iteration
-    will persist feedback to the database for model-quality tracking.
-    """
-    logger.info(
-        "Feedback received: message_id=%s agent_id=%s rating=%s",
-        body.message_id,
-        body.agent_id,
-        body.rating,
-    )
-    return FeedbackResponse(status="recorded", message_id=body.message_id)
-
-
-# ---------------------------------------------------------------------------
-# Save to Memory (from message action)
-# ---------------------------------------------------------------------------
-
-
-@router.post("/memory")
-async def save_memory_from_action(
-    body: SaveMemoryRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Save content to agent memory from the MessageActions UI."""
-    importance_score = body.importance / 10.0  # Normalize 1-10 to 0.0-1.0
-    memory = await memory_service.store_memory(
-        db,
-        body.agent_id,
-        content=body.content,
-        importance_score=importance_score,
-    )
-    return {
-        "id": str(memory.id),
-        "content": memory.content,
-        "importance_score": memory.importance_score,
-        "category": body.category,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +194,86 @@ async def create_agent(
         "status": agent.status,
         "created_at": agent.created_at.isoformat() if agent.created_at else "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Conversations (AG5) — stub endpoints
+# IMPORTANT: These MUST be registered before /{agent_id} routes to avoid
+# FastAPI matching "conversations" as an agent_id path parameter.
+# ---------------------------------------------------------------------------
+
+# In-memory store (stub — replace with DB persistence)
+_conversations_store: dict[str, dict[str, object]] = {}
+
+
+@router.get("/conversations", response_model=list[ConversationSummaryOut])
+async def list_conversations():
+    """List all saved conversations (newest first)."""
+    items = sorted(
+        _conversations_store.values(),
+        key=lambda c: str(c.get("updated_at", "")),
+        reverse=True,
+    )
+    return [
+        ConversationSummaryOut(
+            id=str(c["id"]),
+            summary=str(c["summary"]),
+            skill_pack=str(c["skill_pack"]),
+            message_count=len(c.get("messages", [])),  # type: ignore[arg-type]
+            created_at=str(c["created_at"]),
+            updated_at=str(c["updated_at"]),
+        )
+        for c in items
+    ]
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
+async def get_conversation(conversation_id: str):
+    """Load a specific conversation with its messages."""
+    conv = _conversations_store.get(conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return ConversationDetailOut(
+        id=str(conv["id"]),
+        summary=str(conv["summary"]),
+        skill_pack=str(conv["skill_pack"]),
+        messages=conv.get("messages", []),  # type: ignore[arg-type]
+        created_at=str(conv["created_at"]),
+        updated_at=str(conv["updated_at"]),
+    )
+
+
+@router.post("/conversations", response_model=ConversationSummaryOut, status_code=201)
+async def save_conversation(body: SaveConversationRequest):
+    """Save a conversation (creates a new entry)."""
+    conv_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    entry = {
+        "id": conv_id,
+        "summary": body.summary,
+        "skill_pack": body.skill_pack,
+        "messages": [m.model_dump() for m in body.messages],
+        "created_at": now,
+        "updated_at": now,
+    }
+    _conversations_store[conv_id] = entry
+    return ConversationSummaryOut(
+        id=conv_id,
+        summary=body.summary,
+        skill_pack=body.skill_pack,
+        message_count=len(body.messages),
+        created_at=now,
+        updated_at=now,
+    )
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str):
+    """Delete a saved conversation."""
+    if conversation_id not in _conversations_store:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    del _conversations_store[conversation_id]
+    return {"deleted": True, "id": conversation_id}
 
 
 # ---------------------------------------------------------------------------
