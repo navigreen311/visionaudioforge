@@ -13,7 +13,9 @@ import React, {
 // ---------------------------------------------------------------------------
 
 interface AudioPlayerProps {
-  audioFile: File | null;
+  file?: File;
+  audioUrl?: string;
+  onTimeUpdate?: (time: number) => void;
 }
 
 interface AudioMeta {
@@ -167,7 +169,11 @@ function PauseIcon() {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
+export default function AudioPlayer({
+  file,
+  audioUrl: externalAudioUrl,
+  onTimeUpdate,
+}: AudioPlayerProps) {
   // Refs
   const audioRef = useRef<HTMLAudioElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -177,7 +183,7 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
 
   // State
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [volume, setVolume] = useState(1);
@@ -185,6 +191,9 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
   const [zoom, setZoom] = useState<ZoomLevel>(1);
   const [isDecoding, setIsDecoding] = useState(false);
   const [meta, setMeta] = useState<AudioMeta | null>(null);
+
+  // Resolved audio source: prefer file-based object URL, fall back to external URL
+  const resolvedAudioUrl = objectUrl ?? externalAudioUrl ?? null;
 
   // Derived
   const baseSamplesPerPixel = 256;
@@ -198,17 +207,17 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
   const totalWaveformWidth = peaks ? peaks.length : 0;
 
   // -----------------------------------------------------------------------
-  // Decode audio file
+  // Decode audio — from File prop
   // -----------------------------------------------------------------------
   useEffect(() => {
-    if (!audioFile) {
+    if (!file) {
       setAudioBuffer(null);
       setMeta(null);
       setCurrentTime(0);
       setIsPlaying(false);
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-        setAudioUrl(null);
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        setObjectUrl(null);
       }
       return;
     }
@@ -223,11 +232,11 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
       setIsPlaying(false);
 
       // Create object URL for the <audio> element
-      const url = URL.createObjectURL(audioFile);
-      setAudioUrl(url);
+      const url = URL.createObjectURL(file);
+      setObjectUrl(url);
 
       try {
-        const arrayBuffer = await audioFile.arrayBuffer();
+        const arrayBuffer = await file.arrayBuffer();
         const ctx = new AudioContext();
         audioCtxRef.current = ctx;
         const decoded = await ctx.decodeAudioData(arrayBuffer);
@@ -253,14 +262,59 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [audioFile]);
+  }, [file]);
+
+  // -----------------------------------------------------------------------
+  // Decode audio — from audioUrl prop (fetch + decode)
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    if (file || !externalAudioUrl) return;
+
+    let cancelled = false;
+
+    const decode = async () => {
+      setIsDecoding(true);
+      setAudioBuffer(null);
+      setMeta(null);
+      setCurrentTime(0);
+      setIsPlaying(false);
+
+      try {
+        const response = await fetch(externalAudioUrl);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
+        const ctx = new AudioContext();
+        audioCtxRef.current = ctx;
+        const decoded = await ctx.decodeAudioData(arrayBuffer);
+
+        if (!cancelled) {
+          setAudioBuffer(decoded);
+          setMeta({
+            duration: decoded.duration,
+            sampleRate: decoded.sampleRate,
+            numberOfChannels: decoded.numberOfChannels,
+          });
+        }
+      } catch (err) {
+        console.error("Failed to decode audio from URL:", err);
+      } finally {
+        if (!cancelled) setIsDecoding(false);
+      }
+    };
+
+    decode();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [file, externalAudioUrl]);
 
   // Revoke old object URL when it changes
   useEffect(() => {
     return () => {
-      if (audioUrl) URL.revokeObjectURL(audioUrl);
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [audioUrl]);
+  }, [objectUrl]);
 
   // Clean up AudioContext on unmount
   useEffect(() => {
@@ -305,6 +359,15 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
       cancelAnimationFrame(animFrameRef.current);
     };
   }, [peaks, meta]);
+
+  // -----------------------------------------------------------------------
+  // Fire onTimeUpdate callback
+  // -----------------------------------------------------------------------
+  useEffect(() => {
+    if (onTimeUpdate) {
+      onTimeUpdate(currentTime);
+    }
+  }, [currentTime, onTimeUpdate]);
 
   // -----------------------------------------------------------------------
   // Playback controls
@@ -367,15 +430,15 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
   // -----------------------------------------------------------------------
   // Render
   // -----------------------------------------------------------------------
-  if (!audioFile) return null;
+  if (!file && !externalAudioUrl) return null;
 
   return (
     <div className="w-full rounded-lg border border-gray-200 bg-white shadow-sm">
       {/* Hidden audio element */}
-      {audioUrl && (
+      {resolvedAudioUrl && (
         <audio
           ref={audioRef}
-          src={audioUrl}
+          src={resolvedAudioUrl}
           preload="auto"
           onEnded={handleEnded}
           className="hidden"
@@ -507,17 +570,25 @@ export default function AudioPlayer({ audioFile }: AudioPlayerProps) {
       )}
 
       {/* File info strip */}
-      {meta && !isDecoding && audioFile && (
+      {meta && !isDecoding && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-gray-100 px-3 py-2 text-xs text-gray-500">
-          <span className="font-medium text-gray-700 truncate max-w-[200px]">
-            {audioFile.name}
-          </span>
+          {file && (
+            <span className="font-medium text-gray-700 truncate max-w-[200px]">
+              {file.name}
+            </span>
+          )}
+          {!file && externalAudioUrl && (
+            <span className="font-medium text-gray-700 truncate max-w-[200px]">
+              {externalAudioUrl.split("/").pop() ?? "audio"}
+            </span>
+          )}
           <span>{formatTime(meta.duration)}</span>
           <span>{meta.sampleRate.toLocaleString()} Hz</span>
           <span>
-            {meta.numberOfChannels} {meta.numberOfChannels === 1 ? "channel" : "channels"}
+            {meta.numberOfChannels}{" "}
+            {meta.numberOfChannels === 1 ? "channel" : "channels"}
           </span>
-          <span>{formatFileSize(audioFile.size)}</span>
+          {file && <span>{formatFileSize(file.size)}</span>}
         </div>
       )}
     </div>
