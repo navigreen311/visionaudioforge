@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import StarPicker from "@/components/marketplace/StarPicker";
+import WidgetsTab from "@/components/marketplace/WidgetsTab";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,15 +62,6 @@ const CATEGORY_ICONS: Record<string, string> = {
   model: "🧠",
 };
 
-const WIDGET_TYPES = [
-  "live_feed",
-  "alert_badge",
-  "search_bar",
-  "metric_card",
-  "chart",
-  "copilot_mini",
-];
-
 const FRAMEWORKS = ["pytorch", "tensorflow", "onnx", "sklearn", "custom"];
 
 // ---------------------------------------------------------------------------
@@ -104,8 +97,13 @@ export default function MarketplacePage() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [installed, setInstalled] = useState<Plugin[]>([]);
   const [adapters, setAdapters] = useState<BYOMAdapter[]>([]);
-  const [embedCode, setEmbedCode] = useState("");
-  const [selectedWidget, setSelectedWidget] = useState(WIDGET_TYPES[0]);
+
+  // Plugin detail + review state
+  const [detailPlugin, setDetailPlugin] = useState<Plugin | null>(null);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewText, setReviewText] = useState("");
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewSuccess, setReviewSuccess] = useState(false);
 
   // BYOM form state
   const [byomName, setByomName] = useState("");
@@ -163,10 +161,25 @@ export default function MarketplacePage() {
     setByomUrl("");
   };
 
-  const handleGenerateEmbed = () => {
-    const token = btoa(crypto.randomUUID());
-    const url = `https://app.vaf.io/embed/${selectedWidget}?token=${token}`;
-    setEmbedCode(`<iframe src="${url}" width="400" height="300" frameborder="0" allowtransparency="true"></iframe>`);
+  const handleSubmitReview = async () => {
+    if (!detailPlugin || reviewRating === 0 || reviewText.length < 20) return;
+    setReviewSubmitting(true);
+    try {
+      const pluginId = detailPlugin.plugin_id || detailPlugin.name;
+      await fetch(`/api/plugins/${encodeURIComponent(pluginId)}/reviews`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating: reviewRating, text: reviewText }),
+      });
+      setReviewSuccess(true);
+      setReviewRating(0);
+      setReviewText("");
+      setTimeout(() => setReviewSuccess(false), 3000);
+    } catch {
+      // silently handle — stub endpoint
+    } finally {
+      setReviewSubmitting(false);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -271,18 +284,31 @@ export default function MarketplacePage() {
                     </span>
                   </div>
 
-                  {/* Install button */}
-                  <button
-                    onClick={() => handleInstall(plugin)}
-                    disabled={isInstalled}
-                    className={`w-full py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                      isInstalled
-                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                        : "bg-brand-600 text-white hover:bg-brand-700"
-                    }`}
-                  >
-                    {isInstalled ? "Installed" : "Install"}
-                  </button>
+                  {/* Install + Review buttons */}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleInstall(plugin)}
+                      disabled={isInstalled}
+                      className={`flex-1 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                        isInstalled
+                          ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                          : "bg-brand-600 text-white hover:bg-brand-700"
+                      }`}
+                    >
+                      {isInstalled ? "Installed" : "Install"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setDetailPlugin(plugin);
+                        setReviewRating(0);
+                        setReviewText("");
+                        setReviewSuccess(false);
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-sm font-medium border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+                    >
+                      Review
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -290,6 +316,64 @@ export default function MarketplacePage() {
 
           {filtered.length === 0 && (
             <p className="text-center text-gray-400 py-12 text-sm">No plugins match your search.</p>
+          )}
+
+          {/* Write a Review panel */}
+          {detailPlugin && (
+            <div className="border border-gray-200 rounded-xl bg-white p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-gray-900">
+                  Write a Review &mdash; {detailPlugin.name}
+                </h2>
+                <button
+                  onClick={() => setDetailPlugin(null)}
+                  className="text-gray-400 hover:text-gray-600 text-sm"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-gray-600">
+                  Your Rating
+                </label>
+                <StarPicker rating={reviewRating} onChange={setReviewRating} />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-gray-600">
+                  Your Review (min 20 characters)
+                </label>
+                <textarea
+                  value={reviewText}
+                  onChange={(e) => setReviewText(e.target.value)}
+                  rows={4}
+                  placeholder="Share your experience with this plugin..."
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500 focus:outline-none resize-none"
+                />
+                <p className="text-[10px] text-gray-400">
+                  {reviewText.length}/20 characters minimum
+                </p>
+              </div>
+
+              {reviewSuccess && (
+                <p className="text-sm text-green-600 font-medium">
+                  Review submitted successfully!
+                </p>
+              )}
+
+              <button
+                onClick={handleSubmitReview}
+                disabled={
+                  reviewRating === 0 ||
+                  reviewText.length < 20 ||
+                  reviewSubmitting
+                }
+                className="px-6 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                {reviewSubmitting ? "Submitting..." : "Submit Review"}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -437,58 +521,7 @@ export default function MarketplacePage() {
       {/* ================================================================= */}
       {/* Widgets Tab                                                       */}
       {/* ================================================================= */}
-      {tab === "widgets" && (
-        <div className="space-y-6">
-          <div className="border border-gray-200 rounded-xl bg-white p-6 shadow-sm space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Widget Builder</h2>
-            <p className="text-sm text-gray-500">
-              Generate embeddable widgets to integrate VAF into any webpage.
-            </p>
-
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-              {WIDGET_TYPES.map((wt) => (
-                <button
-                  key={wt}
-                  onClick={() => setSelectedWidget(wt)}
-                  className={`p-3 rounded-xl border text-center text-sm transition-colors ${
-                    selectedWidget === wt
-                      ? "border-brand-600 bg-brand-50 text-brand-700 font-semibold"
-                      : "border-gray-200 text-gray-600 hover:border-gray-300"
-                  }`}
-                >
-                  {wt.replace("_", " ")}
-                </button>
-              ))}
-            </div>
-
-            <button
-              onClick={handleGenerateEmbed}
-              className="px-6 py-2 bg-brand-600 text-white text-sm font-medium rounded-lg hover:bg-brand-700 transition-colors"
-            >
-              Generate Embed Code
-            </button>
-
-            {embedCode && (
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-gray-600">
-                  Embed Code (copy and paste into your page)
-                </label>
-                <div className="relative">
-                  <pre className="bg-gray-900 text-green-400 text-xs p-4 rounded-lg overflow-x-auto">
-                    {embedCode}
-                  </pre>
-                  <button
-                    onClick={() => navigator.clipboard.writeText(embedCode)}
-                    className="absolute top-2 right-2 px-2 py-1 bg-gray-700 text-gray-200 text-[10px] rounded hover:bg-gray-600"
-                  >
-                    Copy
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      {tab === "widgets" && <WidgetsTab />}
     </div>
   );
 }
