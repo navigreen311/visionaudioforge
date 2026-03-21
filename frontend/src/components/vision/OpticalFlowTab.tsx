@@ -4,7 +4,8 @@ import React, { useState, useCallback } from "react";
 import api from "@/lib/api";
 import ImageUploadPreview from "./ImageUploadPreview";
 import StatsPanel from "./StatsPanel";
-import LoadingSpinner from "@/components/ui/LoadingSpinner";
+
+// ── Types ──────────────────────────────────────────────────────────
 
 type FlowMethod = "lk" | "farneback" | "both";
 
@@ -38,6 +39,8 @@ interface FlowResponse {
   [key: string]: unknown;
 }
 
+// ── Defaults ───────────────────────────────────────────────────────
+
 const DEFAULT_LK: LKParams = {
   maxCorners: 100,
   qualityLevel: 0.3,
@@ -51,12 +54,41 @@ const DEFAULT_FARNEBACK: FarnebackParams = {
   iterations: 3,
 };
 
+// ── Loading Skeleton ───────────────────────────────────────────────
+
+function LoadingSkeleton() {
+  return (
+    <div className="animate-pulse space-y-4">
+      <div className="text-sm font-medium text-gray-500">
+        Processing optical flow analysis...
+      </div>
+      {/* Image skeleton */}
+      <div className="h-64 w-full rounded-lg bg-gray-200" />
+      {/* Stats skeleton */}
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+        <div className="mb-3 h-4 w-24 rounded bg-gray-200" />
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="space-y-1">
+              <div className="h-3 w-16 rounded bg-gray-200" />
+              <div className="h-4 w-20 rounded bg-gray-200" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Component ──────────────────────────────────────────────────────
+
 export default function OpticalFlowTab() {
   const [frame1, setFrame1] = useState<File | null>(null);
   const [frame2, setFrame2] = useState<File | null>(null);
   const [method, setMethod] = useState<FlowMethod>("farneback");
   const [lkParams, setLkParams] = useState<LKParams>(DEFAULT_LK);
-  const [farnebackParams, setFarnebackParams] = useState<FarnebackParams>(DEFAULT_FARNEBACK);
+  const [farnebackParams, setFarnebackParams] =
+    useState<FarnebackParams>(DEFAULT_FARNEBACK);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<FlowResponse | null>(null);
@@ -64,7 +96,7 @@ export default function OpticalFlowTab() {
   const handleFrame1 = useCallback((file: File) => setFrame1(file), []);
   const handleFrame2 = useCallback((file: File) => setFrame2(file), []);
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = useCallback(async () => {
     if (!frame1 || !frame2) {
       setError("Please upload both frames before analyzing.");
       return;
@@ -98,18 +130,22 @@ export default function OpticalFlowTab() {
       }
       formData.append("params", JSON.stringify(params));
 
-      const { data } = await api.post<FlowResponse>("/api/vision/optical-flow", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const { data } = await api.post<FlowResponse>(
+        "/api/vision/optical-flow",
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
       setResult(data);
     } catch (err: unknown) {
       const message =
-        err instanceof Error ? err.message : "Failed to analyze optical flow.";
+        err instanceof Error
+          ? err.message
+          : "Failed to analyze optical flow.";
       setError(message);
     } finally {
       setLoading(false);
     }
-  };
+  }, [frame1, frame2, method, lkParams, farnebackParams]);
 
   const renderStats = (stats: FlowStats, title?: string) => (
     <StatsPanel
@@ -128,16 +164,29 @@ export default function OpticalFlowTab() {
     <div className="space-y-6">
       {/* Dual frame upload */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <ImageUploadPreview label="Frame 1 (Previous)" onFile={handleFrame1} accept="image/*" />
-        <ImageUploadPreview label="Frame 2 (Current)" onFile={handleFrame2} accept="image/*" />
+        <ImageUploadPreview
+          label="Frame 1 (Previous)"
+          onFile={handleFrame1}
+          accept="image/*"
+        />
+        <ImageUploadPreview
+          label="Frame 2 (Current)"
+          onFile={handleFrame2}
+          accept="image/*"
+        />
       </div>
 
       {/* Method selector */}
       <fieldset>
-        <legend className="mb-2 text-sm font-medium text-gray-700">Method</legend>
+        <legend className="mb-2 text-sm font-medium text-gray-700">
+          Method
+        </legend>
         <div className="flex gap-6">
           {(["lk", "farneback", "both"] as const).map((m) => (
-            <label key={m} className="flex items-center gap-2 text-sm text-gray-700">
+            <label
+              key={m}
+              className="flex items-center gap-2 text-sm text-gray-700"
+            >
               <input
                 type="radio"
                 name="flow-method"
@@ -146,7 +195,11 @@ export default function OpticalFlowTab() {
                 onChange={() => setMethod(m)}
                 className="text-brand-600 focus:ring-brand-500"
               />
-              {m === "lk" ? "Lucas-Kanade" : m === "farneback" ? "Farneback" : "Both"}
+              {m === "lk"
+                ? "Lucas-Kanade"
+                : m === "farneback"
+                  ? "Farneback"
+                  : "Both"}
             </label>
           ))}
         </div>
@@ -155,16 +208,23 @@ export default function OpticalFlowTab() {
       {/* LK Controls */}
       {(method === "lk" || method === "both") && (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <h4 className="mb-3 text-sm font-semibold text-gray-700">Lucas-Kanade Parameters</h4>
+          <h4 className="mb-3 text-sm font-semibold text-gray-700">
+            Lucas-Kanade Parameters
+          </h4>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Max Corners</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Max Corners
+              </label>
               <input
                 type="number"
                 min={1}
                 value={lkParams.maxCorners}
                 onChange={(e) =>
-                  setLkParams((p) => ({ ...p, maxCorners: Number(e.target.value) }))
+                  setLkParams((p) => ({
+                    ...p,
+                    maxCorners: Number(e.target.value),
+                  }))
                 }
                 className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
               />
@@ -180,32 +240,45 @@ export default function OpticalFlowTab() {
                 step={0.01}
                 value={lkParams.qualityLevel}
                 onChange={(e) =>
-                  setLkParams((p) => ({ ...p, qualityLevel: Number(e.target.value) }))
+                  setLkParams((p) => ({
+                    ...p,
+                    qualityLevel: Number(e.target.value),
+                  }))
                 }
                 className="w-full"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Min Distance</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Min Distance
+              </label>
               <input
                 type="number"
                 min={1}
                 value={lkParams.minDistance}
                 onChange={(e) =>
-                  setLkParams((p) => ({ ...p, minDistance: Number(e.target.value) }))
+                  setLkParams((p) => ({
+                    ...p,
+                    minDistance: Number(e.target.value),
+                  }))
                 }
                 className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Window Size</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Window Size
+              </label>
               <input
                 type="number"
                 min={3}
                 step={2}
                 value={lkParams.windowSize}
                 onChange={(e) =>
-                  setLkParams((p) => ({ ...p, windowSize: Number(e.target.value) }))
+                  setLkParams((p) => ({
+                    ...p,
+                    windowSize: Number(e.target.value),
+                  }))
                 }
                 className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
               />
@@ -217,10 +290,14 @@ export default function OpticalFlowTab() {
       {/* Farneback Controls */}
       {(method === "farneback" || method === "both") && (
         <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-          <h4 className="mb-3 text-sm font-semibold text-gray-700">Farneback Parameters</h4>
+          <h4 className="mb-3 text-sm font-semibold text-gray-700">
+            Farneback Parameters
+          </h4>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Pyramid Levels</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Pyramid Levels
+              </label>
               <input
                 type="number"
                 min={1}
@@ -236,7 +313,9 @@ export default function OpticalFlowTab() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Window Size</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Window Size
+              </label>
               <input
                 type="number"
                 min={3}
@@ -252,7 +331,9 @@ export default function OpticalFlowTab() {
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-gray-500">Iterations</label>
+              <label className="mb-1 block text-xs text-gray-500">
+                Iterations
+              </label>
               <input
                 type="number"
                 min={1}
@@ -280,18 +361,21 @@ export default function OpticalFlowTab() {
         {loading ? "Analyzing..." : "Analyze Flow"}
       </button>
 
-      {/* Loading */}
-      {loading && (
-        <div className="flex items-center gap-3 text-sm text-gray-500">
-          <LoadingSpinner size="sm" />
-          Processing optical flow analysis...
-        </div>
-      )}
+      {/* Loading skeleton */}
+      {loading && <LoadingSkeleton />}
 
-      {/* Error */}
+      {/* Error with retry */}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-          {error}
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <p className="text-sm text-red-700">{error}</p>
+          <button
+            type="button"
+            onClick={handleAnalyze}
+            disabled={loading}
+            className="mt-2 rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+          >
+            Retry
+          </button>
         </div>
       )}
 
@@ -313,7 +397,9 @@ export default function OpticalFlowTab() {
           {/* Both method results */}
           {result.lk_image && (
             <div>
-              <p className="mb-2 text-sm font-medium text-gray-600">Lucas-Kanade</p>
+              <p className="mb-2 text-sm font-medium text-gray-600">
+                Lucas-Kanade
+              </p>
               <img
                 src={result.lk_image}
                 alt="LK optical flow"
@@ -324,13 +410,16 @@ export default function OpticalFlowTab() {
           )}
           {result.farneback_image && (
             <div>
-              <p className="mb-2 text-sm font-medium text-gray-600">Farneback</p>
+              <p className="mb-2 text-sm font-medium text-gray-600">
+                Farneback
+              </p>
               <img
                 src={result.farneback_image}
                 alt="Farneback optical flow"
                 className="max-w-full rounded border border-gray-200"
               />
-              {result.farneback_stats && renderStats(result.farneback_stats, "Farneback Stats")}
+              {result.farneback_stats &&
+                renderStats(result.farneback_stats, "Farneback Stats")}
             </div>
           )}
         </div>
