@@ -1,11 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
+
+import dynamic from "next/dynamic";
 
 import NodeConfig from "@/components/pipeline/NodeConfig";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
+
+// Dynamic imports for components from other agents (may not exist yet)
+const NodeConfigPanel = dynamic(
+  () => import("@/components/pipeline/NodeConfigPanel").catch(() => () => null),
+  { ssr: false },
+);
+const SavedPipelinesDrawer = dynamic(
+  () => import("@/components/pipeline/SavedPipelinesDrawer").catch(() => () => null),
+  { ssr: false },
+);
+const TemplatesModal = dynamic(
+  () => import("@/components/pipeline/TemplatesModal").catch(() => () => null),
+  { ssr: false },
+);
+const GenerateModal = dynamic(
+  () => import("@/components/pipeline/GenerateModal").catch(() => () => null),
+  { ssr: false },
+);
+const ScheduleModal = dynamic(
+  () => import("@/components/pipeline/ScheduleModal").catch(() => () => null),
+  { ssr: false },
+);
+const RunHistory = dynamic(
+  () => import("@/components/pipeline/RunHistory").catch(() => () => null),
+  { ssr: false },
+);
 
 interface PipelineRun {
   id: string;
