@@ -18,14 +18,40 @@ interface WordTimestamp {
   end: number;
 }
 
-interface TranscriptionResult {
+interface TranscriptionSegment {
+  start: number;
+  end: number;
   text: string;
-  segments: Array<{
-    start: number;
-    end: number;
-    text: string;
-  }>;
+}
+
+interface SpeakerSegment {
+  speaker: string;
+  start: number;
+  end: number;
+  text?: string;
+}
+
+/**
+ * Matches the backend response shape from POST /api/audio/transcribe:
+ * { transcript, words, language, speakers, duration_sec }
+ *
+ * Also supports the legacy shape (text, segments) for backward compatibility.
+ */
+interface TranscriptionResult {
+  /** Primary transcript text (backend key: transcript) */
+  transcript: string;
+  /** Legacy key — some backends return "text" instead */
+  text?: string;
+  /** Timed segments for SRT generation */
+  segments: TranscriptionSegment[];
+  /** Word-level timestamps */
   words?: WordTimestamp[];
+  /** Detected language code */
+  language: string;
+  /** Speaker diarization segments */
+  speakers: SpeakerSegment[];
+  /** Total duration in seconds */
+  duration_sec: number;
 }
 
 interface TranscriptionPanelProps {
@@ -55,7 +81,7 @@ const LANGUAGE_OPTIONS: { value: Language; label: string }[] = [
 // SRT generator
 // ---------------------------------------------------------------------------
 
-function toSRT(segments: TranscriptionResult["segments"]): string {
+function toSRT(segments: TranscriptionSegment[]): string {
   return segments
     .map((seg, i) => {
       const fmt = (t: number) => {
@@ -103,6 +129,12 @@ export default function TranscriptionPanel({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TranscriptionResult | null>(null);
 
+  /** Resolve the display text from either "transcript" or legacy "text" key */
+  const displayText = useMemo(() => {
+    if (!result) return "";
+    return result.transcript || result.text || "";
+  }, [result]);
+
   // ---- transcribe ----
   const transcribe = useCallback(async () => {
     if (!audioFile) return;
@@ -134,13 +166,13 @@ export default function TranscriptionPanel({
 
   // ---- copy text ----
   const copyText = useCallback(() => {
-    if (!result) return;
-    navigator.clipboard.writeText(result.text);
-  }, [result]);
+    if (!displayText) return;
+    navigator.clipboard.writeText(displayText);
+  }, [displayText]);
 
   // ---- downloads ----
   const downloadSRT = useCallback(() => {
-    if (!result) return;
+    if (!result?.segments) return;
     downloadBlob(toSRT(result.segments), "transcription.srt", "text/srt");
   }, [result]);
 
@@ -154,9 +186,9 @@ export default function TranscriptionPanel({
   }, [result]);
 
   const downloadTXT = useCallback(() => {
-    if (!result) return;
-    downloadBlob(result.text, "transcription.txt", "text/plain");
-  }, [result]);
+    if (!displayText) return;
+    downloadBlob(displayText, "transcription.txt", "text/plain");
+  }, [displayText]);
 
   // ---- word spans (memoised) ----
   const wordSpans = useMemo(() => {
@@ -300,6 +332,23 @@ export default function TranscriptionPanel({
       {/* ---- Results ---- */}
       {result && !loading && (
         <div className="space-y-4">
+          {/* Detected language + duration info bar */}
+          {(result.language || result.duration_sec > 0) && (
+            <div className="flex items-center gap-4 text-xs text-gray-500">
+              {result.language && (
+                <span className="inline-flex items-center gap-1 rounded bg-gray-100 px-2 py-0.5 font-medium text-gray-600">
+                  Language: {result.language.toUpperCase()}
+                </span>
+              )}
+              {result.duration_sec > 0 && (
+                <span>Duration: {result.duration_sec.toFixed(1)}s</span>
+              )}
+              {result.speakers && result.speakers.length > 0 && (
+                <span>Speakers: {result.speakers.length}</span>
+              )}
+            </div>
+          )}
+
           {/* Full transcript */}
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
@@ -307,7 +356,7 @@ export default function TranscriptionPanel({
             </label>
             <textarea
               readOnly
-              value={result.text}
+              value={displayText}
               rows={6}
               className="w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-800 resize-y focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
             />
@@ -321,6 +370,34 @@ export default function TranscriptionPanel({
               </label>
               <div className="rounded-lg border border-gray-200 bg-white p-4 text-sm leading-relaxed text-gray-800 max-h-48 overflow-y-auto">
                 {wordSpans}
+              </div>
+            </div>
+          )}
+
+          {/* Speaker segments */}
+          {result.speakers && result.speakers.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Speaker Segments
+              </label>
+              <div className="rounded-lg border border-gray-200 bg-white max-h-40 overflow-y-auto divide-y divide-gray-100">
+                {result.speakers.map((seg, i) => (
+                  <button
+                    key={i}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors flex items-center gap-2"
+                    onClick={() => onSeek?.(seg.start)}
+                  >
+                    <span className="inline-block rounded bg-brand-100 px-1.5 py-0.5 text-xs font-medium text-brand-700">
+                      {seg.speaker}
+                    </span>
+                    <span className="text-gray-500 text-xs tabular-nums">
+                      {formatTimestamp(seg.start)} - {formatTimestamp(seg.end)}
+                    </span>
+                    {seg.text && (
+                      <span className="text-gray-700 truncate">{seg.text}</span>
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
           )}

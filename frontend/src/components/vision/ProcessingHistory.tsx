@@ -11,7 +11,7 @@ export interface HistoryEntry {
   operationType: string;
   timestamp: string;
   inputImage?: string;
-  results?: unknown;
+  results?: Record<string, unknown>;
 }
 
 function getRelativeTime(isoTimestamp: string): string {
@@ -41,7 +41,14 @@ function readHistory(): HistoryEntry[] {
 
 function writeHistory(entries: HistoryEntry[]): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  } catch {
+    // localStorage quota exceeded — evict oldest entries and retry
+    if (entries.length > 1) {
+      writeHistory(entries.slice(0, entries.length - 1));
+    }
+  }
 }
 
 export function addToHistory(entry: HistoryEntry): void {
@@ -52,6 +59,15 @@ export function addToHistory(entry: HistoryEntry): void {
   );
   writeHistory(updated);
   window.dispatchEvent(new Event("vision_history_updated"));
+}
+
+/**
+ * Saves an entry to vision processing history.
+ * Call this after each analysis completes. Handles localStorage quota
+ * gracefully by evicting oldest entries when storage is full.
+ */
+export function saveToHistory(entry: HistoryEntry): void {
+  addToHistory(entry);
 }
 
 interface ProcessingHistoryProps {

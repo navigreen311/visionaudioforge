@@ -15,7 +15,7 @@ class SpeechToTextService:
 
     def __init__(self) -> None:
         self.available = False
-        self._models: dict[str, object] = {}
+        self._models: dict = {}
         try:
             import whisper  # noqa: F401
 
@@ -24,7 +24,7 @@ class SpeechToTextService:
             pass
 
     def _ensure_model(self, model_name: str = "base"):
-        """Lazy-load the Whisper model on first use (cached per model size)."""
+        """Lazy-load the Whisper model on first use."""
         if model_name not in self._models and self.available:
             import whisper
 
@@ -42,31 +42,16 @@ class SpeechToTextService:
     ) -> dict:
         """Transcribe an audio array.
 
-        Parameters
-        ----------
-        audio : np.ndarray
-            Mono audio signal.
-        sr : int
-            Sample rate of *audio*.
-        language : str | None
-            Language code (e.g. ``"en"``). ``None`` or ``"auto"`` for auto-detection.
-        model : str
-            Whisper model size (``"tiny"``, ``"base"``, ``"small"``, ``"medium"``, ``"large"``).
-        task : str
-            ``"transcribe"`` or ``"translate"`` (translate to English).
-        word_timestamps : bool
-            If ``True``, request word-level timestamps from Whisper.
-
-        Returns
-        -------
-        dict
-            Keys: transcript, words, language, speakers, duration_sec.
+        Returns dict with keys:
+            transcript, text, segments, words, language, speakers, duration_sec.
         """
         duration_s = len(audio) / sr
 
         if not self.available:
             return {
                 "transcript": "[Whisper not installed - pip install openai-whisper]",
+                "text": "[Whisper not installed - pip install openai-whisper]",
+                "segments": [],
                 "words": [],
                 "language": "unknown",
                 "speakers": [],
@@ -82,26 +67,43 @@ class SpeechToTextService:
         audio = audio.astype(np.float32)
 
         options: dict = {"task": task, "word_timestamps": word_timestamps}
-        if language is not None and language != "auto":
+        if language is not None:
             options["language"] = language
 
         result = whisper_model.transcribe(audio, **options)
 
-        # Extract word-level timestamps when available
-        words = []
-        for seg in result.get("segments", []):
-            for w in seg.get("words", []):
-                words.append({
-                    "word": w.get("word", "").strip(),
-                    "start": w.get("start", 0.0),
-                    "end": w.get("end", 0.0),
-                    "probability": w.get("probability", 0.0),
-                })
+        segments = [
+            {
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"],
+                "confidence": seg.get("avg_logprob", 0.0),
+            }
+            for seg in result.get("segments", [])
+        ]
+
+        # Extract word-level timestamps if available
+        words: list[dict] = []
+        if word_timestamps:
+            for seg in result.get("segments", []):
+                for w in seg.get("words", []):
+                    words.append(
+                        {
+                            "word": w.get("word", "").strip(),
+                            "start": round(w.get("start", 0.0), 3),
+                            "end": round(w.get("end", 0.0), 3),
+                        }
+                    )
+
+        full_text = result.get("text", "")
+        detected_language = result.get("language", "unknown")
 
         return {
-            "transcript": result.get("text", ""),
+            "transcript": full_text,
+            "text": full_text,
+            "segments": segments,
             "words": words,
-            "language": result.get("language", "unknown"),
+            "language": detected_language,
             "speakers": [],
             "duration_sec": round(duration_s, 3),
         }

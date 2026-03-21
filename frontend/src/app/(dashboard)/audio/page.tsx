@@ -15,8 +15,11 @@ import {
   analyzeCall,
   type AudioAnalysisResult,
   type AugmentationConfig,
+  type AugmentationStep,
   type AugmentationResult,
   type CallAnalysisResult,
+  type SpeakerSentiment,
+  type TalkRatioEntry,
 } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -171,6 +174,9 @@ function SpectralAnalysisTab() {
 function AugmentationTab() {
   const [file, setFile] = useState<File | null>(null);
   const [config, setConfig] = useState<AugmentationConfig>({});
+  const handleConfigChange = (newConfig: { preset?: string; steps?: AugmentationStep[] }) => {
+    setConfig(newConfig);
+  };
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AugmentationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -201,7 +207,7 @@ function AugmentationTab() {
       </Card>
 
       <Card title="Augmentation Pipeline">
-        <AugmentationBuilder onConfigChange={setConfig} />
+        <AugmentationBuilder onConfigChange={handleConfigChange} />
         <div className="mt-4 flex justify-end">
           <Button
             onClick={handleAugment}
@@ -405,7 +411,7 @@ function CallIntelligenceTab() {
           {Object.keys(result.sentiment).length > 0 && (
             <Card title="Sentiment per Speaker">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {Object.entries(result.sentiment).map(([speaker, sent]: [string, { overall: string; scores: { positive: number; negative: number; neutral: number } }]) => (
+                {Object.entries(result.sentiment).map(([speaker, sent]: [string, SpeakerSentiment]) => (
                   <div key={speaker} className="rounded-lg border border-gray-200 p-4">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-gray-900">{speaker}</span>
@@ -445,7 +451,7 @@ function CallIntelligenceTab() {
                 {/* Simple CSS pie chart approximation using a stacked bar */}
                 <div className="flex-1">
                   <div className="flex h-8 rounded-full overflow-hidden">
-                    {talkRatioEntries.map(([speaker, data]: [string, { percentage: number; time_s: number; interruptions: number }], i: number) => (
+                    {talkRatioEntries.map(([speaker, data]: [string, TalkRatioEntry], i: number) => (
                       <div
                         key={speaker}
                         style={{
@@ -458,7 +464,7 @@ function CallIntelligenceTab() {
                     ))}
                   </div>
                   <div className="flex flex-wrap gap-4 mt-3">
-                    {talkRatioEntries.map(([speaker, data]: [string, { percentage: number; time_s: number; interruptions: number }], i: number) => (
+                    {talkRatioEntries.map(([speaker, data]: [string, TalkRatioEntry], i: number) => (
                       <div key={speaker} className="flex items-center gap-2">
                         <div
                           className="w-3 h-3 rounded-full"

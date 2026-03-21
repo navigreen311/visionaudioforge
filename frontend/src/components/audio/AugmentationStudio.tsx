@@ -20,6 +20,10 @@ interface AugmentationStudioProps {
   originalFile: File | null;
   onAugment: (config: AugmentConfig) => void;
   augmentedAudioB64: string | null;
+  /** Base64-encoded spectrogram PNG of the original audio */
+  originalSpectrogramB64: string | null;
+  /** Base64-encoded spectrogram PNG of the augmented audio */
+  augmentedSpectrogramB64: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,10 +114,12 @@ interface MiniPlayerProps {
   label: string;
   src: string | null;
   highlight?: boolean;
+  audioRef?: React.RefObject<HTMLAudioElement | null>;
 }
 
-function MiniPlayer({ label, src, highlight = false }: MiniPlayerProps) {
-  const audioRef = useRef<HTMLAudioElement>(null);
+function MiniPlayer({ label, src, highlight = false, audioRef: externalRef }: MiniPlayerProps) {
+  const internalRef = useRef<HTMLAudioElement>(null);
+  const audioRef = externalRef || internalRef;
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -127,7 +133,7 @@ function MiniPlayer({ label, src, highlight = false }: MiniPlayerProps) {
       el.play();
     }
     setPlaying(!playing);
-  }, [playing, src]);
+  }, [playing, src, audioRef]);
 
   useEffect(() => {
     const el = audioRef.current;
@@ -143,7 +149,7 @@ function MiniPlayer({ label, src, highlight = false }: MiniPlayerProps) {
       el.removeEventListener("loadedmetadata", onMeta);
       el.removeEventListener("ended", onEnded);
     };
-  }, [src]);
+  }, [src, audioRef]);
 
   return (
     <div
@@ -189,6 +195,36 @@ function MiniPlayer({ label, src, highlight = false }: MiniPlayerProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Mini spectrogram
+// ---------------------------------------------------------------------------
+
+interface MiniSpectrogramProps {
+  label: string;
+  b64: string | null;
+}
+
+function MiniSpectrogram({ label, b64 }: MiniSpectrogramProps) {
+  return (
+    <div className="flex-1 min-w-0">
+      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+        {label}
+      </p>
+      {b64 ? (
+        <img
+          src={`data:image/png;base64,${b64}`}
+          alt={`${label} spectrogram`}
+          className="w-full h-32 object-contain rounded-md border border-gray-200 bg-gray-900"
+        />
+      ) : (
+        <div className="w-full h-32 rounded-md border border-gray-200 bg-gray-100 flex items-center justify-center">
+          <span className="text-xs text-gray-400">No spectrogram</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -196,11 +232,15 @@ export default function AugmentationStudio({
   originalFile,
   onAugment,
   augmentedAudioB64,
+  originalSpectrogramB64,
+  augmentedSpectrogramB64,
 }: AugmentationStudioProps) {
   const [config, setConfig] = useState<AugmentConfig>(DEFAULT_CONFIG);
   const [abMode, setAbMode] = useState(false);
   const [abSide, setAbSide] = useState<"A" | "B">("A");
   const abTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const originalAudioRef = useRef<HTMLAudioElement | null>(null);
+  const augmentedAudioRef = useRef<HTMLAudioElement | null>(null);
 
   // --- original file URL ---
   const originalUrl = useMemo(() => {
@@ -233,19 +273,39 @@ export default function AugmentationStudio({
     };
   }, [augmentedUrl]);
 
-  // --- A/B toggle timer ---
+  // --- A/B toggle timer with playback switching ---
   useEffect(() => {
     if (abMode) {
       abTimerRef.current = setInterval(() => {
-        setAbSide((prev) => (prev === "A" ? "B" : "A"));
+        setAbSide((prev) => {
+          const next = prev === "A" ? "B" : "A";
+          // Pause current, play next
+          if (next === "A") {
+            augmentedAudioRef.current?.pause();
+            originalAudioRef.current?.play();
+          } else {
+            originalAudioRef.current?.pause();
+            augmentedAudioRef.current?.play();
+          }
+          return next;
+        });
       }, 3000);
+      // Start playing the current side immediately
+      if (abSide === "A") {
+        originalAudioRef.current?.play();
+      } else {
+        augmentedAudioRef.current?.play();
+      }
     } else {
       if (abTimerRef.current) clearInterval(abTimerRef.current);
       setAbSide("A");
+      originalAudioRef.current?.pause();
+      augmentedAudioRef.current?.pause();
     }
     return () => {
       if (abTimerRef.current) clearInterval(abTimerRef.current);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abMode]);
 
   // --- config helpers ---
@@ -397,11 +457,13 @@ export default function AugmentationStudio({
           label="Original (A)"
           src={originalUrl}
           highlight={abMode && abSide === "A"}
+          audioRef={originalAudioRef}
         />
         <MiniPlayer
           label="Augmented (B)"
           src={augmentedUrl}
           highlight={abMode && abSide === "B"}
+          audioRef={augmentedAudioRef}
         />
 
         <div className="flex items-center gap-3">
@@ -417,7 +479,7 @@ export default function AugmentationStudio({
           </label>
           {abMode && (
             <span
-              className={`inline-flex items-center justify-center h-7 w-7 rounded-full text-sm font-bold ${
+              className={`inline-flex items-center justify-center h-7 w-7 rounded-full text-sm font-bold transition-colors ${
                 abSide === "A"
                   ? "bg-blue-100 text-blue-700"
                   : "bg-purple-100 text-purple-700"
@@ -426,6 +488,12 @@ export default function AugmentationStudio({
               {abSide}
             </span>
           )}
+        </div>
+
+        {/* ---- Side-by-side spectrograms ---- */}
+        <div className="flex gap-3">
+          <MiniSpectrogram label="Original" b64={originalSpectrogramB64} />
+          <MiniSpectrogram label="Augmented" b64={augmentedSpectrogramB64} />
         </div>
       </div>
     </div>

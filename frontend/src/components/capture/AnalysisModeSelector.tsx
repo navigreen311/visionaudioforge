@@ -42,7 +42,7 @@ export default function AnalysisModeSelector({
   onChange,
 }: AnalysisModeSelectorProps) {
   return (
-    <div className="inline-flex rounded-lg overflow-hidden border border-gray-300">
+    <div className="inline-flex rounded-full overflow-hidden border border-gray-300 bg-gray-50">
       {MODES.map((mode, index) => {
         const config = MODE_CONFIG[mode];
         const isActive = value === mode;
@@ -53,14 +53,22 @@ export default function AnalysisModeSelector({
             onClick={() => onChange(mode)}
             title={config.description}
             className={[
-              "px-4 py-2 text-sm font-medium transition-colors",
+              "px-4 py-1.5 text-xs font-medium transition-colors whitespace-nowrap",
               isActive
-                ? "bg-[#185FA5] text-white"
-                : "bg-white text-gray-700 hover:bg-gray-100",
+                ? "bg-brand-600 text-white shadow-sm"
+                : "bg-transparent text-gray-600 hover:bg-gray-100",
               index > 0 ? "border-l border-gray-300" : "",
             ].join(" ")}
           >
-            {config.label}
+            <span className="block leading-tight">{config.label}</span>
+            <span
+              className={[
+                "block text-[10px] font-normal leading-tight",
+                isActive ? "text-white/80" : "text-gray-400",
+              ].join(" ")}
+            >
+              {config.resolution}
+            </span>
           </button>
         );
       })}

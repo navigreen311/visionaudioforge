@@ -10,6 +10,7 @@ import AudioMeter from "@/components/capture/AudioMeter";
 import MultiCamGrid, {
   type CaptureSource,
 } from "@/components/capture/MultiCamGrid";
+import RTSPConnectPanel from "@/components/capture/RTSPConnectPanel";
 import RecordingControls from "@/components/capture/RecordingControls";
 
 interface AnalysisResult {
@@ -401,51 +402,16 @@ export default function CapturePage() {
 
       {/* RTSP Tab Content */}
       {activeSource === "rtsp" && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-4">
-          <h3 className="text-sm font-medium text-gray-700">RTSP Stream Connection</h3>
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={rtspUrl}
-              onChange={(e) => setRtspUrl(e.target.value)}
-              placeholder="rtsp://camera-ip:554/stream"
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
-            />
-            <button
-              onClick={handleRtspConnect}
-              disabled={rtspConnecting || !rtspUrl.trim()}
-              className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              {rtspConnecting ? "Connecting..." : "Connect"}
-            </button>
-          </div>
-          {rtspError && (
-            <p className="text-red-600 text-sm">{rtspError}</p>
-          )}
-          {rtspInfo && (
-            <div className="bg-gray-50 rounded-lg p-4 space-y-2">
-              <h4 className="text-sm font-medium text-gray-800">Stream Info</h4>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                <div>
-                  <span className="text-gray-500">URL</span>
-                  <p className="font-mono text-xs mt-0.5 truncate">{rtspInfo.url}</p>
-                </div>
-                <div>
-                  <span className="text-gray-500">Resolution</span>
-                  <p className="font-medium mt-0.5">{rtspInfo.width}x{rtspInfo.height}</p>
-                </div>
-                <div>
-                  <span className="text-gray-500">FPS</span>
-                  <p className="font-medium mt-0.5">{rtspInfo.fps}</p>
-                </div>
-                <div>
-                  <span className="text-gray-500">Codec</span>
-                  <p className="font-medium mt-0.5">{rtspInfo.codec}</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        <RTSPConnectPanel
+          onConnect={(fullUrl) => {
+            setRtspUrl(fullUrl);
+            handleRtspConnect();
+          }}
+          onDisconnect={() => {
+            setRtspInfo(null);
+            setRtspError(null);
+          }}
+        />
       )}
 
       {/* Multi-Cam Tab Content */}

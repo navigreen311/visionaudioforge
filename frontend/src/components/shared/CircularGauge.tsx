@@ -3,96 +3,83 @@
 import React from "react";
 
 interface CircularGaugeProps {
+  /** Percentage value between 0 and 100. */
   value: number;
-  max: number;
+  /** Label displayed below the gauge. */
   label: string;
-  unit: string;
-  size?: number;
-  strokeWidth?: number;
-  showPercentage?: boolean;
+  /** Optional secondary label (e.g. "2.4 / 50 GB") shown below the percentage. */
+  maxLabel?: string;
 }
 
+/** Return a colour that reflects severity: green, amber, or red. */
 function getGaugeColor(pct: number): string {
-  if (pct >= 80) return "#A32D2D";
-  if (pct >= 60) return "#D97706";
-  return "#0F6E56";
+  if (pct >= 80) return "#EF4444"; // red
+  if (pct >= 60) return "#F59E0B"; // amber
+  return "#10B981"; // green
 }
+
+const SIZE = 100;
+const STROKE_WIDTH = 8;
+const RADIUS = (SIZE - STROKE_WIDTH) / 2;
+const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 export default function CircularGauge({
   value,
-  max,
   label,
-  unit,
-  size = 120,
-  strokeWidth = 10,
-  showPercentage = true,
+  maxLabel,
 }: CircularGaugeProps) {
-  const clampedValue = Math.min(Math.max(value, 0), max);
-  const percentage = max > 0 ? (clampedValue / max) * 100 : 0;
-  const color = getGaugeColor(percentage);
-
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference - (percentage / 100) * circumference;
-  const center = size / 2;
-
-  const displayValue = showPercentage
-    ? `${Math.round(percentage)}%`
-    : `${clampedValue}`;
+  const clamped = Math.min(Math.max(value, 0), 100);
+  const color = getGaugeColor(clamped);
+  const dashOffset = CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
+  const center = SIZE / 2;
 
   return (
     <div className="flex flex-col items-center gap-1">
-      <div className="relative" style={{ width: size, height: size }}>
-      <svg
-        width={size}
-        height={size}
-        viewBox={`0 0 ${size} ${size}`}
-        className="transform -rotate-90"
-        aria-label={`${label}: ${Math.round(percentage)}%`}
-        role="img"
-      >
-        {/* Background track */}
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke="#e5e7eb"
-          strokeWidth={strokeWidth}
-        />
-        {/* Progress arc */}
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth={strokeWidth}
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          strokeLinecap="round"
-          className="transition-all duration-500 ease-in-out"
-        />
-      </svg>
-      {/* Center text overlay */}
-      <div
-        className="absolute inset-0 flex flex-col items-center justify-center"
-      >
-        <span
-          className="font-semibold text-gray-900"
-          style={{ fontSize: size * 0.18 }}
+      <div className="relative" style={{ width: SIZE, height: SIZE }}>
+        <svg
+          width={SIZE}
+          height={SIZE}
+          viewBox={`0 0 ${SIZE} ${SIZE}`}
+          className="transform -rotate-90"
+          aria-label={`${label}: ${Math.round(clamped)}%`}
+          role="img"
         >
-          {displayValue}
-        </span>
-        {!showPercentage && (
-          <span
-            className="text-gray-500"
-            style={{ fontSize: size * 0.12 }}
-          >
-            {unit}
+          {/* Background track */}
+          <circle
+            cx={center}
+            cy={center}
+            r={RADIUS}
+            fill="none"
+            stroke="#e5e7eb"
+            strokeWidth={STROKE_WIDTH}
+          />
+          {/* Progress arc */}
+          <circle
+            cx={center}
+            cy={center}
+            r={RADIUS}
+            fill="none"
+            stroke={color}
+            strokeWidth={STROKE_WIDTH}
+            strokeDasharray={CIRCUMFERENCE}
+            strokeDashoffset={dashOffset}
+            strokeLinecap="round"
+            style={{
+              transition: "stroke-dashoffset 0.7s cubic-bezier(.4,0,.2,1), stroke 0.5s ease",
+            }}
+          />
+        </svg>
+        {/* Center text overlay */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-lg font-semibold text-gray-900">
+            {Math.round(clamped)}%
           </span>
-        )}
-      </div>
+          {maxLabel && (
+            <span className="text-[10px] leading-tight text-gray-500">
+              {maxLabel}
+            </span>
+          )}
+        </div>
       </div>
       <span className="text-xs font-medium text-gray-600 text-center">
         {label}

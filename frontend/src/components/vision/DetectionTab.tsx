@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import api from "@/lib/api";
 import ImageUploadPreview from "./ImageUploadPreview";
 import LoadingSpinner from "@/components/ui/LoadingSpinner";
@@ -8,16 +8,20 @@ import LoadingSpinner from "@/components/ui/LoadingSpinner";
 const COCO_CLASSES = [
   "person", "bicycle", "car", "motorcycle", "airplane",
   "bus", "train", "truck", "boat", "traffic light",
-  "fire hydrant", "stop sign", "bench", "bird", "cat",
-  "dog", "horse", "cow", "elephant", "bear",
+  "fire hydrant", "stop sign", "parking meter", "bench",
+  "bird", "cat", "dog", "horse", "sheep", "cow",
+  "elephant", "bear", "zebra", "giraffe", "backpack",
+  "umbrella", "handbag", "suitcase", "frisbee", "skis",
 ] as const;
 
-const BBOX_COLORS: Record<string, string> = {};
 const PALETTE = [
   "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4",
   "#3b82f6", "#8b5cf6", "#ec4899", "#14b8a6", "#f43f5e",
   "#a855f7", "#0ea5e9", "#84cc16", "#d946ef", "#f59e0b",
+  "#10b981", "#6366f1", "#f472b6", "#34d399", "#fb923c",
 ];
+
+const BBOX_COLORS: Record<string, string> = {};
 
 function getClassColor(label: string): string {
   if (!BBOX_COLORS[label]) {
@@ -35,26 +39,80 @@ interface Detection {
 
 interface DetectResponse {
   detections: Detection[];
-  [key: string]: unknown;
+  count: number;
+  image_b64?: string;
+  processing_time_ms?: number;
 }
 
-export default function DetectionTab() {
-  const [file, setFile] = useState<File | null>(null);
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
+type SortField = "label" | "confidence" | "area";
+type SortDir = "asc" | "desc";
+
+interface DetectionTabProps {
+  imageSrc?: string;
+  imageFile?: File;
+}
+
+export default function DetectionTab({ imageSrc: externalSrc, imageFile: externalFile }: DetectionTabProps) {
+  const [file, setFile] = useState<File | null>(externalFile ?? null);
+  const [imageSrc, setImageSrc] = useState<string | null>(externalSrc ?? null);
   const [confidence, setConfidence] = useState(50);
   const [iou, setIou] = useState(45);
-  const [classFilter, setClassFilter] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [selectedClasses, setSelectedClasses] = useState<string[]>([]);
+  const [classSearch, setClassSearch] = useState("");
+  const [showClassDropdown, setShowClassDropdown] = useState(false);
   const [maxDetections, setMaxDetections] = useState(100);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detections, setDetections] = useState<Detection[]>([]);
+  const [sortField, setSortField] = useState<SortField>("confidence");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const filteredSuggestions = COCO_CLASSES.filter(
-    (c) => c.includes(classFilter.toLowerCase()) && c !== classFilter.toLowerCase(),
+  // Sync external props
+  useEffect(() => {
+    if (externalFile) {
+      setFile(externalFile);
+      setImageSrc(URL.createObjectURL(externalFile));
+      setDetections([]);
+    }
+  }, [externalFile]);
+
+  useEffect(() => {
+    if (externalSrc) {
+      setImageSrc(externalSrc);
+      setDetections([]);
+    }
+  }, [externalSrc]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowClassDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const filteredClassOptions = COCO_CLASSES.filter(
+    (c) =>
+      c.toLowerCase().includes(classSearch.toLowerCase()) &&
+      !selectedClasses.includes(c),
   );
+
+  const toggleClass = (cls: string) => {
+    setSelectedClasses((prev) =>
+      prev.includes(cls) ? prev.filter((c) => c !== cls) : [...prev, cls],
+    );
+    setClassSearch("");
+  };
+
+  const removeSelectedClass = (cls: string) => {
+    setSelectedClasses((prev) => prev.filter((c) => c !== cls));
+  };
 
   const handleFile = useCallback((f: File) => {
     setFile(f);
@@ -76,17 +134,48 @@ export default function DetectionTab() {
     try {
       const formData = new FormData();
       formData.append("file", file);
-      formData.append("confidence", String(confidence / 100));
-      formData.append("iou", String(iou / 100));
-      formData.append("max_detections", String(maxDetections));
-      if (classFilter.trim()) {
-        formData.append("class_filter", classFilter.trim());
+
+      // Build query params (backend uses Query parameters, not Form fields)
+      const params = new URLSearchParams();
+      params.set("confidence", String(confidence / 100));
+      params.set("iou_threshold", String(iou / 100));
+      params.set("max_detections", String(maxDetections));
+      if (selectedClasses.length > 0) {
+        params.set("classes", selectedClasses.join(","));
       }
 
-      const { data } = await api.post<DetectResponse>("/api/vision/detect", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
+      const { data } = await api.post<DetectResponse>(
+        `/api/vision/detect?${params.toString()}`,
+        formData,
+        { headers: { "Content-Type": "multipart/form-data" } },
+      );
+
+      // Normalize: backend returns class_name + xyxy bbox; convert to label + [x,y,w,h]
+      const normalized: Detection[] = (data.detections ?? []).map((d) => {
+        const raw = d as Record<string, unknown>;
+        const label = (raw["label"] as string) ?? (raw["class_name"] as string) ?? "unknown";
+        const rawBbox = (raw["bbox"] as number[]) ?? [0, 0, 0, 0];
+        // If bbox looks like xyxy (x2 > x1 and y2 > y1 and values are large), convert to xywh
+        let bbox: [number, number, number, number];
+        if (rawBbox.length === 4 && rawBbox[2] > rawBbox[0] && rawBbox[3] > rawBbox[1]) {
+          // xyxy -> xywh
+          bbox = [
+            Math.round(rawBbox[0]),
+            Math.round(rawBbox[1]),
+            Math.round(rawBbox[2] - rawBbox[0]),
+            Math.round(rawBbox[3] - rawBbox[1]),
+          ];
+        } else {
+          bbox = [rawBbox[0], rawBbox[1], rawBbox[2], rawBbox[3]];
+        }
+        return {
+          label,
+          confidence: raw["confidence"] as number,
+          bbox,
+        };
       });
-      setDetections(data.detections);
+
+      setDetections(normalized);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Detection failed.";
@@ -135,6 +224,37 @@ export default function DetectionTab() {
     }
   }, [imageSrc, detections]);
 
+  // Sortable detections
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir(field === "label" ? "asc" : "desc");
+    }
+  };
+
+  const sortedDetections = useMemo(() => {
+    const sorted = [...detections];
+    sorted.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "label") {
+        cmp = a.label.localeCompare(b.label);
+      } else if (sortField === "confidence") {
+        cmp = a.confidence - b.confidence;
+      } else if (sortField === "area") {
+        cmp = a.bbox[2] * a.bbox[3] - b.bbox[2] * b.bbox[3];
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [detections, sortField, sortDir]);
+
+  const sortIndicator = (field: SortField) => {
+    if (sortField !== field) return "";
+    return sortDir === "asc" ? " \u25B2" : " \u25BC";
+  };
+
   const exportCSV = () => {
     const header = "Class,Confidence,X,Y,Width,Height,Area\n";
     const rows = detections
@@ -168,10 +288,14 @@ export default function DetectionTab() {
 
       {/* Controls */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {/* Confidence Threshold */}
         <div>
-          <label className="mb-1 block text-xs text-gray-500">
-            Confidence: {confidence}%
-          </label>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs text-gray-500">Confidence Threshold</label>
+            <span className="inline-flex items-center rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700">
+              {confidence}%
+            </span>
+          </div>
           <input
             type="range"
             min={0}
@@ -181,10 +305,15 @@ export default function DetectionTab() {
             className="w-full"
           />
         </div>
+
+        {/* IoU Threshold */}
         <div>
-          <label className="mb-1 block text-xs text-gray-500">
-            IoU Threshold: {iou}%
-          </label>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="text-xs text-gray-500">IoU Threshold</label>
+            <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">
+              {iou}%
+            </span>
+          </div>
           <input
             type="range"
             min={0}
@@ -194,28 +323,52 @@ export default function DetectionTab() {
             className="w-full"
           />
         </div>
-        <div className="relative">
+
+        {/* Multi-select Class Filter */}
+        <div className="relative" ref={dropdownRef}>
           <label className="mb-1 block text-xs text-gray-500">Class Filter</label>
-          <input
-            type="text"
-            value={classFilter}
-            onChange={(e) => {
-              setClassFilter(e.target.value);
-              setShowSuggestions(true);
-            }}
-            onFocus={() => setShowSuggestions(true)}
-            onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-            placeholder="e.g. person, car"
-            className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500"
-          />
-          {showSuggestions && filteredSuggestions.length > 0 && (
+          <div
+            className="flex min-h-[38px] cursor-text flex-wrap gap-1 rounded border border-gray-300 px-2 py-1.5 text-sm focus-within:border-brand-500 focus-within:ring-1 focus-within:ring-brand-500"
+            onClick={() => setShowClassDropdown(true)}
+          >
+            {selectedClasses.map((cls) => (
+              <span
+                key={cls}
+                className="inline-flex items-center gap-1 rounded-full bg-brand-100 px-2 py-0.5 text-xs font-medium text-brand-700"
+              >
+                {cls}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeSelectedClass(cls);
+                  }}
+                  className="ml-0.5 text-brand-500 hover:text-brand-800"
+                >
+                  x
+                </button>
+              </span>
+            ))}
+            <input
+              type="text"
+              value={classSearch}
+              onChange={(e) => {
+                setClassSearch(e.target.value);
+                setShowClassDropdown(true);
+              }}
+              onFocus={() => setShowClassDropdown(true)}
+              placeholder={selectedClasses.length === 0 ? "All classes" : ""}
+              className="min-w-[60px] flex-1 border-0 bg-transparent p-0 text-sm focus:outline-none focus:ring-0"
+            />
+          </div>
+          {showClassDropdown && filteredClassOptions.length > 0 && (
             <ul className="absolute z-10 mt-1 max-h-40 w-full overflow-y-auto rounded border border-gray-200 bg-white shadow-lg">
-              {filteredSuggestions.map((cls) => (
+              {filteredClassOptions.map((cls) => (
                 <li
                   key={cls}
-                  onMouseDown={() => {
-                    setClassFilter(cls);
-                    setShowSuggestions(false);
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    toggleClass(cls);
                   }}
                   className="cursor-pointer px-3 py-1.5 text-sm text-gray-700 hover:bg-brand-50"
                 >
@@ -225,6 +378,8 @@ export default function DetectionTab() {
             </ul>
           )}
         </div>
+
+        {/* Max Detections */}
         <div>
           <label className="mb-1 block text-xs text-gray-500">Max Detections</label>
           <input
@@ -302,19 +457,34 @@ export default function DetectionTab() {
             />
           </div>
 
-          {/* Detection table */}
+          {/* Detection table — sortable */}
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 text-xs font-medium uppercase text-gray-500">
-                  <th className="px-3 py-2">Class</th>
-                  <th className="px-3 py-2">Confidence</th>
-                  <th className="px-3 py-2">BBox</th>
-                  <th className="px-3 py-2">Area</th>
+                  <th
+                    className="cursor-pointer select-none px-3 py-2 hover:text-gray-800"
+                    onClick={() => handleSort("label")}
+                  >
+                    Class{sortIndicator("label")}
+                  </th>
+                  <th
+                    className="cursor-pointer select-none px-3 py-2 hover:text-gray-800"
+                    onClick={() => handleSort("confidence")}
+                  >
+                    Confidence{sortIndicator("confidence")}
+                  </th>
+                  <th className="px-3 py-2">BBox (x, y, w, h)</th>
+                  <th
+                    className="cursor-pointer select-none px-3 py-2 hover:text-gray-800"
+                    onClick={() => handleSort("area")}
+                  >
+                    Area{sortIndicator("area")}
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {detections.map((det, i) => {
+                {sortedDetections.map((det, i) => {
                   const [x, y, w, h] = det.bbox;
                   const area = w * h;
                   const pct = det.confidence * 100;

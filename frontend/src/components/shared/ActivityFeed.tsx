@@ -8,7 +8,13 @@ import api from "@/lib/api";
 // Types
 // ---------------------------------------------------------------------------
 
-type ActivityType = "capture" | "alert" | "pipeline" | "model" | "upload" | "search";
+type ActivityType =
+  | "capture"
+  | "alert"
+  | "pipeline"
+  | "model"
+  | "upload"
+  | "search";
 
 interface ActivityItem {
   type: string;
@@ -21,17 +27,18 @@ interface ActivityItem {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const BORDER_BY_TYPE: Record<ActivityType, string> = {
-  capture: "border-l-blue-500",
-  alert: "border-l-red-500",
-  pipeline: "border-l-purple-500",
-  model: "border-l-teal-500",
-  upload: "border-l-gray-400",
-  search: "border-l-amber-500",
+/** Exact hex colors per activity type for the left border. */
+const BORDER_COLOR_BY_TYPE: Record<ActivityType, string> = {
+  capture: "#3B82F6",
+  alert: "#EF4444",
+  pipeline: "#8B5CF6",
+  model: "#0F6E56",
+  upload: "#6B7280",
+  search: "#F59E0B",
 };
 
-function borderForType(type: string): string {
-  return BORDER_BY_TYPE[type as ActivityType] ?? "border-l-gray-300";
+function borderColorForType(type: string): string {
+  return BORDER_COLOR_BY_TYPE[type as ActivityType] ?? "#D1D5DB";
 }
 
 function timeAgo(date: string): string {
@@ -55,9 +62,10 @@ function timeAgo(date: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Skeleton loader
+// Sub-components
 // ---------------------------------------------------------------------------
 
+/** Pulse-animated placeholder row for loading skeleton. */
 function SkeletonRow() {
   return (
     <div className="flex items-start gap-3 border-l-4 border-l-gray-200 bg-white p-3 animate-pulse">
@@ -66,6 +74,26 @@ function SkeletonRow() {
         <div className="h-2.5 w-1/3 rounded bg-gray-100" />
       </div>
     </div>
+  );
+}
+
+/** Subtle icon for the empty state. */
+function EmptyIcon() {
+  return (
+    <svg
+      className="mx-auto mb-2 h-8 w-8 text-gray-300"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      aria-hidden="true"
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M12 6v6l4 2m6-2a10 10 0 11-20 0 10 10 0 0120 0z"
+      />
+    </svg>
   );
 }
 
@@ -82,9 +110,10 @@ export default function ActivityFeed() {
 
   const fetchActivity = useCallback(async () => {
     try {
-      const { data } = await api.get<ActivityItem[]>("/api/dashboard/activity", {
-        params: { limit: 20 },
-      });
+      const { data } = await api.get<ActivityItem[]>(
+        "/api/dashboard/activity",
+        { params: { limit: 20 } },
+      );
       setItems(data);
       setError(null);
     } catch (err: unknown) {
@@ -116,7 +145,7 @@ export default function ActivityFeed() {
           <h3 className="text-sm font-semibold text-gray-900">Activity</h3>
         </div>
         <div className="divide-y divide-gray-100">
-          {Array.from({ length: 5 }).map((_, i) => (
+          {Array.from({ length: 4 }).map((_, i) => (
             <SkeletonRow key={i} />
           ))}
         </div>
@@ -168,7 +197,7 @@ export default function ActivityFeed() {
           )}
           <Link
             href="/alerts"
-            className="text-xs font-medium text-blue-600 transition-colors hover:text-blue-700"
+            className="text-xs font-medium text-[#185FA5] transition-colors hover:text-blue-700"
           >
             View all
           </Link>
@@ -178,6 +207,7 @@ export default function ActivityFeed() {
       {/* Body */}
       {items.length === 0 ? (
         <div className="px-4 py-8 text-center">
+          <EmptyIcon />
           <p className="text-sm text-gray-400">
             Workspace activity will appear here
           </p>
@@ -187,7 +217,8 @@ export default function ActivityFeed() {
           {items.map((item, idx) => (
             <div
               key={`${item.timestamp}-${idx}`}
-              className={`border-l-4 ${borderForType(item.type)} px-4 py-3 transition-colors hover:bg-gray-50`}
+              className="border-l-4 px-4 py-3 transition-colors hover:bg-gray-50"
+              style={{ borderLeftColor: borderColorForType(item.type) }}
             >
               <p className="text-sm text-gray-800">{item.message}</p>
               <div className="mt-1 flex items-center gap-2 text-xs text-gray-500">

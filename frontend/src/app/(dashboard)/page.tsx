@@ -101,10 +101,16 @@ export default function DashboardPage() {
     setStatsLoading(true);
     setStatsError(null);
     try {
-      const res = await api.get<DashboardStatsResponse>(
+      const res = await api.get(
         `/api/dashboard/stats?range=${range}`,
       );
-      setStats(res.data.stats);
+      const d = res.data;
+      setStats([
+        { icon: "\uD83D\uDCF9", label: "Active Streams", value: d.active_streams ?? 0, trend: "+0%", sparkline: d.streams_history ?? [] },
+        { icon: "\uD83E\uDD16", label: "Models in Production", value: d.models_production ?? 0, trend: "+0%", sparkline: d.models_history ?? [] },
+        { icon: "\uD83D\uDD14", label: "Open Alerts", value: d.open_alerts ?? 0, trend: "0", sparkline: d.alerts_history ?? [] },
+        { icon: "\uD83D\uDCC1", label: "Total Assets", value: d.total_assets ?? 0, trend: "+0", sparkline: d.assets_history ?? [] },
+      ]);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : "Failed to load stats";
@@ -168,7 +174,7 @@ export default function DashboardPage() {
       {/* Time Range Selector */}
       <TimeRangeSelector
         value={timeRange}
-        onChange={(range: TimeRange) => setTimeRange(range)}
+        onChange={(range: string) => setTimeRange(range as TimeRange)}
       />
 
       {/* Stats Row */}

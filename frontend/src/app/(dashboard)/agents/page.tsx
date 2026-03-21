@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import CopilotChat from "@/components/agents/CopilotChat";
 import MemoryPanel from "@/components/agents/MemoryPanel";
 import SkillPackSwitcher from "@/components/agents/SkillPackSwitcher";
@@ -42,6 +43,9 @@ const WS_URL =
   "ws://localhost:8000/ws/agents/stream";
 
 export default function AgentsPage() {
+  const searchParams = useSearchParams();
+  const initialQuery = searchParams.get("q") ?? undefined;
+
   const [agentId, setAgentId] = useState<string>("default-agent");
   const [skillPack, setSkillPack] = useState("general");
   const [memories, setMemories] = useState<Memory[]>([]);
@@ -170,6 +174,7 @@ export default function AgentsPage() {
           agentId={agentId}
           skillPack={skillPack}
           wsUrl={WS_URL}
+          initialMessage={initialQuery}
         />
       </div>
 
