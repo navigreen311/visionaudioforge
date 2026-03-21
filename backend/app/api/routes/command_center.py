@@ -1,9 +1,9 @@
-"""Command Center routes — streams, layouts, shifts, dashboard, KPIs."""
+"""Command Center routes — streams, layouts, shifts, dashboard."""
 
 from __future__ import annotations
 
-import random
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,11 +39,12 @@ class ShiftCreate(BaseModel):
 
 
 class ShiftStartRequest(BaseModel):
-    zone: str = "Zone A"
+    zone: str
+    operator: str
 
 
 class ShiftEndRequest(BaseModel):
-    handoff_notes: str | None = None
+    shift_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +53,8 @@ class ShiftEndRequest(BaseModel):
 _streams: dict[str, dict] = {}
 _layout: dict | None = None
 _shifts: list[dict] = []
+_active_shifts: dict[str, dict] = {}
 _stream_counter = 0
-_active_shift: dict | None = None
 _shift_counter = 0
 
 
@@ -124,52 +125,46 @@ async def get_dashboard() -> dict[str, Any]:
 
 @router.get("/kpis")
 async def get_kpis() -> dict[str, Any]:
-    """Return current KPI snapshot (stub with realistic random data)."""
+    """Return stub KPI metrics for the Command Center dashboard."""
     return {
-        "avg_response_time_seconds": round(random.uniform(8, 45), 1),
-        "response_time_trend": round(random.uniform(-5, 5), 1),
-        "resolution_rate_pct": round(random.uniform(85, 99), 1),
-        "resolution_rate_trend": round(random.uniform(-3, 3), 1),
-        "false_alarm_rate_pct": round(random.uniform(2, 15), 1),
-        "false_alarm_trend": round(random.uniform(-4, 4), 1),
-        "incidents_today": random.randint(0, 25),
-        "incidents_today_trend": round(random.uniform(-10, 10), 1),
+        "avg_response_sec": 147,
+        "avg_response_delta_pct": -5.2,
+        "resolution_rate_pct": 84.3,
+        "resolution_rate_delta_pct": 2.1,
+        "false_alarm_rate_pct": 12.4,
+        "false_alarm_rate_delta_pct": -0.8,
+        "incidents_today": 7,
+        "incidents_today_delta": 3,
     }
 
 
 # ---------------------------------------------------------------------------
-# Shift start / end (CC6)
+# Shift start / end
 # ---------------------------------------------------------------------------
 
 @router.post("/shift/start")
 async def start_shift(body: ShiftStartRequest) -> dict[str, Any]:
-    """Start an operator shift. Returns the active shift object."""
-    global _active_shift, _shift_counter
-    if _active_shift and not _active_shift.get("ended_at"):
-        raise HTTPException(status_code=409, detail="A shift is already active")
+    """Start a new operator shift in a given zone."""
+    global _shift_counter
     _shift_counter += 1
-    now = datetime.now(timezone.utc).isoformat()
-    _active_shift = {
-        "id": f"shift-{_shift_counter:04d}",
-        "operator_id": "op-default",
-        "operator_name": "Operator",
+    shift_id = f"shift-{_shift_counter:04d}"
+    started_at = datetime.now(timezone.utc).isoformat()
+    _active_shifts[shift_id] = {
+        "shift_id": shift_id,
         "zone": body.zone,
-        "started_at": now,
-        "ended_at": None,
-        "handoff_notes": None,
+        "operator": body.operator,
+        "started_at": started_at,
     }
-    return _active_shift
+    return {"shift_id": shift_id, "started_at": started_at}
 
 
 @router.post("/shift/end")
-async def end_shift(body: ShiftEndRequest | None = None) -> dict[str, Any]:
-    """End the active shift."""
-    global _active_shift
-    if not _active_shift or _active_shift.get("ended_at"):
-        raise HTTPException(status_code=404, detail="No active shift to end")
-    _active_shift["ended_at"] = datetime.now(timezone.utc).isoformat()
-    if body and body.handoff_notes:
-        _active_shift["handoff_notes"] = body.handoff_notes
-    result = dict(_active_shift)
-    _active_shift = None
-    return result
+async def end_shift(body: ShiftEndRequest) -> dict[str, Any]:
+    """End an active shift and return duration."""
+    shift = _active_shifts.pop(body.shift_id, None)
+    if shift is None:
+        raise HTTPException(status_code=404, detail=f"Shift {body.shift_id} not found or already ended")
+    started = datetime.fromisoformat(shift["started_at"])
+    ended_at = datetime.now(timezone.utc)
+    duration_sec = int((ended_at - started).total_seconds())
+    return {"ended_at": ended_at.isoformat(), "duration_sec": duration_sec}
