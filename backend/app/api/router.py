@@ -21,6 +21,7 @@ from app.api.routes import (
     health,
     integrations,
     investigation,
+    investigation_mock,
     knowledge_graph,
     metrics,
     mobile,
@@ -65,6 +66,7 @@ api_router.include_router(workspaces.router)
 api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
+api_router.include_router(investigation_mock.router)
 api_router.include_router(annotations.router)
 api_router.include_router(governance.router)
 api_router.include_router(integrations.router)
