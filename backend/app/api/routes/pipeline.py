@@ -46,6 +46,17 @@ class ScheduleRequest(BaseModel):
     cron: str
 
 
+class SchedulePatchRequest(BaseModel):
+    enabled: bool = True
+    cron: str
+    timezone: str = "UTC"
+
+
+class PipelineRunRequest(BaseModel):
+    pipeline_id: str
+    rerun_of: str | None = None
+
+
 class SuggestNextRequest(BaseModel):
     current_nodes: list[str]
 
@@ -274,3 +285,171 @@ async def suggest_next_nodes(body: SuggestNextRequest) -> dict:
     """Suggest next nodes based on current pipeline composition."""
     suggestions = await nl_generator.suggest_next_nodes(body.current_nodes)
     return {"suggestions": suggestions}
+
+
+# --------------------------------------------------------------------------
+# PATCH /api/pipeline/{pipeline_id}/schedule — update schedule for a pipeline
+# --------------------------------------------------------------------------
+
+@router.patch("/pipeline/{pipeline_id}/schedule")
+async def update_pipeline_schedule(
+    pipeline_id: uuid.UUID,
+    body: SchedulePatchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Create or update a cron schedule for a specific pipeline."""
+    result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    try:
+        schedule_result = await scheduler.schedule(str(pipeline_id), body.cron)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "pipeline_id": str(pipeline_id),
+        "enabled": body.enabled,
+        "cron": body.cron,
+        "timezone": body.timezone,
+        **schedule_result,
+    }
+
+
+# --------------------------------------------------------------------------
+# POST /api/pipeline/run — start a pipeline run (accepts body with pipeline_id)
+# --------------------------------------------------------------------------
+
+@router.post("/pipeline/run")
+async def start_pipeline_run(
+    body: PipelineRunRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Start a new pipeline run from a JSON body (supports re-runs)."""
+    pid = uuid.UUID(body.pipeline_id)
+    result = await db.execute(select(Pipeline).where(Pipeline.id == pid))
+    pipeline = result.scalar_one_or_none()
+    if not pipeline:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+
+    run = PipelineRun(pipeline_id=pid, status="pending")
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    # Fire-and-forget task dispatch
+    try:
+        from app.tasks.pipeline import run_pipeline_task
+        run_pipeline_task.delay(str(pid), pipeline.definition)
+    except Exception:
+        pass
+
+    return {"run_id": str(run.id), "status": "pending", "rerun_of": body.rerun_of}
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/runs/{run_id}/status — live run status with per-node states
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/runs/{run_id}/status")
+async def get_run_status(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return current run status with per-node progress (stub)."""
+    result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if not run:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    # In a real implementation, node states would come from the task runner.
+    # For now, return a stub based on the run's overall status.
+    pipeline_result = await db.execute(
+        select(Pipeline).where(Pipeline.id == run.pipeline_id)
+    )
+    pipeline = pipeline_result.scalar_one_or_none()
+    definition = pipeline.definition if pipeline else {}
+    node_defs: list[dict[str, Any]] = definition.get("nodes", [])
+
+    status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
+
+    node_states = []
+    for i, node_def in enumerate(node_defs):
+        if status_str == "completed":
+            node_status = "completed"
+        elif status_str == "failed":
+            node_status = "completed" if i < len(node_defs) - 1 else "failed"
+        elif status_str == "running":
+            node_status = "completed" if i == 0 else ("running" if i == 1 else "pending")
+        else:
+            node_status = "pending"
+
+        node_states.append({
+            "node_id": node_def.get("id", f"node-{i}"),
+            "node_name": node_def.get("type", f"Node {i + 1}"),
+            "status": node_status,
+        })
+
+    elapsed_ms = 0
+    if run.started_at and run.finished_at:
+        elapsed_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+
+    return {
+        "run_id": str(run.id),
+        "pipeline_status": status_str,
+        "nodes": node_states,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+# --------------------------------------------------------------------------
+# GET /api/pipeline/runs — list runs, optionally filtered by pipeline_id
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/runs")
+async def list_pipeline_runs(
+    pipeline_id: uuid.UUID | None = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List pipeline runs with summary data for the RunHistory table."""
+    query = select(PipelineRun).order_by(PipelineRun.id.desc())
+    if pipeline_id:
+        query = query.where(PipelineRun.pipeline_id == pipeline_id)
+    query = query.offset((page - 1) * page_size).limit(page_size)
+
+    result = await db.execute(query)
+    runs = result.scalars().all()
+
+    items = []
+    for idx, run in enumerate(runs):
+        status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
+
+        duration_ms = None
+        if run.started_at and run.finished_at:
+            duration_ms = int((run.finished_at - run.started_at).total_seconds() * 1000)
+
+        # Derive node counts from pipeline definition
+        pipeline_result = await db.execute(
+            select(Pipeline).where(Pipeline.id == run.pipeline_id)
+        )
+        pipeline = pipeline_result.scalar_one_or_none()
+        nodes_total = len((pipeline.definition or {}).get("nodes", [])) if pipeline else 0
+        nodes_executed = nodes_total if status_str == "completed" else 0
+
+        items.append({
+            "id": str(run.id),
+            "run_number": idx + 1,
+            "status": status_str,
+            "started_at": run.started_at.isoformat() if run.started_at else "",
+            "duration_ms": duration_ms,
+            "nodes_executed": nodes_executed,
+            "nodes_total": nodes_total,
+            "output_summary": None,
+            "logs": [],
+        })
+
+    return items
