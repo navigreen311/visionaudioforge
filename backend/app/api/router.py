@@ -24,7 +24,6 @@ from app.api.routes import (
     investigation,
     investigation_mock,
     knowledge_graph,
-    marketplace,
     memory,
     metrics,
     mobile,
@@ -88,6 +87,6 @@ api_router.include_router(verticals.router)
 api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
 api_router.include_router(plugins.router)
-api_router.include_router(marketplace.router)
+api_router.include_router(plugins.marketplace_router)
 api_router.include_router(developer.router)
 api_router.include_router(dashboard.router)

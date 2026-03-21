@@ -1,9 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import PluginDetailPanel, {
-  type PluginDetail,
-} from "@/components/marketplace/PluginDetailPanel";
+import InstallModal from "@/components/marketplace/InstallModal";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -14,6 +12,7 @@ interface Plugin {
   category: string;
   description: string;
   version: string;
+  latestVersion?: string;
   author?: string;
   install_count?: number;
   avg_rating?: number;
@@ -110,10 +109,6 @@ export default function MarketplacePage() {
   const [embedCode, setEmbedCode] = useState("");
   const [selectedWidget, setSelectedWidget] = useState(WIDGET_TYPES[0]);
 
-  // Detail panel state
-  const [detailPlugin, setDetailPlugin] = useState<PluginDetail | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-
   // BYOM form state
   const [byomName, setByomName] = useState("");
   const [byomFramework, setByomFramework] = useState(FRAMEWORKS[0]);
@@ -122,14 +117,14 @@ export default function MarketplacePage() {
   // Marketplace data — seeded from built-in list
   useEffect(() => {
     const builtIn: Plugin[] = [
-      { name: "CSV Exporter", category: "integration", description: "Export any data as CSV", version: "1.0", install_count: 342, avg_rating: 4.2 },
-      { name: "Slack Notifier", category: "integration", description: "Send alerts to Slack", version: "1.0", install_count: 510, avg_rating: 4.5 },
-      { name: "Image Watermarker", category: "transform", description: "Add watermarks to images", version: "1.0", install_count: 128, avg_rating: 3.9 },
-      { name: "Audio Normalizer", category: "transform", description: "Batch normalize audio files", version: "1.0", install_count: 95, avg_rating: 4.0 },
-      { name: "YOLO Detector", category: "vision", description: "Object detection with YOLOv8", version: "1.0", install_count: 876, avg_rating: 4.8 },
-      { name: "Whisper Transcriber", category: "audio", description: "Speech-to-text with Whisper", version: "1.0", install_count: 654, avg_rating: 4.7 },
-      { name: "Sentiment Analyzer", category: "analytics", description: "Text sentiment analysis", version: "1.0", install_count: 231, avg_rating: 4.1 },
-      { name: "Report Generator", category: "analytics", description: "Auto-generate PDF reports", version: "1.0", install_count: 189, avg_rating: 3.8 },
+      { name: "CSV Exporter", category: "integration", description: "Export any data as CSV", version: "1.0", latestVersion: "1.1", author: "VAF Team", install_count: 342, avg_rating: 4.2 },
+      { name: "Slack Notifier", category: "integration", description: "Send alerts to Slack", version: "1.0", author: "VAF Team", install_count: 510, avg_rating: 4.5 },
+      { name: "Image Watermarker", category: "transform", description: "Add watermarks to images", version: "1.0", author: "VAF Team", install_count: 128, avg_rating: 3.9 },
+      { name: "Audio Normalizer", category: "transform", description: "Batch normalize audio files", version: "1.0", author: "VAF Team", install_count: 95, avg_rating: 4.0 },
+      { name: "YOLO Detector", category: "vision", description: "Object detection with YOLOv8", version: "1.0", latestVersion: "1.1", author: "VAF Team", install_count: 876, avg_rating: 4.8 },
+      { name: "Whisper Transcriber", category: "audio", description: "Speech-to-text with Whisper", version: "1.0", author: "VAF Team", install_count: 654, avg_rating: 4.7 },
+      { name: "Sentiment Analyzer", category: "analytics", description: "Text sentiment analysis", version: "1.0", author: "VAF Team", install_count: 231, avg_rating: 4.1 },
+      { name: "Report Generator", category: "analytics", description: "Auto-generate PDF reports", version: "1.0", author: "VAF Team", install_count: 189, avg_rating: 3.8 },
     ];
     setPlugins(builtIn);
   }, []);
@@ -141,10 +136,47 @@ export default function MarketplacePage() {
     return true;
   });
 
+  // Install modal state
+  const [installTarget, setInstallTarget] = useState<Plugin | null>(null);
+  const [installModalOpen, setInstallModalOpen] = useState(false);
+  const [updateTarget, setUpdateTarget] = useState<Plugin | null>(null);
+
+  const openInstallModal = (plugin: Plugin) => {
+    setInstallTarget(plugin);
+    setUpdateTarget(null);
+    setInstallModalOpen(true);
+  };
+
+  const openUpdateModal = (plugin: Plugin) => {
+    setUpdateTarget(plugin);
+    setInstallTarget(plugin);
+    setInstallModalOpen(true);
+  };
+
+  const handleInstallComplete = () => {
+    if (!installTarget) return;
+    const alreadyInstalled = installed.find((i) => i.name === installTarget.name);
+    if (alreadyInstalled && updateTarget) {
+      // Update: bump the version
+      setInstalled((prev) =>
+        prev.map((p) =>
+          p.name === installTarget.name
+            ? { ...p, version: installTarget.latestVersion ?? installTarget.version }
+            : p,
+        ),
+      );
+    } else if (!alreadyInstalled) {
+      setInstalled((prev) => [
+        ...prev,
+        { ...installTarget, enabled: true, plugin_id: crypto.randomUUID() },
+      ]);
+    }
+  };
+
   // -- handlers
   const handleInstall = (plugin: Plugin) => {
     if (installed.find((i) => i.name === plugin.name)) return;
-    setInstalled((prev) => [...prev, { ...plugin, enabled: true, plugin_id: crypto.randomUUID() }]);
+    openInstallModal(plugin);
   };
 
   const handleToggle = (pluginId: string) => {
@@ -168,40 +200,6 @@ export default function MarketplacePage() {
     setAdapters((prev) => [...prev, adapter]);
     setByomName("");
     setByomUrl("");
-  };
-
-  const handleOpenDetail = async (plugin: Plugin) => {
-    const slug = plugin.name.toLowerCase().replace(/\s+/g, "-");
-    try {
-      const res = await fetch(`/api/plugins/marketplace/plugins/${slug}`);
-      if (!res.ok) throw new Error("not found");
-      const data: PluginDetail = await res.json();
-      setDetailPlugin(data);
-      setDetailOpen(true);
-    } catch {
-      // Fallback: build a minimal PluginDetail from the browse-level data
-      setDetailPlugin({
-        name: plugin.name,
-        category: plugin.category,
-        description: plugin.description,
-        version: plugin.version,
-        author: plugin.author || "Unknown",
-        install_count: plugin.install_count || 0,
-        avg_rating: plugin.avg_rating || 0,
-        icon: plugin.category,
-        full_description: plugin.description,
-        features: [],
-        requirements: [],
-        compatibility: [],
-        license: "MIT",
-        screenshots: [],
-        reviews: [],
-        rating_breakdown: [],
-        total_reviews: 0,
-        changelog: [],
-      });
-      setDetailOpen(true);
-    }
   };
 
   const handleGenerateEmbed = () => {
@@ -275,25 +273,41 @@ export default function MarketplacePage() {
           {/* Plugin Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {filtered.map((plugin) => {
-              const isInstalled = installed.some((i) => i.name === plugin.name);
+              const installedPlugin = installed.find((i) => i.name === plugin.name);
+              const isInstalled = !!installedPlugin;
+              const hasUpdate =
+                isInstalled &&
+                plugin.latestVersion &&
+                plugin.latestVersion !== installedPlugin.version;
+
               return (
                 <div
                   key={plugin.name}
-                  onClick={() => handleOpenDetail(plugin)}
-                  className="border border-gray-200 rounded-xl bg-white p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow cursor-pointer"
+                  className={`border rounded-xl p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-shadow ${
+                    isInstalled
+                      ? "border-green-300 bg-green-50/30"
+                      : "border-gray-200 bg-white"
+                  }`}
                 >
-                  {/* Icon + Category */}
+                  {/* Icon + Category + Update badge */}
                   <div className="flex items-start justify-between">
                     <span className="text-3xl">
                       {CATEGORY_ICONS[plugin.category] || "🔌"}
                     </span>
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                        CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
-                      }`}
-                    >
-                      {plugin.category}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {hasUpdate && (
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700">
+                          Update
+                        </span>
+                      )}
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                          CATEGORY_COLORS[plugin.category] || "bg-gray-100 text-gray-600"
+                        }`}
+                      >
+                        {plugin.category}
+                      </span>
+                    </div>
                   </div>
 
                   {/* Name + version */}
@@ -313,21 +327,41 @@ export default function MarketplacePage() {
                     </span>
                   </div>
 
-                  {/* Install button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleInstall(plugin);
-                    }}
-                    disabled={isInstalled}
-                    className={`w-full py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                      isInstalled
-                        ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                        : "bg-brand-600 text-white hover:bg-brand-700"
-                    }`}
-                  >
-                    {isInstalled ? "Installed" : "Install"}
-                  </button>
+                  {/* Action buttons */}
+                  {isInstalled ? (
+                    <div className="space-y-2">
+                      {/* Installed badge */}
+                      <div className="flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-green-100 text-green-700 text-sm font-medium">
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                        Installed
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setTab("installed")}
+                          className="flex-1 py-1.5 rounded-lg text-xs font-medium border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+                        >
+                          Manage
+                        </button>
+                        {hasUpdate && (
+                          <button
+                            onClick={() => openUpdateModal(plugin)}
+                            className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                          >
+                            Update to v{plugin.latestVersion}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => handleInstall(plugin)}
+                      className="w-full py-1.5 rounded-lg text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 transition-colors"
+                    >
+                      Install
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -535,24 +569,33 @@ export default function MarketplacePage() {
         </div>
       )}
 
-      {/* Plugin detail slide-over */}
-      <PluginDetailPanel
-        plugin={detailPlugin}
-        isOpen={detailOpen}
-        onClose={() => setDetailOpen(false)}
-        onInstall={(p) => {
-          handleInstall({
-            name: p.name,
-            category: p.category,
-            description: p.description,
-            version: p.version,
-            author: p.author,
-            install_count: p.install_count,
-            avg_rating: p.avg_rating,
-          });
-          setDetailOpen(false);
-        }}
-      />
+      {/* Install / Update Modal */}
+      {installTarget && (
+        <InstallModal
+          isOpen={installModalOpen}
+          onClose={() => {
+            setInstallModalOpen(false);
+            setInstallTarget(null);
+            setUpdateTarget(null);
+          }}
+          pluginId={installTarget.plugin_id ?? installTarget.name}
+          pluginName={installTarget.name}
+          pluginDescription={installTarget.description}
+          pluginVersion={
+            updateTarget
+              ? (installTarget.latestVersion ?? installTarget.version)
+              : installTarget.version
+          }
+          pluginCategory={installTarget.category}
+          pluginAuthor={installTarget.author ?? "Unknown"}
+          updateFromVersion={
+            updateTarget
+              ? installed.find((i) => i.name === updateTarget.name)?.version
+              : undefined
+          }
+          onInstalled={handleInstallComplete}
+        />
+      )}
     </div>
   );
 }
