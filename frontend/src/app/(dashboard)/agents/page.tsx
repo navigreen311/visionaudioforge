@@ -2,10 +2,45 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import CopilotChat from "@/components/agents/CopilotChat";
 import MemoryPanel from "@/components/agents/MemoryPanel";
 import SkillPackSwitcher from "@/components/agents/SkillPackSwitcher";
 import api from "@/lib/api";
+
+// Dynamic imports for future agent panels (AG3+)
+const PatrolModePanel = dynamic(
+  () => import("@/components/agents/PatrolModePanel"),
+  { ssr: false, loading: () => null }
+);
+const ConversationHistory = dynamic(
+  () => import("@/components/agents/ConversationHistory"),
+  { ssr: false, loading: () => null }
+);
+const LiveContextPanel = dynamic(
+  () => import("@/components/agents/LiveContextPanel"),
+  { ssr: false, loading: () => null }
+);
+const VoiceInput = dynamic(
+  () => import("@/components/agents/VoiceInput"),
+  { ssr: false, loading: () => null }
+);
+const AgentSwitcher = dynamic(
+  () => import("@/components/agents/AgentSwitcher"),
+  { ssr: false, loading: () => null }
+);
+const MessageActions = dynamic(
+  () => import("@/components/agents/MessageActions"),
+  { ssr: false, loading: () => null }
+);
+
+// Suppress unused-variable warnings for dynamic imports that are wired but not yet rendered
+void PatrolModePanel;
+void ConversationHistory;
+void LiveContextPanel;
+void VoiceInput;
+void AgentSwitcher;
+void MessageActions;
 
 interface Memory {
   id: string;

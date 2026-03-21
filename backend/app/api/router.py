@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from app.api.routes import (
     agents,
     alerts,
+    annotate_studio,
     annotations,
     assets,
     audio,
@@ -23,6 +24,7 @@ from app.api.routes import (
     investigation,
     investigation_mock,
     knowledge_graph,
+    memory,
     metrics,
     mobile,
     observability,
@@ -67,6 +69,7 @@ api_router.include_router(capture.router)
 api_router.include_router(evaluation.router)
 api_router.include_router(investigation.router)
 api_router.include_router(investigation_mock.router)
+api_router.include_router(annotate_studio.router)
 api_router.include_router(annotations.router)
 api_router.include_router(governance.router)
 api_router.include_router(integrations.router)
@@ -74,6 +77,7 @@ api_router.include_router(observability.router)
 api_router.include_router(runtime.router)
 api_router.include_router(knowledge_graph.router)
 api_router.include_router(semantic_memory.router)
+api_router.include_router(memory.router)
 api_router.include_router(command_center.router)
 api_router.include_router(simulation.router)
 api_router.include_router(reviewops.router)
