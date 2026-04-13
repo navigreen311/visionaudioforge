@@ -32,6 +32,7 @@ from app.api.routes import (
     observability,
     pipeline,
     plugins,
+    profile,
     registry,
     reviewops,
     runtime,
@@ -99,3 +100,4 @@ api_router.include_router(settings_extra.router)
 api_router.include_router(settings_data.router)
 api_router.include_router(marketplace_stubs.router)
 api_router.include_router(help.router)
+api_router.include_router(profile.router)

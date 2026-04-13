@@ -4,7 +4,7 @@ import { useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import Sidebar from "@/components/ui/Sidebar";
-import { useAuthStore } from "@/stores/auth";
+import UserMenu from "@/components/header/UserMenu";
 
 export default function DashboardLayout({
   children,
@@ -12,10 +12,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [userDropdown, setUserDropdown] = useState(false);
   const pathname = usePathname();
-  const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
 
   // Build breadcrumbs from pathname
   const segments = pathname.split("/").filter(Boolean);
@@ -93,48 +90,7 @@ export default function DashboardLayout({
           </button>
 
           {/* User dropdown */}
-          <div className="relative">
-            <button
-              onClick={() => setUserDropdown((d) => !d)}
-              className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-gray-100"
-            >
-              <div className="h-7 w-7 rounded-full bg-brand-600 flex items-center justify-center text-white text-xs font-medium">
-                {user?.email?.charAt(0).toUpperCase() || "U"}
-              </div>
-              <svg className="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {userDropdown && (
-              <div className="absolute right-0 mt-1 w-48 rounded-lg border border-gray-200 bg-white shadow-lg py-1 z-50">
-                <Link
-                  href="/settings"
-                  onClick={() => setUserDropdown(false)}
-                  className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  Profile
-                </Link>
-                <Link
-                  href="/settings"
-                  onClick={() => setUserDropdown(false)}
-                  className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                >
-                  Settings
-                </Link>
-                <hr className="my-1 border-gray-200" />
-                <button
-                  onClick={() => {
-                    setUserDropdown(false);
-                    logout();
-                    window.location.href = "/login";
-                  }}
-                  className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50"
-                >
-                  Logout
-                </button>
-              </div>
-            )}
-          </div>
+          <UserMenu />
         </header>
 
         {/* Main content */}
