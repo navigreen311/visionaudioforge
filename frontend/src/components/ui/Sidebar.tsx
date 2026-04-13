@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import Badge from "./Badge";
 import { useAuthStore } from "@/stores/auth";
+import WorkspaceSwitcher from "@/components/sidebar/WorkspaceSwitcher";
 
 interface NavGroup {
   label: string;
@@ -114,6 +115,9 @@ export default function Sidebar({ mobileOpen, onMobileClose }: SidebarProps) {
           </svg>
         </button>
       </div>
+
+      {/* Workspace Switcher */}
+      {!collapsed && <WorkspaceSwitcher />}
 
       {/* Nav */}
       <nav className="flex-1 p-2 space-y-3 overflow-y-auto">

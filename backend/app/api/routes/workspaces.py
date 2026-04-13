@@ -166,3 +166,27 @@ async def remove_member(
     svc = WorkspaceService(db)
     await svc.remove_member(workspace_id=workspace_id, user_id=user_id)
     await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Workspace switching (stub for frontend switcher)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/switch")
+async def switch_workspace(
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch the current user's active workspace."""
+    workspace_id = body.get("workspace_id")
+    if not workspace_id:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="workspace_id is required")
+    svc = WorkspaceService(db)
+    workspace = await svc.get_workspace(UUID(workspace_id))
+    current_user.workspace_id = workspace.id
+    await db.commit()
+    return {"ok": True, "workspace_id": str(workspace.id), "name": workspace.name}
