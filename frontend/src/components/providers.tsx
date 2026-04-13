@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReactNode, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ToastProvider } from "@/components/ui/Toast";
+import { ConfirmProvider } from "@/providers/ConfirmProvider";
 import { useAuthStore } from "@/stores/auth";
 
 interface ProvidersProps {
@@ -64,7 +65,9 @@ export default function Providers({ children }: ProvidersProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <AuthGuard>{children}</AuthGuard>
+        <ConfirmProvider>
+          <AuthGuard>{children}</AuthGuard>
+        </ConfirmProvider>
       </ToastProvider>
     </QueryClientProvider>
   );
