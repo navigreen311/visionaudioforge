@@ -26,12 +26,12 @@ class ProfileUpdate(BaseModel):
     bio: Optional[str] = None
 
 
-@router.get("/api/profile")
+@router.get("")
 async def get_profile():
     return _profile
 
 
-@router.patch("/api/profile")
+@router.patch("")
 async def update_profile(body: ProfileUpdate):
     if body.display_name is not None:
         _profile["display_name"] = body.display_name
@@ -40,7 +40,7 @@ async def update_profile(body: ProfileUpdate):
     return _profile
 
 
-@router.post("/api/profile/avatar")
+@router.post("/avatar")
 async def upload_avatar(file: UploadFile = File(...)):
     _profile["avatar_url"] = f"/uploads/{file.filename}"
     return {"avatar_url": _profile["avatar_url"]}
