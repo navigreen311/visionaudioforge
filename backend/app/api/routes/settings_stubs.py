@@ -119,3 +119,24 @@ async def list_team():
         TeamMember(id="u-2", name="Jane Doe", email="jdoe@acme.io", role="editor", status="active", joined_at="2025-03-10T00:00:00Z"),
         TeamMember(id="u-3", name="Ming Chen", email="mchen@acme.io", role="viewer", status="active", joined_at="2025-06-01T00:00:00Z"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Routes — Webhook Delivery Logs (INF19)
+# ---------------------------------------------------------------------------
+
+@router.get("/integrations/webhook/logs")
+async def get_webhook_logs():
+    """Return mock webhook delivery logs."""
+    return {"logs": [
+        {"id": "del_001", "event": "alert.triggered", "status": "delivered", "response_code": 200, "latency_ms": 120, "timestamp": "2026-04-13T10:00:00Z", "payload": {"alert_id": "alert_001"}},
+        {"id": "del_002", "event": "pipeline.completed", "status": "failed", "response_code": 500, "latency_ms": 3200, "timestamp": "2026-04-13T09:30:00Z", "payload": {"pipeline_id": "pipe_001"}},
+        {"id": "del_003", "event": "asset.uploaded", "status": "delivered", "response_code": 200, "latency_ms": 85, "timestamp": "2026-04-12T14:00:00Z", "payload": {"asset_id": "asset_001"}},
+        {"id": "del_004", "event": "model.trained", "status": "pending", "response_code": None, "latency_ms": None, "timestamp": "2026-04-12T11:00:00Z", "payload": {"model_id": "model_001"}},
+    ]}
+
+
+@router.post("/integrations/webhook/retry")
+async def retry_webhook(body: dict):
+    """Retry a failed webhook delivery."""
+    return {"success": True, "delivery_id": body.get("delivery_id")}
