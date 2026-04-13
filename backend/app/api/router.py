@@ -20,6 +20,7 @@ from app.api.routes import (
     federated,
     governance,
     health,
+    help,
     integrations,
     investigation,
     investigation_mock,
@@ -97,3 +98,4 @@ api_router.include_router(settings_stubs.router)
 api_router.include_router(settings_extra.router)
 api_router.include_router(settings_data.router)
 api_router.include_router(marketplace_stubs.router)
+api_router.include_router(help.router)
