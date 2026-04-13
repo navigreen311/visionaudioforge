@@ -511,6 +511,45 @@ async def conversational_search(body: ConversationalRequest):
 
 
 # ---------------------------------------------------------------------------
+# Global header search (INF7)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/global")
+async def global_search(q: str = Query(""), limit: int = Query(5)):
+    """Lightweight global search across all entity types for the header bar."""
+    all_results = {
+        "assets": [
+            {"id": "asset_001", "title": "capture_001.png", "subtitle": "image \u00b7 2.3 MB \u00b7 3 min ago", "icon": "image", "url": "/assets"},
+            {"id": "asset_002", "title": "recording_042.wav", "subtitle": "audio \u00b7 1.1 MB \u00b7 1h ago", "icon": "audio", "url": "/assets"},
+        ],
+        "pipelines": [
+            {"id": "pipe_001", "title": "Camera Detection Pipeline", "subtitle": "5 nodes \u00b7 active", "icon": "gear", "url": "/pipeline"},
+            {"id": "pipe_002", "title": "Audio Monitor", "subtitle": "3 nodes \u00b7 scheduled", "icon": "gear", "url": "/pipeline"},
+        ],
+        "alerts": [
+            {"id": "alert_001", "title": "Person in Zone B", "subtitle": "critical \u00b7 14 min ago", "icon": "bell", "url": "/alerts"},
+        ],
+        "cases": [
+            {"id": "case_001", "title": "Zone B Intrusion \u2014 March 20", "subtitle": "open \u00b7 high priority", "icon": "folder", "url": "/investigate"},
+        ],
+        "memory": [
+            {"id": "mem_001", "title": "Zone B closes at 6 PM", "subtitle": "fact \u00b7 importance 8", "icon": "memory", "url": "/memory"},
+        ],
+    }
+
+    if not q:
+        return all_results
+
+    filtered = {}
+    for cat, items in all_results.items():
+        matched = [i for i in items if q.lower() in i["title"].lower() or q.lower() in i["subtitle"].lower()]
+        if matched:
+            filtered[cat] = matched[:limit]
+    return filtered
+
+
+# ---------------------------------------------------------------------------
 # Audio decoding helper
 # ---------------------------------------------------------------------------
 

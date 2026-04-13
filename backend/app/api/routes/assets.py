@@ -142,6 +142,17 @@ async def list_assets(
 
 
 # ------------------------------------------------------------------
+# Duplicate detection (INF15) — must come before /{asset_id} routes
+# ------------------------------------------------------------------
+
+
+@router.get("/check-duplicate")
+async def check_duplicate(hash: str = Query("")):
+    """Check whether a file hash already exists in the system (stub)."""
+    return {"duplicate": False, "asset_id": None, "filename": None}
+
+
+# ------------------------------------------------------------------
 # Read single
 # ------------------------------------------------------------------
 
@@ -241,3 +252,14 @@ async def download_asset(
         media_type=content_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ------------------------------------------------------------------
+# Auto-tag (INF14)
+# ------------------------------------------------------------------
+
+
+@router.post("/{asset_id}/auto-tag")
+async def auto_tag_asset(asset_id: str):
+    """Return AI-generated tags for an asset (stub)."""
+    return {"tags": ["person", "outdoor", "zone-b", "daytime"]}
