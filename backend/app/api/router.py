@@ -29,6 +29,7 @@ from app.api.routes import (
     memory,
     metrics,
     mobile,
+    notifications,
     observability,
     pipeline,
     plugins,
@@ -92,6 +93,7 @@ api_router.include_router(edge_fleet.router)
 api_router.include_router(verticals.router)
 api_router.include_router(federated.router)
 api_router.include_router(mobile.router)
+api_router.include_router(notifications.router)
 api_router.include_router(plugins.router)
 api_router.include_router(developer.router)
 api_router.include_router(dashboard.router)
