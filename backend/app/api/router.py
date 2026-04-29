@@ -51,6 +51,7 @@ from app.api.routes import (
     vision,
     workspaces,
 )
+from app.api.routes.vaf_v1 import vaf_v1_router
 
 api_router = APIRouter()
 
@@ -103,3 +104,6 @@ api_router.include_router(settings_data.router)
 api_router.include_router(marketplace_stubs.router)
 api_router.include_router(help.router)
 api_router.include_router(profile.router)
+
+# VAF v1 — PAF integration mock surface (WS10/WS11). All routes mount under /api/v1/.
+api_router.include_router(vaf_v1_router)
