@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.routes.vaf_v1 import audio, health, speaker, stt, tts
+from app.api.routes.vaf_v1 import audio, health, meeting, sentiment, speaker, stt, translate, tts, vision
 
 vaf_v1_router = APIRouter()
 
@@ -23,7 +23,10 @@ vaf_v1_router.include_router(tts.router)
 vaf_v1_router.include_router(speaker.router)
 vaf_v1_router.include_router(audio.router)
 
-# WS11 sub-routers (sentiment, meeting, vision, translate) are mounted by
-# WS11's PR via ``vaf_v1_router.include_router(...)`` calls added below.
+# WS11 sub-routers
+vaf_v1_router.include_router(sentiment.router)
+vaf_v1_router.include_router(meeting.router)
+vaf_v1_router.include_router(vision.router)
+vaf_v1_router.include_router(translate.router)
 
 __all__ = ["vaf_v1_router"]
