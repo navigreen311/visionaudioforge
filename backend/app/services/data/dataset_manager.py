@@ -19,6 +19,16 @@ from app.services.data.storage import MinIOStorageService
 BUCKET = "vaf-datasets"
 
 
+def _dataset_modality(dataset: Any) -> str | None:
+    """Read a dataset's modality.
+
+    app/models/dataset.py calls the column `modality`; parts of this service and
+    its tests were written against an earlier `format` column. Accept either
+    rather than crashing on whichever one is absent.
+    """
+    return getattr(dataset, "modality", None) or getattr(dataset, "format", None)
+
+
 class DatasetService:
     """High-level operations on datasets and their samples (assets)."""
 
@@ -56,9 +66,12 @@ class DatasetService:
         limit: int = 20,
     ) -> tuple[list[Dataset], int]:
         """Return paginated datasets for a workspace."""
+        # Soft-delete flag lives in the Dataset.stats JSON column — the model has
+        # no `metadata_` column, so referencing one raised AttributeError while
+        # the statement was being built.
         base = select(Dataset).where(
             Dataset.workspace_id == workspace_id,
-            Dataset.metadata_["archived"].as_boolean() != True,  # noqa: E712
+            Dataset.stats["archived"].as_boolean() != True,  # noqa: E712
         )
         total_q = select(func.count()).select_from(base.subquery())
         total = (await db.execute(total_q)).scalar() or 0
@@ -113,15 +126,18 @@ class DatasetService:
                     content_type=f.content_type or "application/octet-stream",
                 )
                 label = (labels or {}).get(f.filename)
+                # Column names follow app/models/asset.py: type/path, not
+                # media_type/storage_path. Passing the latter raised TypeError
+                # for every file, so uploads silently reported 0 succeeded.
                 asset = Asset(
                     filename=f.filename,
-                    media_type=dataset.format,
-                    mime_type=f.content_type,
+                    type=_dataset_modality(dataset),
+                    path=url,
                     size_bytes=len(data),
-                    storage_path=url,
                     metadata_={
                         "dataset_id": str(dataset_id),
                         "label": label,
+                        "mime_type": f.content_type,
                     },
                     workspace_id=dataset.workspace_id,
                 )
