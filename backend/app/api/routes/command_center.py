@@ -1,9 +1,9 @@
 """Command Center routes — streams, layouts, shifts, incidents, cockpit feed.
 
-Request and response shapes follow the console's Command Center types in
+State lives in Postgres via ``app.services.command_center``; these handlers
+translate between those services and the console's Command Center types in
 ``frontend/src/lib/api.ts`` (Stream, Incident, Shift, CockpitOverview, KPIs,
-TimelineEvent). State lives in module-level dicts; see the persistence work
-that moves these onto ``app.services.command_center`` and Postgres.
+TimelineEvent).
 """
 
 from __future__ import annotations
@@ -12,19 +12,32 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
+from app.models.command_center import (
+    CommandStream,
+    Incident,
+    IncidentStatus,
+    OperatorShift,
+    StreamStatus,
+)
+from app.models.user import User
+from app.models.workspace import Workspace
+from app.services.command_center.dashboard import CockpitDashboard
+from app.services.command_center.incident_queue import IncidentQueueService
+from app.services.command_center.operator import OperatorService
+from app.services.command_center.stream_manager import StreamManager
 
 router = APIRouter(prefix="/api/command-center", tags=["command-center"])
 
 # The agent Live Context and Patrol panels poll a bare /api/streams/status
 # rather than the command-center prefix, so that path gets its own router.
 streams_router = APIRouter(prefix="/api/streams", tags=["command-center"])
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ---------------------------------------------------------------------------
@@ -36,12 +49,21 @@ class StreamCreate(BaseModel):
     source_type: str = "rtsp"
     url: str | None = None
     position: int | None = None
-    workspace_id: str | None = None
 
     # Legacy field names kept so older clients keep working.
     source_url: str | None = None
     stream_type: str | None = None
     source_config: dict[str, Any] | None = None
+
+    def resolved_source_type(self) -> str:
+        return self.stream_type or self.source_type
+
+    def resolved_config(self) -> dict[str, Any]:
+        config = dict(self.source_config or {})
+        url = self.url or self.source_url or config.get("url")
+        if url:
+            config["url"] = url
+        return config
 
 
 class LayoutSet(BaseModel):
@@ -57,7 +79,6 @@ class LayoutSet(BaseModel):
 class ShiftCreate(BaseModel):
     zone: str | None = None
     operator_id: str | None = None
-    operator_name: str | None = None
     start_time: str | None = None
     end_time: str | None = None
 
@@ -68,7 +89,7 @@ class ShiftEnd(BaseModel):
 
 class ShiftStartRequest(BaseModel):
     zone: str
-    operator: str
+    operator: str | None = None
 
 
 class ShiftEndRequest(BaseModel):
@@ -76,60 +97,136 @@ class ShiftEndRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory store
+# Translation between storage and console vocabularies
 # ---------------------------------------------------------------------------
-_streams: dict[str, dict] = {}
-_layout: str = "2x2"
-_layout_detail: dict | None = None
-_shifts: dict[str, dict] = {}
-_incidents: dict[str, dict] = {}
-_timeline: list[dict] = []
-_active_shifts: dict[str, dict] = {}
-_stream_counter = 0
-_shift_counter = 0
+
+# The database tracks transport-level stream state; the console shows an
+# operator-level traffic light.
+_STATUS_TO_CONSOLE = {
+    StreamStatus.connected: "online",
+    StreamStatus.disconnected: "offline",
+    StreamStatus.error: "offline",
+    StreamStatus.buffering: "degraded",
+}
 
 
-def _log_event(event_type: str, description: str) -> None:
-    """Append to the cockpit timeline feed, newest first."""
-    _timeline.insert(
-        0,
-        {
-            "id": f"evt-{uuid.uuid4().hex[:8]}",
-            "type": event_type,
-            "description": description,
-            "timestamp": _now(),
-        },
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _stream_out(stream: CommandStream) -> dict[str, Any]:
+    config = stream.source_config or {}
+    return {
+        "id": str(stream.id),
+        "name": stream.name,
+        "source_type": stream.source_type.value,
+        "url": config.get("url"),
+        "status": _STATUS_TO_CONSOLE.get(stream.status, "offline"),
+        "fps": stream.fps or 0.0,
+        "position": stream.position,
+        "is_primary": bool(stream.is_priority),
+        "created_at": _iso(stream.created_at),
+    }
+
+
+def _shift_out(shift: OperatorShift, operator_name: str | None = None) -> dict[str, Any]:
+    # end_time is set at creation as the shift's *planned* end. The console
+    # reads ended_at as "this shift is over", so only report it once the shift
+    # is no longer active.
+    return {
+        "id": str(shift.id),
+        "operator_id": str(shift.operator_id),
+        "operator_name": operator_name or "",
+        "zone": shift.zone_assignment or "",
+        "started_at": _iso(shift.start_time),
+        "ended_at": _iso(shift.end_time) if not shift.is_active else None,
+        "handoff_notes": shift.handoff_notes,
+    }
+
+
+def _incident_out(
+    incident: Incident, operator_name: str | None = None
+) -> dict[str, Any]:
+    return {
+        "id": str(incident.id),
+        "title": incident.title,
+        "description": incident.description or "",
+        "severity": incident.severity.value,
+        "status": incident.status.value,
+        "assigned_to": str(incident.assigned_to) if incident.assigned_to else None,
+        "assigned_operator_name": operator_name,
+        "stream_id": (
+            str(incident.source_stream_id) if incident.source_stream_id else None
+        ),
+        "created_at": _iso(incident.created_at),
+        "updated_at": _iso(incident.updated_at),
+    }
+
+
+async def _load_stream(
+    db: AsyncSession, stream_id: str
+) -> CommandStream:
+    try:
+        key = uuid.UUID(stream_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Stream not found")
+
+    result = await db.execute(select(CommandStream).where(CommandStream.id == key))
+    stream = result.scalar_one_or_none()
+    if stream is None:
+        raise HTTPException(status_code=404, detail="Stream not found")
+    return stream
+
+
+async def _load_incident(db: AsyncSession, incident_id: str) -> Incident:
+    try:
+        key = uuid.UUID(incident_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    result = await db.execute(select(Incident).where(Incident.id == key))
+    incident = result.scalar_one_or_none()
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
+
+async def _operator_name(db: AsyncSession, operator_id) -> str | None:
+    if operator_id is None:
+        return None
+    result = await db.execute(select(User.email).where(User.id == operator_id))
+    return result.scalar_one_or_none()
+
+
+async def _resolve_operator(
+    db: AsyncSession, workspace_id: uuid.UUID, operator_id: str | None
+) -> uuid.UUID:
+    """Pick the operator a shift belongs to.
+
+    The console's Start Shift control sends only a zone — it has no operator to
+    send until the authenticated-user dependency lands. Until then an explicit
+    operator_id wins, and otherwise the shift is attributed to the workspace
+    owner.
+    """
+    if operator_id:
+        try:
+            return uuid.UUID(operator_id)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(status_code=422, detail="operator_id is not a valid UUID")
+
+    result = await db.execute(
+        select(Workspace.owner_id).where(Workspace.id == workspace_id)
     )
-    del _timeline[200:]
-
-
-def _seed_incidents() -> None:
-    """Give the incident queue something to show before any alert fires."""
-    if _incidents:
-        return
-    seeds = [
-        ("Perimeter breach — east gate", "critical", "Motion after hours at the east gate camera."),
-        ("Camera offline — dock 3", "high", "Stream from dock 3 stopped responding."),
-        ("Loitering detected — lobby", "medium", "Person dwelling over 2 minutes in the lobby."),
-    ]
-    for offset, (title, severity, description) in enumerate(seeds):
-        iid = f"inc-{uuid.uuid4().hex[:8]}"
-        created = (datetime.now(timezone.utc) - timedelta(minutes=15 * (offset + 1))).isoformat()
-        _incidents[iid] = {
-            "id": iid,
-            "title": title,
-            "description": description,
-            "severity": severity,
-            "status": "open",
-            "assigned_to": None,
-            "assigned_operator_name": None,
-            "stream_id": None,
-            "created_at": created,
-            "updated_at": created,
-        }
-
-
-_SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    owner_id = result.scalar_one_or_none()
+    if owner_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "No operator for this shift: pass operator_id, or set an owner "
+                "on the workspace."
+            ),
+        )
+    return owner_id
 
 
 # ---------------------------------------------------------------------------
@@ -137,64 +234,84 @@ _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 # ---------------------------------------------------------------------------
 
 @router.post("/streams", status_code=201)
-async def add_stream(body: StreamCreate) -> dict[str, Any]:
+async def add_stream(
+    body: StreamCreate,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Add a stream to the wall."""
-    global _stream_counter
-    _stream_counter += 1
-    sid = f"stream-{_stream_counter:04d}"
+    try:
+        created = await StreamManager.add_stream(
+            db,
+            str(workspace_id),
+            name=body.name,
+            source_type=body.resolved_source_type(),
+            source_config=body.resolved_config(),
+            position=body.position,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
-    url = body.url or body.source_url
-    if url is None and body.source_config:
-        url = body.source_config.get("url")
-
-    stream = {
-        "id": sid,
-        "name": body.name,
-        "source_type": body.stream_type or body.source_type,
-        "url": url,
-        "status": "online",
-        "fps": 30.0,
-        "position": body.position if body.position is not None else len(_streams),
-        "is_primary": not _streams,
-        "created_at": _now(),
-    }
-    _streams[sid] = stream
-    _log_event("stream", f"Stream '{body.name}' added to the wall")
-    return stream
+    return _stream_out(await _load_stream(db, created["stream_id"]))
 
 
 @router.get("/streams")
-async def list_streams() -> list[dict]:
+async def list_streams(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """List every stream on the wall, in wall order."""
-    return sorted(_streams.values(), key=lambda s: s["position"])
+    result = await db.execute(
+        select(CommandStream)
+        .where(CommandStream.workspace_id == workspace_id)
+        .order_by(CommandStream.position)
+    )
+    return [_stream_out(s) for s in result.scalars().all()]
 
 
 @router.delete("/streams/{stream_id}", status_code=204, response_class=Response)
-async def remove_stream(stream_id: str) -> Response:
+async def remove_stream(
+    stream_id: str,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
     """Remove a stream from the wall."""
-    stream = _streams.pop(stream_id, None)
-    if stream is None:
+    removed = await StreamManager.remove_stream(db, str(workspace_id), stream_id)
+    if not removed:
         raise HTTPException(status_code=404, detail="Stream not found")
-    _log_event("stream", f"Stream '{stream['name']}' removed from the wall")
     return Response(status_code=204)
 
 
-@streams_router.get("/status")
-async def get_streams_status() -> dict[str, Any]:
-    """Active/total stream counts for the agent side panels."""
+@router.get("/streams/{stream_id}/health")
+async def get_stream_health(
+    stream_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return live health for one stream."""
+    stream = await _load_stream(db, stream_id)
     return {
-        "active": sum(1 for s in _streams.values() if s["status"] == "online"),
-        "total": len(_streams),
+        "status": _STATUS_TO_CONSOLE.get(stream.status, "offline"),
+        "fps": stream.fps or 0.0,
+        "latency_ms": stream.latency_ms,
     }
 
 
-@router.get("/streams/{stream_id}/health")
-async def get_stream_health(stream_id: str) -> dict[str, Any]:
-    """Return live health for one stream."""
-    stream = _streams.get(stream_id)
-    if stream is None:
-        raise HTTPException(status_code=404, detail="Stream not found")
-    return {"status": stream["status"], "fps": stream["fps"]}
+@streams_router.get("/status")
+async def get_streams_status(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Active/total stream counts for the agent side panels."""
+    result = await db.execute(
+        select(CommandStream.status).where(
+            CommandStream.workspace_id == workspace_id
+        )
+    )
+    statuses = list(result.scalars().all())
+    return {
+        "active": sum(1 for s in statuses if s == StreamStatus.connected),
+        "total": len(statuses),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -202,34 +319,51 @@ async def get_stream_health(stream_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/layout")
-async def get_layout() -> dict[str, Any]:
+async def get_layout(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Return the current grid layout preset."""
-    return {"layout": _layout}
+    layout = await StreamManager.get_layout(db, str(workspace_id))
+    return {"layout": layout["layout"]}
 
 
 @router.put("/layout")
-async def put_layout(body: LayoutSet) -> dict[str, Any]:
+async def put_layout(
+    body: LayoutSet,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Set the grid layout preset (console sends ``{layout: "3x3"}``)."""
-    global _layout
-    if body.layout:
-        _layout = body.layout
-    _log_event("system", f"Wall layout changed to {_layout}")
-    return {"layout": _layout}
+    if not body.layout:
+        raise HTTPException(status_code=422, detail="layout is required")
+
+    try:
+        result = await StreamManager.set_layout(db, str(workspace_id), body.layout)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"layout": result["layout"]}
 
 
 @router.post("/layout")
-async def set_layout(body: LayoutSet) -> dict[str, Any]:
-    """Legacy layout setter that stores a full grid definition."""
-    global _layout, _layout_detail
-    if body.layout:
-        _layout = body.layout
-    _layout_detail = {
-        "name": body.name or _layout,
+async def set_layout(
+    body: LayoutSet,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Legacy layout setter."""
+    layout = body.layout or body.name or "2x2"
+    try:
+        result = await StreamManager.set_layout(db, str(workspace_id), layout)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {
+        "name": layout,
+        "layout": result["layout"],
         "grid": body.grid,
         "columns": body.columns,
         "rows": body.rows,
     }
-    return _layout_detail
 
 
 # ---------------------------------------------------------------------------
@@ -237,41 +371,77 @@ async def set_layout(body: LayoutSet) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/shifts", status_code=201)
-async def create_shift(body: ShiftCreate) -> dict[str, Any]:
+async def create_shift(
+    body: ShiftCreate,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Start an operator shift in a zone."""
-    global _shift_counter
-    _shift_counter += 1
-    shift_id = f"shift-{_shift_counter:04d}"
-    shift = {
-        "id": shift_id,
-        "operator_id": body.operator_id or "operator-self",
-        "operator_name": body.operator_name or "Current Operator",
-        "zone": body.zone or "unassigned",
-        "started_at": body.start_time or _now(),
-        "ended_at": None,
-        "handoff_notes": None,
-    }
-    _shifts[shift_id] = shift
-    _log_event("operator", f"Shift started in zone {shift['zone']}")
-    return shift
+    operator_id = await _resolve_operator(db, workspace_id, body.operator_id)
+
+    start = (
+        datetime.fromisoformat(body.start_time)
+        if body.start_time
+        else datetime.now(timezone.utc)
+    )
+    end = (
+        datetime.fromisoformat(body.end_time)
+        if body.end_time
+        else start + timedelta(hours=8)
+    )
+
+    created = await OperatorService.create_shift(
+        db,
+        str(workspace_id),
+        str(operator_id),
+        start,
+        end,
+        zone_assignment=body.zone,
+    )
+
+    result = await db.execute(
+        select(OperatorShift).where(OperatorShift.id == uuid.UUID(created["shift_id"]))
+    )
+    shift = result.scalar_one()
+    return _shift_out(shift, await _operator_name(db, shift.operator_id))
 
 
 @router.get("/shifts")
-async def list_shifts() -> list[dict]:
+async def list_shifts(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """List every shift, active and ended."""
-    return list(_shifts.values())
+    result = await db.execute(
+        select(OperatorShift)
+        .where(OperatorShift.workspace_id == workspace_id)
+        .order_by(OperatorShift.start_time.desc())
+    )
+    shifts = list(result.scalars().all())
+    return [
+        _shift_out(s, await _operator_name(db, s.operator_id)) for s in shifts
+    ]
 
 
 @router.put("/shifts/{shift_id}/end")
-async def end_shift_by_id(shift_id: str, body: ShiftEnd | None = None) -> dict[str, Any]:
+async def end_shift_by_id(
+    shift_id: str,
+    body: ShiftEnd | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """End a shift and record its handoff notes."""
-    shift = _shifts.get(shift_id)
-    if shift is None:
+    try:
+        await OperatorService.end_shift(
+            db, shift_id, handoff_notes=body.handoff_notes if body else None
+        )
+    except (ValueError, AttributeError):
         raise HTTPException(status_code=404, detail="Shift not found")
-    shift["ended_at"] = _now()
-    shift["handoff_notes"] = body.handoff_notes if body else None
-    _log_event("operator", f"Shift ended in zone {shift['zone']}")
-    return shift
+
+    result = await db.execute(
+        select(OperatorShift).where(OperatorShift.id == uuid.UUID(shift_id))
+    )
+    shift = result.scalar_one()
+    return _shift_out(shift, await _operator_name(db, shift.operator_id))
 
 
 # ---------------------------------------------------------------------------
@@ -279,126 +449,169 @@ async def end_shift_by_id(shift_id: str, body: ShiftEnd | None = None) -> dict[s
 # ---------------------------------------------------------------------------
 
 @router.get("/incidents")
-async def list_incidents() -> list[dict]:
+async def list_incidents(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    status: str = Query("active", description="active | resolved | dismissed"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """Return the incident queue, most severe and oldest first."""
-    _seed_incidents()
-    return sorted(
-        (i for i in _incidents.values() if i["status"] != "resolved"),
-        key=lambda i: (_SEVERITY_ORDER.get(i["severity"], 9), i["created_at"]),
-    )
+    queue = await IncidentQueueService.get_queue(db, str(workspace_id), status=status)
 
-
-def _get_incident(incident_id: str) -> dict[str, Any]:
-    _seed_incidents()
-    incident = _incidents.get(incident_id)
-    if incident is None:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    return incident
+    incidents = []
+    for entry in queue:
+        incident = await _load_incident(db, entry["incident_id"])
+        incidents.append(
+            _incident_out(incident, await _operator_name(db, incident.assigned_to))
+        )
+    return incidents
 
 
 @router.post("/incidents/{incident_id}/assign")
-async def assign_incident(incident_id: str) -> dict[str, Any]:
-    """Assign an incident to the operator on shift."""
-    incident = _get_incident(incident_id)
-    incident["status"] = "assigned"
-    incident["assigned_to"] = "operator-self"
-    incident["assigned_operator_name"] = "Current Operator"
-    incident["updated_at"] = _now()
-    _log_event("incident", f"Incident assigned: {incident['title']}")
-    return incident
+async def assign_incident(
+    incident_id: str,
+    operator_id: str | None = Query(None, description="Operator to assign to"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Assign an incident to an operator."""
+    incident = await _load_incident(db, incident_id)
+    assignee = await _resolve_operator(db, incident.workspace_id, operator_id)
+
+    await IncidentQueueService.assign_incident(db, incident_id, str(assignee))
+
+    await db.refresh(incident)
+    return _incident_out(incident, await _operator_name(db, incident.assigned_to))
 
 
 @router.post("/incidents/{incident_id}/escalate")
-async def escalate_incident(incident_id: str) -> dict[str, Any]:
+async def escalate_incident(
+    incident_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Escalate an incident to the next response tier."""
-    incident = _get_incident(incident_id)
-    incident["status"] = "escalated"
-    incident["updated_at"] = _now()
-    _log_event("incident", f"Incident escalated: {incident['title']}")
-    return incident
+    incident = await _load_incident(db, incident_id)
+    await IncidentQueueService.escalate_incident(
+        db, incident_id, incident.escalation_level + 1
+    )
+
+    await db.refresh(incident)
+    return _incident_out(incident, await _operator_name(db, incident.assigned_to))
 
 
 @router.post("/incidents/{incident_id}/resolve")
-async def resolve_incident(incident_id: str) -> dict[str, Any]:
+async def resolve_incident(
+    incident_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Resolve an incident and drop it out of the queue."""
-    incident = _get_incident(incident_id)
-    incident["status"] = "resolved"
-    incident["updated_at"] = _now()
-    _log_event("incident", f"Incident resolved: {incident['title']}")
-    return incident
+    incident = await _load_incident(db, incident_id)
+
+    incident.status = IncidentStatus.resolved
+    incident.resolved_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(incident)
+
+    return _incident_out(incident, await _operator_name(db, incident.assigned_to))
 
 
 # ---------------------------------------------------------------------------
 # Cockpit overview, KPIs, timeline
 # ---------------------------------------------------------------------------
 
-@router.get("/overview")
-async def get_overview() -> dict[str, Any]:
-    """Top-of-screen cockpit summary."""
-    _seed_incidents()
-    open_incidents = sum(1 for i in _incidents.values() if i["status"] != "resolved")
-    active_streams = sum(1 for s in _streams.values() if s["status"] == "online")
-    active_operators = sum(1 for s in _shifts.values() if s["ended_at"] is None)
+# The dashboard service speaks healthy/warning/critical; the console renders a
+# green/yellow/red light.
+_SYSTEM_STATUS_TO_CONSOLE = {
+    "healthy": "green",
+    "warning": "yellow",
+    "critical": "red",
+}
 
-    critical = any(
-        i["severity"] == "critical" and i["status"] != "resolved"
-        for i in _incidents.values()
-    )
-    if critical:
-        system_status = "red"
-    elif open_incidents:
-        system_status = "yellow"
-    else:
-        system_status = "green"
+
+@router.get("/overview")
+async def get_overview(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Top-of-screen cockpit summary."""
+    overview = await CockpitDashboard.get_overview(db, str(workspace_id))
+    layout = await StreamManager.get_layout(db, str(workspace_id))
 
     return {
-        "system_status": system_status,
-        "active_streams": active_streams,
-        "open_incidents": open_incidents,
-        "active_operators": active_operators,
-        "current_layout": _layout,
+        "system_status": _SYSTEM_STATUS_TO_CONSOLE.get(
+            overview["system_status"], "yellow"
+        ),
+        "active_streams": overview["active_streams"],
+        "open_incidents": overview["open_incidents"],
+        "active_operators": overview["active_operators"],
+        "current_layout": layout["layout"],
     }
 
 
 @router.get("/dashboard")
-async def get_dashboard() -> dict[str, Any]:
-    """Legacy dashboard summary retained for existing API consumers."""
-    return {
-        "total_streams": len(_streams),
-        "active_streams": sum(1 for s in _streams.values() if s["status"] == "online"),
-        "current_layout": _layout_detail or {"name": _layout},
-        "active_shifts": sum(1 for s in _shifts.values() if s["ended_at"] is None),
-        "status": "operational",
-    }
+async def get_dashboard(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Full cockpit overview, including per-status stream health."""
+    overview = await CockpitDashboard.get_overview(db, str(workspace_id))
+    layout = await StreamManager.get_layout(db, str(workspace_id))
+    return {**overview, "current_layout": layout["layout"]}
 
 
 @router.get("/kpis")
-async def get_kpis() -> dict[str, Any]:
+async def get_kpis(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    period: str = Query("daily", description="hourly | daily | weekly | monthly"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Response-time and resolution KPIs for the cockpit header."""
-    _seed_incidents()
-    resolved = sum(1 for i in _incidents.values() if i["status"] == "resolved")
-    total = len(_incidents) or 1
+    kpis = await CockpitDashboard.get_kpis(db, str(workspace_id), period=period)
+
+    incidents_today = await CockpitDashboard.get_overview(db, str(workspace_id))
 
     return {
-        "avg_response_time_seconds": 147,
-        "response_time_trend": -5.2,
-        "resolution_rate_pct": round(resolved / total * 100, 1),
-        "resolution_rate_trend": 2.1,
-        "false_alarm_rate_pct": 12.4,
-        "false_alarm_trend": -0.8,
-        "incidents_today": len(_incidents),
-        "incidents_today_trend": 3,
+        "avg_response_time_seconds": round(kpis.get("avg_response_time_s", 0.0), 1),
+        "response_time_trend": 0.0,
+        "resolution_rate_pct": round(kpis.get("incident_resolution_rate", 0.0) * 100, 1),
+        "resolution_rate_trend": 0.0,
+        "false_alarm_rate_pct": round(kpis.get("false_alarm_rate", 0.0) * 100, 1),
+        "false_alarm_trend": 0.0,
+        "incidents_today": incidents_today["open_incidents"],
+        "incidents_today_trend": 0,
     }
 
 
 @router.get("/timeline")
-async def get_timeline() -> list[dict]:
+async def get_timeline(
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """Recent cockpit activity, newest first."""
-    _seed_incidents()
-    if not _timeline:
-        for incident in sorted(_incidents.values(), key=lambda i: i["created_at"]):
-            _log_event("incident", f"Incident raised: {incident['title']}")
-    return _timeline[:50]
+    feed = await CockpitDashboard.get_timeline_feed(
+        db, str(workspace_id), limit=limit
+    )
+    return [
+        {
+            "id": entry["id"],
+            "type": _timeline_type(entry["type"]),
+            "description": entry["summary"],
+            "timestamp": entry["timestamp"],
+        }
+        for entry in feed
+    ]
+
+
+def _timeline_type(raw: str) -> str:
+    """Map an event type onto the console's TimelineEvent union."""
+    if raw == "incident":
+        return "incident"
+    if raw.startswith("alert"):
+        return "alert"
+    if raw.startswith("stream"):
+        return "stream"
+    if raw.startswith("operator") or raw.startswith("shift"):
+        return "operator"
+    return "system"
 
 
 # ---------------------------------------------------------------------------
@@ -406,31 +619,41 @@ async def get_timeline() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @router.post("/shift/start")
-async def start_shift(body: ShiftStartRequest) -> dict[str, Any]:
+async def start_shift(
+    body: ShiftStartRequest,
+    workspace_id: uuid.UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Start a new operator shift in a given zone."""
-    global _shift_counter
-    _shift_counter += 1
-    shift_id = f"shift-{_shift_counter:04d}"
-    started_at = _now()
-    _active_shifts[shift_id] = {
-        "shift_id": shift_id,
-        "zone": body.zone,
-        "operator": body.operator,
-        "started_at": started_at,
-    }
-    return {"shift_id": shift_id, "started_at": started_at}
+    operator_id = await _resolve_operator(db, workspace_id, body.operator)
+    start = datetime.now(timezone.utc)
+
+    created = await OperatorService.create_shift(
+        db,
+        str(workspace_id),
+        str(operator_id),
+        start,
+        start + timedelta(hours=8),
+        zone_assignment=body.zone,
+    )
+    return {"shift_id": created["shift_id"], "started_at": start.isoformat()}
 
 
 @router.post("/shift/end")
-async def end_shift(body: ShiftEndRequest) -> dict[str, Any]:
+async def end_shift(
+    body: ShiftEndRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """End an active shift and return duration."""
-    shift = _active_shifts.pop(body.shift_id, None)
-    if shift is None:
+    try:
+        result = await OperatorService.end_shift(db, body.shift_id)
+    except (ValueError, AttributeError):
         raise HTTPException(
             status_code=404,
             detail=f"Shift {body.shift_id} not found or already ended",
         )
-    started = datetime.fromisoformat(shift["started_at"])
-    ended_at = datetime.now(timezone.utc)
-    duration_sec = int((ended_at - started).total_seconds())
-    return {"ended_at": ended_at.isoformat(), "duration_sec": duration_sec}
+
+    return {
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "duration_sec": int(result["duration_h"] * 3600),
+    }

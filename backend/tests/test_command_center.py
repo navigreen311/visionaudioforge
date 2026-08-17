@@ -413,50 +413,8 @@ async def test_timeline_feed():
 # ── API Route Tests ──────────────────────────────────────────────────
 
 
-@pytest.mark.anyio
-async def test_api_streams(client, test_workspace_id):
-    """POST/GET /api/command-center/streams round-trip."""
-    resp = await client.post(
-        "/api/command-center/streams",
-        params={"workspace_id": test_workspace_id},
-        json={"name": "lobby-cam", "source_type": "rtsp", "source_config": {"url": "rtsp://x"}},
-    )
-    assert resp.status_code in (201, 500, 422)  # 500 if no real DB
-
-    resp = await client.get(
-        "/api/command-center/streams",
-        params={"workspace_id": test_workspace_id},
-    )
-    assert resp.status_code in (200, 500)
-
-
-@pytest.mark.anyio
-async def test_api_incidents(client, test_workspace_id):
-    """GET /api/command-center/incidents returns incident queue."""
-    resp = await client.get(
-        "/api/command-center/incidents",
-        params={"workspace_id": test_workspace_id},
-    )
-    assert resp.status_code in (200, 500)
-
-
-@pytest.mark.anyio
-async def test_api_dashboard(client, test_workspace_id):
-    """GET /api/command-center/dashboard returns overview."""
-    resp = await client.get(
-        "/api/command-center/dashboard",
-        params={"workspace_id": test_workspace_id},
-    )
-    assert resp.status_code in (200, 500)
-
-    resp = await client.get(
-        "/api/command-center/kpis",
-        params={"workspace_id": test_workspace_id},
-    )
-    assert resp.status_code in (200, 500)
-
-    resp = await client.get(
-        "/api/command-center/timeline",
-        params={"workspace_id": test_workspace_id},
-    )
-    assert resp.status_code in (200, 500)
+# The route-level tests that used to live here drove the endpoints against the
+# app's configured database and accepted 200-or-500, which passed whether or
+# not anything worked. Now that these routes read and write real tables, they
+# are covered properly in tests/test_command_center_api.py, which runs them
+# against a live database and asserts the response bodies the console reads.

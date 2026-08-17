@@ -6,25 +6,12 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import settings
-from app.models import (  # noqa: F401 — ensure all models are imported for metadata
-    Agent,
-    AgentMemory,
-    Alert,
-    AlertRule,
-    Asset,
-    AuditLog,
-    Base,
-    Dataset,
-    Embedding,
-    Event,
-    Experiment,
-    ExperimentEpoch,
-    ModelRecord,
-    Pipeline,
-    PipelineRun,
-    User,
-    Workspace,
-)
+# Import the whole package, not a hand-listed subset: app.models.__init__
+# imports every model module, so Base.metadata is complete. Listing models by
+# hand here is how command_streams, incidents, api_keys, annotations and the
+# rest ended up invisible to autogenerate and absent from every migration.
+import app.models  # noqa: F401
+from app.models import Base
 
 config = context.config
 
