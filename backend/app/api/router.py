@@ -8,6 +8,7 @@ from app.api.routes import (
     assets,
     audio,
     auth,
+    byom,
     capture,
     command_center,
     dashboard,
@@ -25,6 +26,7 @@ from app.api.routes import (
     investigation,
     investigation_mock,
     knowledge_graph,
+    marketplace,
     marketplace_stubs,
     memory,
     metrics,
@@ -39,10 +41,15 @@ from app.api.routes import (
     runtime,
     safety,
     search,
+    security,
     semantic_memory,
+    settings_api_keys,
+    settings_audit,
+    settings_billing,
     settings_data,
     settings_extra,
     settings_stubs,
+    settings_users,
     simulation,
     transfer,
     transform,
@@ -98,10 +105,26 @@ api_router.include_router(notifications.router)
 api_router.include_router(plugins.router)
 api_router.include_router(developer.router)
 api_router.include_router(dashboard.router)
+api_router.include_router(security.router)
+
+# Settings tabs. settings_api_keys / settings_billing / settings_audit own the
+# paths the console's Settings page actually calls; the *_stubs / *_extra /
+# *_data modules carry the remaining tabs.
+api_router.include_router(settings_api_keys.router)
+api_router.include_router(settings_users.router)
+api_router.include_router(settings_billing.router)
+api_router.include_router(settings_audit.router)
 api_router.include_router(settings_stubs.router)
 api_router.include_router(settings_extra.router)
 api_router.include_router(settings_data.router)
+
+# Marketplace. byom and marketplace mount ahead of marketplace_stubs so the
+# concrete /byom/* and /plugins/* handlers are matched before the catalogue
+# stubs' broader patterns.
+api_router.include_router(byom.router)
+api_router.include_router(marketplace.router)
 api_router.include_router(marketplace_stubs.router)
+
 api_router.include_router(help.router)
 api_router.include_router(profile.router)
 

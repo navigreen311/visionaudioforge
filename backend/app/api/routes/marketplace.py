@@ -153,3 +153,84 @@ async def uninstall_plugin(plugin_id: str) -> dict[str, str]:
     name = _installed[plugin_id]["name"]
     del _installed[plugin_id]
     return {"status": "uninstalled", "plugin": name}
+
+
+# ---------------------------------------------------------------------------
+# Install / update job tracking
+#
+# InstallModal POSTs to /install (or /update), then polls /install/status every
+# 800ms until status is "completed" or "failed", advancing a step indicator.
+# ---------------------------------------------------------------------------
+
+INSTALL_STEPS = ["downloading", "verifying", "installing", "configuring"]
+
+# plugin_id -> job state. Ephemeral by design: an install job that outlives a
+# restart has nothing to resume.
+_install_jobs: dict[str, dict[str, Any]] = {}
+
+
+class InstallStartedOut(BaseModel):
+    install_id: str
+
+
+class InstallStatusOut(BaseModel):
+    install_id: str
+    status: str  # "running" | "completed" | "failed"
+    step: str
+    error: str | None = None
+
+
+def _start_job(plugin_id: str, kind: str) -> InstallStartedOut:
+    install_id = str(uuid.uuid4())
+    _install_jobs[plugin_id] = {
+        "install_id": install_id,
+        "kind": kind,
+        "polls": 0,
+        "error": None,
+    }
+    return InstallStartedOut(install_id=install_id)
+
+
+@router.post("/plugins/{plugin_id}/install", response_model=InstallStartedOut)
+async def install_plugin(plugin_id: str) -> InstallStartedOut:
+    """Begin installing a plugin; returns the id to poll for progress."""
+    return _start_job(plugin_id, "install")
+
+
+@router.post("/plugins/{plugin_id}/update", response_model=InstallStartedOut)
+async def update_plugin(plugin_id: str) -> InstallStartedOut:
+    """Begin updating an installed plugin to its latest version."""
+    _seed_if_empty()
+    if plugin_id not in _installed:
+        raise HTTPException(status_code=404, detail="Installed plugin not found")
+    return _start_job(plugin_id, "update")
+
+
+@router.get("/plugins/{plugin_id}/install/status", response_model=InstallStatusOut)
+async def install_status(plugin_id: str) -> InstallStatusOut:
+    """Advance and report install progress. Each poll moves one step forward."""
+    job = _install_jobs.get(plugin_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No install in progress")
+
+    job["polls"] += 1
+    idx = job["polls"] - 1
+
+    if idx >= len(INSTALL_STEPS):
+        # Job finished: apply the effect, then retire it.
+        _seed_if_empty()
+        if job["kind"] == "update" and plugin_id in _installed:
+            plugin = _installed[plugin_id]
+            plugin["version"] = plugin["latest_version"]
+            plugin["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        return InstallStatusOut(
+            install_id=job["install_id"],
+            status="completed",
+            step=INSTALL_STEPS[-1],
+        )
+
+    return InstallStatusOut(
+        install_id=job["install_id"],
+        status="running",
+        step=INSTALL_STEPS[idx],
+    )

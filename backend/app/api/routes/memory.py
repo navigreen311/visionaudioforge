@@ -117,6 +117,25 @@ SEED_MEMORIES: list[dict[str, Any]] = [
 _memories: dict[str, dict[str, Any]] = {m["id"]: m for m in SEED_MEMORIES}
 _conflict_counter = 0
 
+# Decay audit trail: memory_id -> list of decay events, plus the importance a
+# memory started life with. Powers GET /api/memory/{id}/decay-history.
+_decay_events: dict[str, list[dict[str, Any]]] = {}
+_initial_importance: dict[str, float] = {
+    m["id"]: m["importance_score"] for m in SEED_MEMORIES
+}
+
+
+def _record_decay(memory_id: str, before: float, after: float, trigger: str) -> None:
+    """Append a decay event so the detail panel can render a timeline."""
+    _decay_events.setdefault(memory_id, []).append(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "importance_before": before,
+            "importance_after": after,
+            "trigger": trigger,
+        }
+    )
+
 
 # ---------------------------------------------------------------------------
 # POST /api/memory  — create
@@ -139,6 +158,7 @@ async def create_memory(body: MemoryCreate) -> dict[str, Any]:
         days_ago=0,
     )
     _memories[mid] = mem
+    _initial_importance[mid] = mem["importance_score"]
     return mem
 
 
@@ -469,7 +489,9 @@ async def decay_single(memory_id: str) -> dict[str, Any]:
     mem = _memories.get(memory_id)
     if not mem:
         raise HTTPException(status_code=404, detail="Memory not found")
-    mem["importance_score"] = round(max(0.0, mem["importance_score"] - 0.1), 2)
+    before = mem["importance_score"]
+    mem["importance_score"] = round(max(0.0, before - 0.1), 2)
+    _record_decay(memory_id, before, mem["importance_score"], "manual")
     return mem
 
 
@@ -528,3 +550,23 @@ async def get_related(memory_id: str) -> list[dict[str, Any]]:
         {**m, "relevance_score": round(0.95 - i * 0.1, 2)}
         for i, m in enumerate(related)
     ]
+
+
+# ---------------------------------------------------------------------------
+# GET /api/memory/{id}/decay-history
+# ---------------------------------------------------------------------------
+
+@router.get("/{memory_id}/decay-history")
+async def get_decay_history(memory_id: str) -> dict[str, Any]:
+    """Return the decay timeline for a memory (MemoryDetailPanel > DecayTimeline)."""
+    mem = _memories.get(memory_id)
+    if not mem:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {
+        "created_at": mem["created_at"],
+        "initial_importance": _initial_importance.get(
+            memory_id, mem["importance_score"]
+        ),
+        "events": _decay_events.get(memory_id, []),
+        "current_importance": mem["importance_score"],
+    }
