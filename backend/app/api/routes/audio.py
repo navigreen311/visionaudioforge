@@ -6,11 +6,13 @@ import base64
 import io
 import json
 import time
+from typing import Any
 
 import librosa
 import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse, Response
 
 from app.schemas.audio import AudioAugmentResponse
@@ -32,6 +34,8 @@ from app.services.audio.fingerprinting import AudioFingerprinter
 from app.services.audio.av_sync import AVSyncDetector
 from app.services.audio.audio_embeddings import AudioEmbeddingService
 from app.services.audio.translation import AudioTranslator
+from app.services.audio.diarization import SpeakerDiarizer
+from app.services.audio.call_intelligence import CallIntelligence
 
 router = APIRouter(prefix="/api/audio", tags=["audio"])
 
@@ -46,6 +50,8 @@ _fingerprinter = AudioFingerprinter()
 _av_sync = AVSyncDetector()
 _embedder = AudioEmbeddingService()
 _translator = AudioTranslator()
+_diarizer = SpeakerDiarizer()
+_call_intelligence = CallIntelligence()
 
 
 @router.post("/analyze")
@@ -312,6 +318,98 @@ async def transcribe(
         word_timestamps=word_timestamps,
     )
     return result
+
+
+# ---------------------------------------------------------------------------
+# Speaker diarization / call analysis
+# ---------------------------------------------------------------------------
+
+
+@router.post("/diarize")
+async def diarize(
+    file: UploadFile = File(...),
+    num_speakers: int | None = Form(None),
+):
+    """Split an uploaded recording into per-speaker segments.
+
+    Returns ``{"segments": [{speaker, start, end, text?}], ...}`` — the console
+    reads ``segments`` with ``start``/``end`` in seconds.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    result = _diarizer.diarize(audio, sr, num_speakers=num_speakers)
+
+    # The service reports start_s/end_s; the console reads start/end.
+    segments = [
+        {
+            "speaker": segment["speaker"],
+            "start": segment["start_s"],
+            "end": segment["end_s"],
+            **({"text": segment["text"]} if segment.get("text") else {}),
+        }
+        for segment in result.get("segments", [])
+    ]
+
+    return {
+        "segments": segments,
+        "num_speakers": result.get("num_speakers", 0),
+        "speaker_stats": result.get("speaker_stats", {}),
+        "duration_s": round(len(audio) / sr, 4),
+    }
+
+
+@router.post("/analyze-call")
+async def analyze_call(file: UploadFile = File(...)):
+    """Run the full call-intelligence pipeline over an uploaded recording.
+
+    Returns transcript, speaker segments, summary, action items, per-speaker
+    sentiment and talk ratio.
+    """
+    try:
+        audio_bytes = await file.read()
+        audio, sr = librosa.load(io.BytesIO(audio_bytes), sr=None)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not decode audio file: {exc}")
+
+    return await _call_intelligence.analyze_call(audio, sr)
+
+
+@router.post("/call-analysis")
+async def call_analysis(file: UploadFile = File(...)):
+    """Alias of /analyze-call kept for existing API clients."""
+    return await analyze_call(file)
+
+
+class TranscriptSegments(BaseModel):
+    """Diarized transcript passed back for text-only analysis."""
+
+    transcript_segments: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/summarize")
+async def summarize(body: TranscriptSegments):
+    """Summarise a diarized transcript into key points, decisions and actions."""
+    result = _call_intelligence.summarize_meeting(body.transcript_segments)
+    return {
+        **result,
+        "action_items": _call_intelligence.extract_action_items(
+            body.transcript_segments
+        ),
+    }
+
+
+@router.post("/sentiment")
+async def sentiment(body: TranscriptSegments):
+    """Return per-speaker sentiment for a diarized transcript."""
+    return {
+        "sentiment": _call_intelligence.analyze_sentiment_per_speaker(
+            body.transcript_segments
+        )
+    }
 
 
 # ---------------------------------------------------------------------------

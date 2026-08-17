@@ -219,6 +219,30 @@ async def get_experiment(
         }
 
 
+@router.post("/{experiment_id}/cancel")
+async def cancel_experiment(
+    experiment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Cancel a running training experiment."""
+    try:
+        experiment = await ExperimentService.get_experiment(db, experiment_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
+    if experiment.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Experiment is already {experiment.status}",
+        )
+
+    experiment.status = "cancelled"
+    await db.commit()
+    await db.refresh(experiment)
+
+    return {"id": str(experiment.id), "status": experiment.status}
+
+
 @router.post("/{experiment_id}/epochs", status_code=status.HTTP_201_CREATED)
 async def log_epoch(
     experiment_id: uuid.UUID,

@@ -1,11 +1,13 @@
 """Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,6 +163,54 @@ async def agent_chat(
     )
 
 
+@router.post("/chat/stream")
+async def agent_chat_stream(
+    body: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Stream a copilot reply as Server-Sent Events.
+
+    CopilotChat reads ``data: {json}`` lines and stops on ``data: [DONE]``,
+    forwarding each event's ``type`` (token / tool_use / tool_result / error).
+    """
+    agent_id = body.agent_id or str(uuid.uuid4())
+
+    memories_list = await memory_service.recall(db, agent_id, query=body.message, k=5)
+    memory_strings = [m.content for m in memories_list]
+
+    async def event_stream():
+        collected: list[str] = []
+        try:
+            async for event in copilot_service.chat(
+                message=body.message,
+                workspace_id="default",
+                agent_id=agent_id,
+                context=body.context,
+                skill_pack=body.skill_pack,
+                memories=memory_strings,
+                db=db,
+            ):
+                if event.get("type") == "token":
+                    collected.append(event.get("content", ""))
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:  # keep the stream well-formed on failure
+            logger.exception("Copilot stream failed")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)})}\n\n"
+        else:
+            response_text = "".join(collected)
+            if len(response_text) > 50:
+                await memory_service.store_memory(
+                    db, agent_id, response_text[:500], importance_score=0.4
+                )
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Agent CRUD
 # ---------------------------------------------------------------------------
@@ -187,30 +237,10 @@ async def list_agents(
     ]
 
 
-@router.get("/{agent_id}")
-async def get_agent(
-    agent_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    """Get a single agent by ID with full detail."""
-    stmt = select(Agent).where(Agent.id == agent_id)
-    result = await db.execute(stmt)
-    agent = result.scalar_one_or_none()
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    cfg: dict = agent.config or {}
-    return {
-        "id": str(agent.id),
-        "name": agent.name,
-        "agent_type": agent.agent_type,
-        "skill_pack": cfg.get("skill_pack", "general"),
-        "status": agent.status,
-        "description": cfg.get("description", ""),
-        "auto_patrol": cfg.get("auto_patrol", False),
-        "workspace_scope": cfg.get("workspace_scope", "all"),
-        "created_at": agent.created_at.isoformat() if agent.created_at else "",
-    }
+# NOTE: GET /{agent_id} used to be declared here. Registered ahead of the
+# literal routes below, it swallowed GET /conversations — the console's
+# conversation list was answered by an agent lookup and always 404'd. The
+# single-agent handler now lives after the literal routes; see below.
 
 
 @router.post("", status_code=201)
@@ -544,10 +574,6 @@ class PatrolCheckResponse(BaseModel):
     alerts: int
 
 
-@router.post("/patrol", response_model=PatrolCheckResponse)
-async def patrol_quick_check() -> PatrolCheckResponse:
-    """Quick patrol check — returns current system health summary."""
-    return PatrolCheckResponse(
-        findings=["All streams healthy"],
-        alerts=0,
-    )
+# NOTE: a second POST /patrol was declared here. It could never be reached —
+# the handler near the top of this file is registered first — so it was
+# removed rather than left as dead code.
