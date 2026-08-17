@@ -8,8 +8,48 @@ import uuid
 
 import pytest
 
+from app.core.deps import get_db
+from app.main import app
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    postgres_available,
+    requires_postgres,
+    seed_workspace,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.e2e]
+
+
+@pytest.fixture(autouse=True)
+async def _database():
+    """Point database-backed routes at the test database when one is reachable.
+
+    Several of these flows (fleet, plugins) now read and write real tables, so
+    without this they would hit the configured production host. Tests that
+    cannot work at all without a database call `requires_postgres()` and skip;
+    the rest are unaffected either way.
+    """
+    if not await postgres_available():
+        yield None
+        return
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
+    async with factory() as session:
+        workspace_id = await seed_workspace(session, "v3-e2e")
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = _override
+    try:
+        yield str(workspace_id)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        await engine.dispose()
 
 OK = (200, 201)
 ACCEPTABLE = (200, 201, 400, 422, 501)
@@ -238,15 +278,22 @@ async def test_edge_export_flow(test_app):
 
 
 @pytest.mark.asyncio
-async def test_fleet_management_flow(test_app):
+async def test_fleet_management_flow(test_app, _database):
     """register device -> heartbeat -> get health."""
-    # Register
+    await requires_postgres()
+    workspace_id = _database
+
+    # Register. jetson-nano is not a supported device type; jetson_nano is.
     r1 = await test_app.post(
-        "/api/fleet/devices",
-        json={"name": "edge-node-01", "device_type": "jetson-nano", "location": "warehouse-A"},
+        f"/api/fleet/devices?workspace_id={workspace_id}",
+        json={
+            "name": "edge-node-01",
+            "device_type": "jetson_nano",
+            "location": "warehouse-A",
+        },
     )
     assert r1.status_code != 404, "fleet/devices POST returned 404"
-    device_id = r1.json().get("id", "d1") if r1.status_code in OK else "d1"
+    device_id = r1.json()["device_id"]
 
     # Heartbeat
     r2 = await test_app.post(
@@ -256,11 +303,12 @@ async def test_fleet_management_flow(test_app):
     assert r2.status_code != 404, "fleet/devices/heartbeat returned 404"
 
     # Health
-    r3 = await test_app.get("/api/fleet/health")
+    r3 = await test_app.get(f"/api/fleet/health?workspace_id={workspace_id}")
     assert r3.status_code != 404, "fleet/health returned 404"
     if r3.status_code in OK:
         data = r3.json()
         assert "total_devices" in data
+        assert data["total_devices"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +317,14 @@ async def test_fleet_management_flow(test_app):
 
 
 @pytest.mark.asyncio
-async def test_plugin_flow(test_app):
+async def test_plugin_flow(test_app, _database):
     """register plugin -> enable -> list -> execute."""
+    await requires_postgres()
+    workspace_id = _database
+
     # Register
     r1 = await test_app.post(
-        "/api/plugins/register",
+        f"/api/plugins/register?workspace_id={workspace_id}",
         json={"name": "auto-label", "version": "1.0.0", "description": "Automatic labeling"},
     )
     assert r1.status_code != 404, "plugins/register returned 404"
@@ -479,8 +530,9 @@ V3_ENDPOINTS_GET = [
 
 
 @pytest.mark.asyncio
-async def test_full_platform_health(test_app):
+async def test_full_platform_health(test_app, _database):
     """Hit /api/health and verify all Phase 4 services are reachable (no 404s)."""
+    await requires_postgres()
     # Core health
     r = await test_app.get("/api/health")
     assert r.status_code != 404, "GET /api/health returned 404"

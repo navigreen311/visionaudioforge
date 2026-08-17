@@ -12,6 +12,12 @@ from app.grpc.server import VAFGRPCServer, PROTO_PATH
 from app.services.plugins.node_sdk import CustomNodeSDK
 from app.services.plugins.api_docs import APIDocGenerator
 from app.main import app
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -143,20 +149,70 @@ def test_node_validation_missing_base(node_sdk, missing_base_code):
     assert any("BaseNode" in e for e in result["errors"])
 
 
-def test_custom_node_registration(node_sdk, valid_node_code):
-    """register_custom_node stores the node and list_custom_nodes returns it."""
-    result = node_sdk.register_custom_node(
-        db=None,
-        workspace_id="ws-test-001",
-        name="test_node",
-        code=valid_node_code,
-        config={"enabled": True},
-    )
-    assert result["registered"] is True
-    assert result["node_id"] is not None
+@pytest.mark.asyncio
+async def test_custom_node_registration(node_sdk, valid_node_code):
+    """register_custom_node stores the node and list_custom_nodes returns it.
 
-    nodes = node_sdk.list_custom_nodes(db=None, workspace_id="ws-test-001")
-    assert any(n["name"] == "test_node" for n in nodes)
+    Custom nodes live in the custom_nodes table — scaffolded code has to
+    outlive the request that produced it — so this needs a real session.
+    """
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
+    try:
+        async with factory() as session:
+            workspace_id = str(await seed_workspace(session, "node-sdk"))
+
+            result = await node_sdk.register_custom_node(
+                db=session,
+                workspace_id=workspace_id,
+                name="test_node",
+                code=valid_node_code,
+                config={"enabled": True},
+            )
+            assert result["registered"] is True
+            assert result["node_id"] is not None
+
+            nodes = await node_sdk.list_custom_nodes(
+                db=session, workspace_id=workspace_id
+            )
+            assert any(n["name"] == "test_node" for n in nodes)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_custom_node_survives_a_restart(node_sdk, valid_node_code):
+    """A registered node is still there after the process goes away."""
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
+    try:
+        async with factory() as session:
+            workspace_id = str(await seed_workspace(session, "node-sdk-durable"))
+            await node_sdk.register_custom_node(
+                db=session,
+                workspace_id=workspace_id,
+                name="durable_node",
+                code=valid_node_code,
+            )
+    finally:
+        await engine.dispose()
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            nodes = await node_sdk.list_custom_nodes(
+                db=session, workspace_id=workspace_id
+            )
+            assert [n["name"] for n in nodes] == ["durable_node"]
+    finally:
+        await restarted_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
