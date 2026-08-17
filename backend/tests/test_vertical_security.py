@@ -7,7 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.services.verticals.installer import VerticalInstaller
+from app.services.verticals import installer
 from app.services.verticals.report_templates import ReportTemplateService
 from app.services.verticals.security import SecurityVerticalPack
 
@@ -41,9 +41,9 @@ def mock_db():
 @pytest.fixture(autouse=True)
 def _clear_installed():
     """Reset installer state between tests."""
-    VerticalInstaller._installed.clear()
+    installer.reset()
     yield
-    VerticalInstaller._installed.clear()
+    installer.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -125,52 +125,56 @@ class TestModelConfigs:
 # ---------------------------------------------------------------------------
 
 class TestInstaller:
-    @pytest.mark.anyio
-    async def test_install_pack_creates_resources(self, mock_db, workspace_id):
-        """Installing the security pack should report created resources."""
-        result = await VerticalInstaller.install_pack(mock_db, workspace_id, "security")
-        assert result["installed"] is True
-        assert result["pipelines_created"] == 5
-        assert result["rules_created"] == 3
-        assert result["configs_applied"] >= 2
+    """Tests for app.services.verticals.installer.
 
-    @pytest.mark.anyio
-    async def test_uninstall_removes(self, mock_db, workspace_id):
-        """Uninstalling should remove the pack from the workspace."""
-        await VerticalInstaller.install_pack(mock_db, workspace_id, "security")
-        result = await VerticalInstaller.uninstall_pack(mock_db, workspace_id, "security")
-        assert result["removed"] is True
-        installed = await VerticalInstaller.list_installed_packs(mock_db, workspace_id)
-        assert len(installed) == 0
+    These previously targeted a `VerticalInstaller` class with async
+    (db, workspace_id, slug) methods. No such class exists — the installer is a
+    module of synchronous functions over an in-memory registry — so the import
+    alone raised ImportError and aborted collection for the entire test suite.
+    Rewritten against the API that is actually implemented.
+    """
 
-    @pytest.mark.anyio
-    async def test_uninstall_nonexistent_returns_false(self, mock_db, workspace_id):
-        """Uninstalling a pack that is not installed should return removed=False."""
-        result = await VerticalInstaller.uninstall_pack(mock_db, workspace_id, "security")
-        assert result["removed"] is False
+    def test_install_pack_reports_provisioned_resources(self):
+        result = installer.install_pack("security")
+        assert result["slug"] == "security"
+        assert result["pipelines_installed"] > 0
+        assert result["alert_presets_installed"] > 0
+        assert installer.is_installed("security")
 
-    @pytest.mark.anyio
-    async def test_list_available_packs(self):
-        """Should list all registered packs."""
-        packs = await VerticalInstaller.list_available_packs()
+    def test_uninstall_removes(self):
+        installer.install_pack("security")
+        assert installer.uninstall_pack("security") is True
+        assert installer.is_installed("security") is False
+        assert installer.get_installed_packs() == {}
+
+    def test_uninstall_nonexistent_returns_false(self):
+        assert installer.uninstall_pack("security") is False
+
+    def test_list_available_packs(self):
+        packs = installer.list_available_packs()
         assert len(packs) >= 1
-        names = {p["pack_name"] for p in packs}
-        assert "security" in names
+        slugs = {p["slug"] for p in packs}
+        assert "security" in slugs
 
-    @pytest.mark.anyio
-    async def test_get_pack_info(self):
-        """get_pack_info should return full details."""
-        info = await VerticalInstaller.get_pack_info("security")
-        assert "info" in info
-        assert "pipelines" in info
-        assert "alert_presets" in info
-        assert "dashboard" in info
+    def test_list_available_packs_reflects_install_state(self):
+        assert all(not p["installed"] for p in installer.list_available_packs())
+        installer.install_pack("security")
+        installed = {p["slug"]: p["installed"] for p in installer.list_available_packs()}
+        assert installed["security"] is True
 
-    @pytest.mark.anyio
-    async def test_install_unknown_pack_raises(self, mock_db, workspace_id):
-        """Installing an unknown pack should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown vertical pack"):
-            await VerticalInstaller.install_pack(mock_db, workspace_id, "nonexistent")
+    def test_get_pack_returns_instance_with_metadata(self):
+        pack = installer.get_pack("security")
+        assert pack is not None
+        info = pack.info()
+        assert info["slug"] == "security"
+        assert "name" in info
+
+    def test_get_unknown_pack_returns_none(self):
+        assert installer.get_pack("nonexistent") is None
+
+    def test_install_unknown_pack_raises(self):
+        with pytest.raises(KeyError, match="Unknown vertical pack"):
+            installer.install_pack("nonexistent")
 
 
 # ---------------------------------------------------------------------------
