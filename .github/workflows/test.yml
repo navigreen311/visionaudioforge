@@ -74,7 +74,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # 22 LTS: jsdom 30 pulls an undici that needs webidl APIs missing from
+          # the Node 20 line, so vitest workers fail to start there.
+          node-version: "22"
           # Caches the npm download cache and keys off the lockfile, which is
           # what makes `npm ci` fast; node_modules itself is not cacheable
           # across runs because npm ci deletes it.
