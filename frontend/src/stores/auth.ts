@@ -30,6 +30,15 @@ interface AuthState {
   initialize: () => Promise<void>;
 }
 
+/**
+ * De-duplicates `initialize()`.
+ *
+ * Two components call it on mount — the global AuthGuard in
+ * `components/providers.tsx` and the dashboard layout — and without this they
+ * would each fire their own `/api/auth/me` on every page load.
+ */
+let inflightInitialize: Promise<void> | null = null;
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   token: readAccessToken(),
@@ -96,43 +105,52 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ isLoading: false });
       return;
     }
-    const token = readAccessToken();
-    if (!token) {
-      // No token means no session — and no workspace. Drop any stale
-      // workspace left behind by a previous user on this machine.
-      clearSession();
-      set({
-        user: null,
-        token: null,
-        workspaceId: null,
-        isAuthenticated: false,
-        isLoading: false,
-      });
-      return;
-    }
-    try {
-      const res = await api.get("/api/auth/me");
-      // Re-stamp the session: /api/auth/me is the authority on which workspace
-      // this token belongs to, and it also refreshes the cookie the edge
-      // middleware reads.
-      persistSession(token, res.data?.workspace_id ?? null);
-      persistWorkspaceId(res.data?.workspace_id ?? null);
-      set({
-        user: res.data,
-        token,
-        workspaceId: readWorkspaceId(),
-        isAuthenticated: true,
-        isLoading: false,
-      });
-    } catch {
-      clearSession();
-      set({
-        user: null,
-        token: null,
-        workspaceId: null,
-        isAuthenticated: false,
-        isLoading: false,
-      });
-    }
+    if (inflightInitialize) return inflightInitialize;
+
+    inflightInitialize = resolveSession(set).finally(() => {
+      inflightInitialize = null;
+    });
+    return inflightInitialize;
   },
 }));
+
+type SetState = (partial: Partial<AuthState>) => void;
+
+function signedOut(set: SetState): void {
+  clearSession();
+  set({
+    user: null,
+    token: null,
+    workspaceId: null,
+    isAuthenticated: false,
+    isLoading: false,
+  });
+}
+
+async function resolveSession(set: SetState): Promise<void> {
+  const token = readAccessToken();
+  if (!token) {
+    // No token means no session — and no workspace. Drop any stale workspace
+    // left behind by a previous user on this machine.
+    signedOut(set);
+    return;
+  }
+
+  try {
+    const res = await api.get("/api/auth/me");
+    // Re-stamp the session: /api/auth/me is the authority on which workspace
+    // this token belongs to, and it also refreshes the cookie the edge
+    // middleware reads.
+    persistSession(token, res.data?.workspace_id ?? null);
+    persistWorkspaceId(res.data?.workspace_id ?? null);
+    set({
+      user: res.data,
+      token,
+      workspaceId: readWorkspaceId(),
+      isAuthenticated: true,
+      isLoading: false,
+    });
+  } catch {
+    signedOut(set);
+  }
+}
