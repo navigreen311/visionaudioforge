@@ -2,6 +2,8 @@
 
 import base64
 import json
+import os
+import uuid
 
 import numpy as np
 import pytest
@@ -179,3 +181,68 @@ class TestWebSocketRoute:
             assert data["frame_id"] == 1
             assert "analysis" in data
             assert data["analysis"]["resolution"] == [50, 50]
+
+
+# ---------------------------------------------------------------
+# Shared capture sessions
+#
+# The point of moving off a module-level dict: a session opened by one worker
+# has to be visible to the next request even if it lands on another process.
+# ---------------------------------------------------------------
+
+TEST_REDIS_URL = os.getenv("TEST_REDIS_URL", "redis://localhost:6379/15")
+
+
+def _redis_manager():
+    """A manager backed by real Redis, or skip if none is reachable."""
+    manager = CaptureSessionManager(redis_url=TEST_REDIS_URL)
+    if not manager.is_shared:
+        pytest.skip(f"no Redis reachable at {TEST_REDIS_URL}")
+    return manager
+
+
+class TestSharedCaptureSessions:
+    def test_falls_back_when_redis_is_absent(self):
+        """Without Redis the manager still works, just not shared."""
+        manager = CaptureSessionManager(redis_url="redis://127.0.0.1:1/0")
+        assert manager.is_shared is False
+
+        created = manager.create_session("ws-fallback", "camera")
+        assert manager.get_session(created["session_id"]) is not None
+
+    def test_session_is_visible_to_another_worker(self):
+        """A second manager — standing in for another process — sees it."""
+        worker_one = _redis_manager()
+        workspace = f"ws-{uuid.uuid4().hex[:8]}"
+
+        created = worker_one.create_session(workspace, "camera")
+        session_id = created["session_id"]
+
+        worker_two = _redis_manager()
+        assert worker_two.get_session(session_id) is not None
+        assert [
+            s["session_id"] for s in worker_two.list_active_sessions(workspace)
+        ] == [session_id]
+
+    def test_frame_counts_accumulate_across_workers(self):
+        """Frames counted on one worker are seen by another."""
+        worker_one = _redis_manager()
+        workspace = f"ws-{uuid.uuid4().hex[:8]}"
+        session_id = worker_one.create_session(workspace, "screen")["session_id"]
+
+        worker_one.increment_frames(session_id)
+        worker_two = _redis_manager()
+        worker_two.increment_frames(session_id)
+
+        ended = _redis_manager().end_session(session_id)
+        assert ended["frames_processed"] == 2
+
+    def test_ending_on_one_worker_is_seen_by_another(self):
+        worker_one = _redis_manager()
+        workspace = f"ws-{uuid.uuid4().hex[:8]}"
+        session_id = worker_one.create_session(workspace, "camera")["session_id"]
+
+        worker_one.end_session(session_id)
+
+        worker_two = _redis_manager()
+        assert worker_two.list_active_sessions(workspace) == []

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,7 +14,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
-from app.models.pipeline import Pipeline, PipelineRun
+from app.models.pipeline import Pipeline, PipelineRun, PipelineRunStatus
 from app.schemas.common import PaginatedResponse
 from app.schemas.pipeline import (
     NodeTypeInfo,
@@ -348,20 +348,41 @@ async def run_pipeline(
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
-    run = PipelineRun(pipeline_id=pipeline_id, status="pending")
+    run = PipelineRun(pipeline_id=pipeline_id, status=PipelineRunStatus.pending)
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
-    # Dispatch Celery task (best-effort; won't fail the request if broker is down)
+    await _queue_run(db, run, pipeline)
+    return {"run_id": run.id, "status": run.status.value}
+
+
+async def _queue_run(
+    db: AsyncSession, run: PipelineRun, pipeline: Pipeline
+) -> None:
+    """Hand a created run to Celery, recording the failure if that is not possible.
+
+    A run nobody queued must not sit at "pending" indefinitely: the console
+    would poll it forever with nothing to say why it never started.
+    """
+    from app.tasks.dispatch import DispatchError, dispatch
+    from app.tasks.pipeline import run_pipeline_task
+
     try:
-        from app.tasks.pipeline import run_pipeline_task
-
-        run_pipeline_task.delay(str(pipeline_id), pipeline.definition)
-    except Exception:
-        pass  # Task dispatch is fire-and-forget in dev mode
-
-    return {"run_id": run.id, "status": "pending"}
+        dispatch(
+            run_pipeline_task,
+            str(run.id),
+            str(pipeline.id),
+            pipeline.definition,
+        )
+    except DispatchError as exc:
+        run.status = PipelineRunStatus.failed
+        run.finished_at = datetime.now(timezone.utc)
+        run.results = {
+            "errors": [f"Could not queue the run: {exc}"],
+            "status": "failed",
+        }
+        await db.commit()
 
 
 # --------------------------------------------------------------------------
@@ -496,19 +517,17 @@ async def start_pipeline_run(
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
-    run = PipelineRun(pipeline_id=pid, status="pending")
+    run = PipelineRun(pipeline_id=pid, status=PipelineRunStatus.pending)
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
-    # Fire-and-forget task dispatch
-    try:
-        from app.tasks.pipeline import run_pipeline_task
-        run_pipeline_task.delay(str(pid), pipeline.definition)
-    except Exception:
-        pass
-
-    return {"run_id": str(run.id), "status": "pending", "rerun_of": body.rerun_of}
+    await _queue_run(db, run, pipeline)
+    return {
+        "run_id": str(run.id),
+        "status": run.status.value,
+        "rerun_of": body.rerun_of,
+    }
 
 
 # --------------------------------------------------------------------------
