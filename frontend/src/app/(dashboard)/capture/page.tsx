@@ -29,6 +29,7 @@ import LiveResultsSidebar, {
   type AnalysisResults,
 } from "@/components/capture/LiveResultsSidebar";
 import CopilotInline from "@/components/capture/CopilotInline";
+import { authenticatedWsUrl } from "@/lib/session";
 
 interface AnalysisResult {
   frame_id: number;
@@ -123,7 +124,13 @@ export default function CapturePage() {
     const sessionId = crypto.randomUUID();
     const wsUrl =
       process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
-    const ws = new WebSocket(`${wsUrl}/ws/live/stream/${sessionId}`);
+    // The handshake is authenticated like every other request; a browser
+    // WebSocket cannot send an Authorization header, so the token rides in the
+    // query string. Read here rather than at module scope so it is the token
+    // that is current when the socket actually opens.
+    const ws = new WebSocket(
+      authenticatedWsUrl(`${wsUrl}/ws/live/stream/${sessionId}`),
+    );
 
     setConnectionStatus("connecting");
 

@@ -468,3 +468,31 @@ def test_websocket_token_is_read_from_the_query_string():
     # ...and never for plain HTTP: URLs land in access logs and Referer.
     http_scope = {"type": "http", "query_string": b"token=abc.def.ghi"}
     assert _websocket_query_token(http_scope) is None
+
+
+@pytest.mark.anyio
+async def test_websocket_handshake_with_a_query_token_is_accepted():
+    """The console cannot send a header, so ?token= has to actually work."""
+    from starlette.testclient import TestClient
+
+    token = token_for(WORKSPACE_A)
+    with TestClient(app) as tc:
+        with tc.websocket_connect(
+            f"/ws/live/stream/{uuid.uuid4()}?token={token}"
+        ) as ws:
+            # Reaching this line means the handshake was accepted rather than
+            # closed with 1008 — the middleware let an authenticated caller in.
+            assert ws is not None
+
+
+@pytest.mark.anyio
+async def test_websocket_handshake_with_a_bad_query_token_is_refused():
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(app) as tc:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with tc.websocket_connect("/ws/agents/stream?token=not-a-jwt"):
+                pass
+
+    assert excinfo.value.code == 1008

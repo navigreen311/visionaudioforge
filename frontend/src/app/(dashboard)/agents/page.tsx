@@ -73,9 +73,14 @@ interface HistoryMessage {
   tool_use?: Record<string, unknown> | null;
 }
 
-const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL?.replace(/^http/, "ws") + "/ws/agents/stream" ||
-  "ws://localhost:8000/ws/agents/stream";
+// Base URL only — CopilotChat appends the session token at connect time, since
+// this is module scope and there is no session to read here.
+//
+// The `||` fallback used to be dead code: `+` binds tighter than `||`, so with
+// NEXT_PUBLIC_WS_URL unset this evaluated to the string
+// "undefined/ws/agents/stream", which is truthy.
+const WS_HOST = process.env.NEXT_PUBLIC_WS_URL?.replace(/^http/, "ws") ?? "ws://localhost:8000";
+const WS_URL = `${WS_HOST}/ws/agents/stream`;
 
 export default function AgentsPage() {
   const searchParams = useSearchParams();
