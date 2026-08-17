@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import MessageBubble from "./MessageBubble";
+import { authenticatedWsUrl } from "@/lib/session";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -20,7 +21,10 @@ interface Message {
 interface CopilotChatProps {
   agentId: string;
   skillPack: string;
-  /** WebSocket URL — used for WS-based streaming (legacy). */
+  /**
+   * WebSocket base URL — used for WS-based streaming (legacy).
+   * Pass it without credentials; the session token is appended on connect.
+   */
   wsUrl: string;
   /** HTTP endpoint for SSE streaming (preferred). Defaults to /api/agents/chat/stream */
   httpStreamUrl?: string;
@@ -287,7 +291,11 @@ export default function CopilotChat({
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return wsRef.current;
 
-    const ws = new WebSocket(wsUrl);
+    // `wsUrl` is a plain base URL — the token is appended here, at connect
+    // time, because a browser WebSocket cannot send an Authorization header
+    // and because the caller building `wsUrl` may be doing it at module scope
+    // where there is no session to read.
+    const ws = new WebSocket(authenticatedWsUrl(wsUrl));
     wsRef.current = ws;
 
     ws.onmessage = (event) => {

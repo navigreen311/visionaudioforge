@@ -37,6 +37,21 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRATION_MINUTES: int = 60
 
+    # Auth enforcement (WS-A / trust boundary)
+    # AUTH_REQUIRED gates the app-level AuthenticationMiddleware. It defaults to
+    # True so a request without a valid identity is rejected everywhere; opting
+    # out must be a deliberate act (env var / dependency override), never a
+    # side effect of forgetting a decorator on route #58.
+    AUTH_REQUIRED: bool = True
+    # When True the global exception handler echoes the exception text and
+    # traceback to the caller. Defaults to False: 500 bodies leak stack frames,
+    # SQL, and file paths. Independent of DEBUG on purpose.
+    DEBUG_ERRORS: bool = False
+    # Persist an audit_logs row per request. On by default — the README makes a
+    # compliance claim about it. Test runs turn it off so they do not queue a
+    # database write per assertion.
+    AUDIT_ENABLED: bool = True
+
     # MinIO
     MINIO_ENDPOINT: str = "minio:9000"
     MINIO_ACCESS_KEY: str = "minioaccess"

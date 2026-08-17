@@ -6,6 +6,25 @@ import Link from "next/link";
 import Button from "@/components/ui/Button";
 import { useAuthStore } from "@/stores/auth";
 
+/**
+ * Where to land after signing in.
+ *
+ * `src/middleware.ts` puts the page the visitor originally asked for in a
+ * `next` query parameter. Only same-origin *paths* are honoured — an absolute
+ * URL here would turn the login form into an open redirect, which is a
+ * ready-made phishing hop.
+ *
+ * Read from `location` rather than `useSearchParams` so this page does not
+ * need a Suspense boundary at build time.
+ */
+function resolveDestination(): string {
+  if (typeof window === "undefined") return "/";
+  const next = new URLSearchParams(window.location.search).get("next");
+  if (!next) return "/";
+  if (!next.startsWith("/") || next.startsWith("//")) return "/";
+  return next;
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const login = useAuthStore((s) => s.login);
@@ -20,11 +39,20 @@ export default function LoginPage() {
     setLoading(true);
     try {
       await login(email, password);
-      router.push("/");
+      router.replace(resolveDestination());
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : "Login failed. Please try again.";
-      setError(message);
+      // Never surface the server's message verbatim: on a bad password the
+      // backend says "Invalid email or password", which is right, but an
+      // unexpected 500 would otherwise put backend detail on the login screen.
+      const status =
+        typeof err === "object" && err !== null
+          ? (err as { response?: { status?: number } }).response?.status
+          : undefined;
+      setError(
+        status === 401
+          ? "Invalid email or password."
+          : "Login failed. Please try again.",
+      );
     } finally {
       setLoading(false);
     }

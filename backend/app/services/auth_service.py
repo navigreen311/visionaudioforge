@@ -1,6 +1,7 @@
 """Authentication service: register, login, refresh, user lookups."""
 
 import re
+from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -23,6 +24,39 @@ def _slugify(name: str) -> str:
     slug = name.lower().strip()
     slug = re.sub(r"[^a-z0-9]+", "-", slug)
     return slug.strip("-")
+
+
+def access_token_claims(user: User) -> dict[str, Any]:
+    """Claims for an access token: who, and which tenant.
+
+    Embedding ``workspace_id`` makes tenant resolution I/O-free — the auth
+    middleware reads it straight off the signed token instead of querying the
+    users table on every request. See ``docs/auth.md``.
+
+    Omitted rather than sent as null when the user has no workspace, so
+    ``get_workspace_id`` falls through to its lookup and then fails closed,
+    instead of a "null" string reaching a UUID parser.
+
+    The claim is a snapshot: reassigning a user to a different workspace takes
+    effect on their next access token, i.e. within the 30-minute expiry. That
+    is the usual JWT trade — no read on the hot path, bounded staleness. If a
+    reassignment ever needs to be immediate, revoke the session rather than
+    reintroducing a per-request lookup.
+    """
+    claims: dict[str, Any] = {"sub": str(user.id)}
+    if user.workspace_id is not None:
+        claims["workspace_id"] = str(user.workspace_id)
+    return claims
+
+
+def refresh_token_claims(user: User) -> dict[str, Any]:
+    """Claims for a refresh token: identity only.
+
+    Deliberately *not* tenant-scoped. A refresh token lives for 7 days, and
+    baking a workspace into it would let a stale tenant survive a week. The
+    workspace is re-read from the user row each time an access token is minted.
+    """
+    return {"sub": str(user.id)}
 
 
 class AuthService:
@@ -73,10 +107,9 @@ class AuthService:
         await self.db.commit()
         await self.db.refresh(user)
 
-        token_data = {"sub": str(user.id)}
         return {
-            "access_token": create_access_token(token_data),
-            "refresh_token": create_refresh_token(token_data),
+            "access_token": create_access_token(access_token_claims(user)),
+            "refresh_token": create_refresh_token(refresh_token_claims(user)),
             "user": user,
         }
 
@@ -89,10 +122,9 @@ class AuthService:
                 detail="Invalid email or password",
             )
 
-        token_data = {"sub": str(user.id)}
         return {
-            "access_token": create_access_token(token_data),
-            "refresh_token": create_refresh_token(token_data),
+            "access_token": create_access_token(access_token_claims(user)),
+            "refresh_token": create_refresh_token(refresh_token_claims(user)),
             "user": user,
         }
 
@@ -112,6 +144,8 @@ class AuthService:
                 detail="User not found",
             )
 
+        # Re-read the workspace from the user row rather than trusting the
+        # refresh token: this is the point at which a reassignment lands.
         return {
-            "access_token": create_access_token({"sub": str(user.id)}),
+            "access_token": create_access_token(access_token_claims(user)),
         }
