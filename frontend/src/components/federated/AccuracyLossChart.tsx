@@ -99,7 +99,7 @@ export default function AccuracyLossChart({
           x,
           y: scaleY(r.accuracy, accMin, accRange),
           value: r.accuracy,
-          round: r.round_number,
+          round: r.round,
         });
       }
       if (r.loss !== null) {
@@ -107,7 +107,7 @@ export default function AccuracyLossChart({
           x,
           y: scaleY(r.loss, lossMin, lossRange),
           value: r.loss,
-          round: r.round_number,
+          round: r.round,
         });
       }
     }
@@ -247,7 +247,7 @@ export default function AccuracyLossChart({
             key={`acc-dot-${i}`}
             cx={p.x}
             cy={p.y}
-            r={hoveredIdx === rounds.findIndex((r) => r.round_number === p.round) ? 5 : 3}
+            r={hoveredIdx === rounds.findIndex((r) => r.round === p.round) ? 5 : 3}
             fill={ACC_COLOR}
             className="transition-all duration-150"
           />
@@ -255,7 +255,7 @@ export default function AccuracyLossChart({
 
         {/* Loss dots (squares via rect) */}
         {lossPoints.map((p, i) => {
-          const size = hoveredIdx === rounds.findIndex((r) => r.round_number === p.round) ? 10 : 6;
+          const size = hoveredIdx === rounds.findIndex((r) => r.round === p.round) ? 10 : 6;
           return (
             <rect
               key={`loss-dot-${i}`}
@@ -281,14 +281,14 @@ export default function AccuracyLossChart({
             const x = scaleX(idx, count);
             return (
               <text
-                key={`x-${r.round_number}`}
+                key={`x-${r.round}`}
                 x={x}
                 y={SVG_HEIGHT - 6}
                 textAnchor="middle"
                 fill="#9CA3AF"
                 className="text-[9px]"
               >
-                R{r.round_number}
+                R{r.round}
               </text>
             );
           })}
@@ -336,7 +336,7 @@ export default function AccuracyLossChart({
             transform: hoveredIdx > count / 2 ? "translateX(-100%)" : "translateX(0)",
           }}
         >
-          <div className="font-semibold mb-1">Round {hovered.round_number}</div>
+          <div className="font-semibold mb-1">Round {hovered.round}</div>
           {hovered.accuracy !== null && (
             <div className="flex items-center gap-1.5">
               <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: ACC_COLOR }} />

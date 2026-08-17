@@ -27,6 +27,10 @@ interface CaseListProps {
   cases: CaseData[];
   selectedId: string | null;
   onSelect: (caseItem: CaseData) => void;
+  /** When provided, renders a "New Case" action in the header. */
+  onNewCase?: () => void;
+  /** Shows a loading placeholder in place of the list. */
+  loading?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +87,13 @@ function initials(name: string | undefined): string {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function CaseList({ cases, selectedId, onSelect }: CaseListProps) {
+export default function CaseList({
+  cases,
+  selectedId,
+  onSelect,
+  onNewCase,
+  loading = false,
+}: CaseListProps) {
   const [search, setSearch] = useState("");
 
   const filtered = cases.filter((c) =>
@@ -94,7 +104,18 @@ export default function CaseList({ cases, selectedId, onSelect }: CaseListProps)
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="p-4 border-b border-gray-200">
-        <h2 className="text-lg font-semibold text-gray-900 mb-3">Cases</h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-900">Cases</h2>
+          {onNewCase && (
+            <button
+              type="button"
+              onClick={onNewCase}
+              className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700 transition-colors"
+            >
+              New Case
+            </button>
+          )}
+        </div>
         <input
           type="text"
           placeholder="Search cases..."
@@ -106,7 +127,11 @@ export default function CaseList({ cases, selectedId, onSelect }: CaseListProps)
 
       {/* List */}
       <div className="flex-1 overflow-y-auto">
-        {filtered.length === 0 ? (
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+            <p className="text-sm text-gray-500">Loading cases...</p>
+          </div>
+        ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 text-center px-4">
             <p className="text-sm text-gray-500">No cases found</p>
             <p className="text-xs text-gray-400 mt-1">Create a new case to get started</p>

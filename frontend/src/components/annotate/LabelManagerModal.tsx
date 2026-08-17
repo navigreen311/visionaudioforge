@@ -89,8 +89,8 @@ export default function LabelManagerModal({
   onLabelsChange,
 }: LabelManagerModalProps) {
   const [newName, setNewName] = useState('');
-  const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
-  const [hexInput, setHexInput] = useState(PRESET_COLORS[0]);
+  const [newColor, setNewColor] = useState<string>(PRESET_COLORS[0]);
+  const [hexInput, setHexInput] = useState<string>(PRESET_COLORS[0]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState('');

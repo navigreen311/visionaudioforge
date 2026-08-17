@@ -73,7 +73,7 @@ export default function PrivacyBudgetChart({ rounds, maxEpsilon }: PrivacyBudget
     let cumulative = 0;
     const cumulativeValues: number[] = [];
     for (const r of rounds) {
-      cumulative += r.privacy_epsilon_spent;
+      cumulative += r.epsilonSpent;
       cumulativeValues.push(cumulative);
     }
 
@@ -182,7 +182,7 @@ export default function PrivacyBudgetChart({ rounds, maxEpsilon }: PrivacyBudget
         {rounds.length > 0 && (
           <>
             <text x={scaleX(0, count)} y={SVG_HEIGHT - 2} textAnchor="middle" fill="#9CA3AF" className="text-[8px]">
-              R{rounds[0].round_number}
+              R{rounds[0].round}
             </text>
             {rounds.length > 1 && (
               <text
@@ -192,7 +192,7 @@ export default function PrivacyBudgetChart({ rounds, maxEpsilon }: PrivacyBudget
                 fill="#9CA3AF"
                 className="text-[8px]"
               >
-                R{rounds[rounds.length - 1].round_number}
+                R{rounds[rounds.length - 1].round}
               </text>
             )}
           </>

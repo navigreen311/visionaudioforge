@@ -81,7 +81,7 @@ export default function AssetCard({
   onPreview,
   onDelete,
 }: AssetCardProps) {
-  const indexStatus = (asset as Record<string, unknown>).index_status as string | undefined;
+  const indexStatus = asset.index_status;
 
   return (
     <div

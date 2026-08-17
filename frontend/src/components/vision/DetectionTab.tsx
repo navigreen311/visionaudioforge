@@ -37,8 +37,21 @@ interface Detection {
   bbox: [number, number, number, number]; // [x, y, w, h]
 }
 
+/**
+ * A detection exactly as /api/vision/detect returns it: the YOLO detector emits
+ * `class_name` with an xyxy `bbox` (backend/app/services/vision/detection.py).
+ * `label` is not sent today — the normaliser below still prefers it if present.
+ */
+interface RawDetection {
+  bbox?: number[];
+  class_id?: number;
+  class_name?: string;
+  confidence: number;
+  label?: string;
+}
+
 interface DetectResponse {
-  detections: Detection[];
+  detections: RawDetection[];
   count: number;
   image_b64?: string;
   processing_time_ms?: number;
@@ -151,10 +164,9 @@ export default function DetectionTab({ imageSrc: externalSrc, imageFile: externa
       );
 
       // Normalize: backend returns class_name + xyxy bbox; convert to label + [x,y,w,h]
-      const normalized: Detection[] = (data.detections ?? []).map((d) => {
-        const raw = d as Record<string, unknown>;
-        const label = (raw["label"] as string) ?? (raw["class_name"] as string) ?? "unknown";
-        const rawBbox = (raw["bbox"] as number[]) ?? [0, 0, 0, 0];
+      const normalized: Detection[] = (data.detections ?? []).map((raw) => {
+        const label = raw.label ?? raw.class_name ?? "unknown";
+        const rawBbox = raw.bbox ?? [0, 0, 0, 0];
         // If bbox looks like xyxy (x2 > x1 and y2 > y1 and values are large), convert to xywh
         let bbox: [number, number, number, number];
         if (rawBbox.length === 4 && rawBbox[2] > rawBbox[0] && rawBbox[3] > rawBbox[1]) {
@@ -170,7 +182,7 @@ export default function DetectionTab({ imageSrc: externalSrc, imageFile: externa
         }
         return {
           label,
-          confidence: raw["confidence"] as number,
+          confidence: raw.confidence,
           bbox,
         };
       });

@@ -287,9 +287,17 @@ export interface AudioAnalysisResult {
   [key: string]: unknown;
 }
 
+/**
+ * A single augmentation step, mirroring the backend `AugmentationStep` schema
+ * (backend/app/schemas/audio.py). `type` selects the augmenter method — the
+ * server dispatches on "noise" | "stretch" | "pitch" | "shift" — and `params`
+ * is forwarded to that method as keyword arguments.
+ */
 export interface AugmentationStep {
-  name: string;
-  params: Record<string, unknown>;
+  type: string;
+  /** Probability of applying this step, 0-1. Server defaults to 1.0. */
+  probability?: number;
+  params: Record<string, string | number>;
 }
 
 export interface AugmentationConfig {
@@ -758,7 +766,12 @@ export async function savePipeline(payload: {
 // ---------------------------------------------------------------------------
 
 export type AlertSeverity = "critical" | "high" | "medium" | "low";
-export type AlertStatus = "firing" | "acknowledged" | "resolved" | "dismissed";
+/**
+ * Mirrors the backend `AlertStatus` enum (backend/app/models/alert.py); the
+ * alerts API serialises these values verbatim. Note the open state is "new" —
+ * there is no "firing" status server-side.
+ */
+export type AlertStatus = "new" | "acknowledged" | "resolved" | "dismissed";
 
 export interface AlertEvidence {
   type: "image" | "video" | "none";
@@ -1192,6 +1205,12 @@ export interface Asset {
   duration?: number;
   thumbnail_url?: string;
   url?: string;
+  /**
+   * Search-index state for this asset. Optional: the assets API does not
+   * populate it yet, so the UI must treat "absent" as "unknown" rather than
+   * assuming a value.
+   */
+  index_status?: string;
   created_at: string;
   updated_at: string;
 }

@@ -114,7 +114,7 @@ interface MiniPlayerProps {
   label: string;
   src: string | null;
   highlight?: boolean;
-  audioRef?: React.RefObject<HTMLAudioElement | null>;
+  audioRef?: React.RefObject<HTMLAudioElement>;
 }
 
 function MiniPlayer({ label, src, highlight = false, audioRef: externalRef }: MiniPlayerProps) {
@@ -239,8 +239,8 @@ export default function AugmentationStudio({
   const [abMode, setAbMode] = useState(false);
   const [abSide, setAbSide] = useState<"A" | "B">("A");
   const abTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const originalAudioRef = useRef<HTMLAudioElement | null>(null);
-  const augmentedAudioRef = useRef<HTMLAudioElement | null>(null);
+  const originalAudioRef = useRef<HTMLAudioElement>(null);
+  const augmentedAudioRef = useRef<HTMLAudioElement>(null);
 
   // --- original file URL ---
   const originalUrl = useMemo(() => {

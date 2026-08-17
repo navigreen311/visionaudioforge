@@ -35,7 +35,7 @@ const severityBadge: Record<
 };
 
 const statusLabel: Record<AlertStatus, string> = {
-  firing: "Open",
+  new: "Open",
   acknowledged: "Acknowledged",
   resolved: "Resolved",
   dismissed: "Dismissed",
@@ -370,7 +370,7 @@ export default function IncidentDetailPanel({
         {/* Actions footer */}
         <div className="border-t border-gray-200 px-5 py-4 space-y-2">
           <div className="flex gap-2">
-            {incident.status === "firing" && (
+            {incident.status === "new" && (
               <button
                 onClick={handleAcknowledge}
                 disabled={actionLoading}
