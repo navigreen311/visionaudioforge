@@ -7,7 +7,6 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
-from app.services.verticals import VERTICAL_PACKS
 from app.services.verticals.installer import VerticalInstaller
 from app.services.verticals.report_templates import ReportTemplateService
 from app.services.verticals.security import SecurityVerticalPack
