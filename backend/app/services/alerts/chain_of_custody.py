@@ -1,4 +1,16 @@
-"""ChainOfCustodyService — audit trail for evidence access and integrity."""
+"""ChainOfCustodyService — audit trail for evidence access and integrity.
+
+Custody records and integrity baselines are rows, not process memory. The
+previous implementation appended to a module-level list and *tried* to mirror
+the row into audit_logs inside a bare ``except`` — so a failed write was
+swallowed, and the chain was read back from memory regardless. Both failure
+modes produce the same outcome: an evidence trail that reports a clean,
+complete history it cannot actually substantiate.
+
+Writes here are allowed to raise. A custody event that cannot be recorded must
+fail loudly, because the alternative is an access nobody can later prove
+happened.
+"""
 
 import hashlib
 import logging
@@ -7,16 +19,42 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.audit_log import AuditLog
+from app.models.evidence import AssetIntegrity, CustodyAction, CustodyEvent
+from app.models.user import User
+
 logger = logging.getLogger(__name__)
 
 # Valid custody actions
-VALID_ACTIONS = {"viewed", "downloaded", "exported", "modified", "shared", "deleted"}
+VALID_ACTIONS = {action.value for action in CustodyAction}
 
-# In-memory custody log for V1 (production would use AuditLog table)
-_custody_logs: list[dict[str, Any]] = []
+_HASH_CHUNK_BYTES = 8192
 
-# Hash cache for integrity verification
-_hash_store: dict[str, str] = {}
+
+def _as_uuid(value: Any) -> Optional[uuid.UUID]:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
+def _hash_file(file_path: str) -> str:
+    sha256 = hashlib.sha256()
+    with open(file_path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
+            sha256.update(chunk)
+    return sha256.hexdigest()
 
 
 class ChainOfCustodyService:
@@ -24,168 +62,180 @@ class ChainOfCustodyService:
 
     @staticmethod
     async def log_access(
-        db: Any,
+        db: AsyncSession,
         asset_id: str,
         user_id: str,
         action: str,
         details: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Log an access event for a custody-tracked asset.
-
-        Args:
-            db: Database session.
-            asset_id: The asset being accessed.
-            user_id: Who is accessing it.
-            action: One of 'viewed', 'downloaded', 'exported', 'modified',
-                    'shared', 'deleted'.
-            details: Optional free-text details.
-
-        Returns:
-            The created audit log record dict.
+        """Record an access event against a custody-tracked asset.
 
         Raises:
-            ValueError: If action is not in the valid set.
+            ValueError: If ``action`` is not a recognised custody action.
         """
         if action not in VALID_ACTIONS:
             raise ValueError(
-                f"Invalid custody action '{action}'. Must be one of: {', '.join(sorted(VALID_ACTIONS))}"
+                f"Invalid custody action '{action}'. "
+                f"Must be one of: {', '.join(sorted(VALID_ACTIONS))}"
             )
 
-        record = {
-            "id": str(uuid.uuid4()),
-            "asset_id": asset_id,
-            "user_id": user_id,
-            "action": action,
-            "details": details,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        workspace = _as_uuid(workspace_id)
+        now = datetime.now(timezone.utc)
 
-        _custody_logs.append(record)
+        # The actor is always recorded as text. user_id is only set when it
+        # resolves to a real user, so an unknown or deleted account cannot
+        # make the custody write fail — losing the record would be worse than
+        # losing the foreign key.
+        user_uuid = await ChainOfCustodyService._known_user(db, user_id)
 
-        # Also attempt to write to DB AuditLog table
-        try:
-            from app.models.audit_log import AuditLog
+        event = CustodyEvent(
+            id=uuid.uuid4(),
+            workspace_id=workspace,
+            asset_id=str(asset_id),
+            user_id=user_uuid,
+            actor=str(user_id) if user_id else None,
+            action=CustodyAction(action),
+            details=details,
+            timestamp=now,
+        )
+        db.add(event)
 
-            log_entry = AuditLog(
-                user_id=uuid.UUID(user_id) if user_id else None,
-                action=f"custody.{action}",
-                resource=f"asset:{asset_id}",
-                payload={"details": details, "asset_id": asset_id},
-                workspace_id=uuid.UUID("00000000-0000-0000-0000-000000000001"),
+        # The workspace-wide audit log gets the same event. It is a mirror for
+        # operators, not the source of truth, so it is only written when the
+        # workspace is known (audit_logs.workspace_id is NOT NULL).
+        if workspace is not None:
+            db.add(
+                AuditLog(
+                    id=uuid.uuid4(),
+                    user_id=user_uuid,
+                    action=f"custody.{action}",
+                    resource=f"asset:{asset_id}",
+                    payload={"details": details, "asset_id": str(asset_id)},
+                    workspace_id=workspace,
+                )
             )
-            db.add(log_entry)
-            await db.commit()
-        except Exception:
-            logger.debug("Could not persist custody log to DB, using in-memory store")
+
+        await db.commit()
 
         logger.info(
-            "Custody log: user=%s action=%s asset=%s",
-            user_id, action, asset_id,
+            "Custody log: user=%s action=%s asset=%s", user_id, action, asset_id
         )
-        return record
+        return {
+            "id": str(event.id),
+            "asset_id": event.asset_id,
+            "user_id": str(user_id) if user_id else None,
+            "action": action,
+            "details": details,
+            "timestamp": now.isoformat(),
+        }
+
+    @staticmethod
+    async def _known_user(db: AsyncSession, user_id: Any) -> Optional[uuid.UUID]:
+        """Return the user id only if that user actually exists."""
+        candidate = _as_uuid(user_id)
+        if candidate is None:
+            return None
+
+        result = await db.execute(select(User.id).where(User.id == candidate))
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def get_custody_chain(
-        db: Any,
+        db: AsyncSession,
         asset_id: str,
     ) -> list[dict[str, Any]]:
-        """Get the full chain of custody for an asset, ordered chronologically.
-
-        Returns:
-            List of custody records with timestamp, user, action, details.
-        """
-        chain = [
+        """Return an asset's full chain of custody, oldest first."""
+        result = await db.execute(
+            select(CustodyEvent)
+            .where(CustodyEvent.asset_id == str(asset_id))
+            .order_by(CustodyEvent.timestamp, CustodyEvent.id)
+        )
+        return [
             {
-                "timestamp": log["timestamp"],
-                "user": log["user_id"],
-                "action": log["action"],
-                "details": log.get("details"),
+                "timestamp": _iso(event.timestamp),
+                "user": event.actor or (str(event.user_id) if event.user_id else None),
+                "action": event.action.value,
+                "details": event.details,
             }
-            for log in _custody_logs
-            if log["asset_id"] == asset_id
+            for event in result.scalars().all()
         ]
-        # Sort chronologically
-        chain.sort(key=lambda x: x["timestamp"])
-        return chain
 
     @staticmethod
     async def verify_integrity(
-        db: Any,
+        db: AsyncSession,
         asset_id: str,
         original_hash: Optional[str] = None,
         file_path: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Verify integrity of an asset by computing and comparing SHA-256 hash.
+        """Compare an asset's current SHA-256 against its recorded baseline.
 
-        Args:
-            db: Database session.
-            asset_id: The asset to verify.
-            original_hash: Known-good hash to compare against.
-            file_path: Path to the asset file on disk.
-
-        Returns:
-            Dict with intact (bool), hash (str), note (str).
+        The first successful hash for an asset becomes its baseline; every
+        later check compares against that stored row.
         """
         current_hash: Optional[str] = None
 
-        # Compute hash from file if path provided
-        if file_path and os.path.exists(file_path):
-            sha256 = hashlib.sha256()
-            with open(file_path, "rb") as f:
-                for chunk in iter(lambda: f.read(8192), b""):
-                    sha256.update(chunk)
-            current_hash = sha256.hexdigest()
-        elif file_path:
-            return {
-                "intact": False,
-                "hash": None,
-                "note": f"File not found at {file_path}",
-            }
+        if file_path:
+            if not os.path.exists(file_path):
+                return {
+                    "intact": False,
+                    "hash": None,
+                    "note": f"File not found at {file_path}",
+                }
+            current_hash = _hash_file(file_path)
 
-        # Use stored hash if no file
-        stored_hash = _hash_store.get(asset_id)
+        stored = await ChainOfCustodyService._get_baseline(db, asset_id)
+        stored_hash = stored.sha256 if stored else None
 
         if original_hash and current_hash:
             intact = current_hash == original_hash
-            note = "Hash matches original" if intact else "Hash mismatch — file may have been modified"
+            note = (
+                "Hash matches original"
+                if intact
+                else "Hash mismatch — file may have been modified"
+            )
         elif stored_hash and current_hash:
             intact = current_hash == stored_hash
-            note = "Hash matches stored record" if intact else "Hash mismatch — file may have been modified"
+            note = (
+                "Hash matches stored record"
+                if intact
+                else "Hash mismatch — file may have been modified"
+            )
         elif current_hash:
-            # First time — store the hash
-            _hash_store[asset_id] = current_hash
+            await ChainOfCustodyService.store_hash(
+                db, asset_id, current_hash, workspace_id=workspace_id
+            )
             intact = True
             note = "Initial hash recorded"
         else:
             intact = True
             note = "No file path provided; integrity check skipped"
 
-        return {
-            "intact": intact,
-            "hash": current_hash,
-            "note": note,
-        }
+        return {"intact": intact, "hash": current_hash, "note": note}
+
+    @staticmethod
+    async def _get_baseline(
+        db: AsyncSession, asset_id: str
+    ) -> Optional[AssetIntegrity]:
+        result = await db.execute(
+            select(AssetIntegrity).where(AssetIntegrity.asset_id == str(asset_id))
+        )
+        return result.scalar_one_or_none()
 
     @staticmethod
     async def generate_custody_report(
-        db: Any,
+        db: AsyncSession,
         asset_id: str,
     ) -> dict[str, Any]:
-        """Generate a comprehensive custody report for an asset.
-
-        Returns:
-            Dict with asset_id, chain, integrity, access_count, unique_users.
-        """
+        """Full custody report: chain, integrity, access count, unique users."""
         chain = await ChainOfCustodyService.get_custody_chain(db, asset_id)
         integrity = await ChainOfCustodyService.verify_integrity(db, asset_id)
 
-        unique_users = set()
-        for entry in chain:
-            if entry.get("user"):
-                unique_users.add(entry["user"])
+        unique_users = {entry["user"] for entry in chain if entry.get("user")}
 
         return {
-            "asset_id": asset_id,
+            "asset_id": str(asset_id),
             "chain": chain,
             "integrity": integrity,
             "access_count": len(chain),
@@ -193,12 +243,24 @@ class ChainOfCustodyService:
         }
 
     @staticmethod
-    def store_hash(asset_id: str, hash_value: str) -> None:
-        """Store a known hash for an asset (for later integrity checks)."""
-        _hash_store[asset_id] = hash_value
-
-    @staticmethod
-    def clear_store() -> None:
-        """Clear in-memory stores (for testing)."""
-        _custody_logs.clear()
-        _hash_store.clear()
+    async def store_hash(
+        db: AsyncSession,
+        asset_id: str,
+        hash_value: str,
+        workspace_id: Optional[str] = None,
+    ) -> None:
+        """Record (or replace) the known-good hash for an asset."""
+        existing = await ChainOfCustodyService._get_baseline(db, asset_id)
+        if existing is not None:
+            existing.sha256 = hash_value
+            existing.recorded_at = datetime.now(timezone.utc)
+        else:
+            db.add(
+                AssetIntegrity(
+                    id=uuid.uuid4(),
+                    workspace_id=_as_uuid(workspace_id),
+                    asset_id=str(asset_id),
+                    sha256=hash_value,
+                )
+            )
+        await db.commit()

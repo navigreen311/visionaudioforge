@@ -24,6 +24,13 @@ from app.models.command_center import (
     OperatorActionLog,
 )
 from app.models.review import ReviewTask, Review, ReviewShift
+from app.models.evidence import (
+    AssetIntegrity,
+    CustodyAction,
+    CustodyEvent,
+    EvidenceBundle,
+    EvidenceBundleItem,
+)
 from app.models.edge_fleet import (
     EdgeDevice,
     DeviceMetric,
@@ -80,4 +87,9 @@ __all__ = [
     "DeviceConfig",
     "OfflinePackage",
     "SyncPlan",
+    "AssetIntegrity",
+    "CustodyAction",
+    "CustodyEvent",
+    "EvidenceBundle",
+    "EvidenceBundleItem",
 ]

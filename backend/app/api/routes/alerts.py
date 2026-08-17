@@ -477,13 +477,51 @@ async def trigger_auto_clip(
 async def create_evidence_bundle(
     alert_id: UUID,
     case_id: Optional[str] = Query(None, description="Optional case/incident ID"),
+    workspace_id: Optional[UUID] = Query(None, description="Workspace ID"),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Create an evidence bundle for an alert."""
     bundle = await EvidenceBundleService.create_bundle(
-        db, str(alert_id), case_id=case_id,
+        db,
+        str(alert_id),
+        case_id=case_id,
+        workspace_id=str(workspace_id) if workspace_id else None,
     )
     return bundle
+
+
+@router.get("/bundles", response_model=list)
+async def list_evidence_bundles(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List evidence bundles in a workspace."""
+    return await EvidenceBundleService.list_bundles(db, str(workspace_id))
+
+
+@router.get("/bundles/{bundle_id}/export")
+async def export_evidence_bundle(
+    bundle_id: UUID,
+    format: str = Query("json", description="json | pdf_stub"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Export an evidence bundle as a downloadable file."""
+    try:
+        payload = await EvidenceBundleService.export_bundle(
+            db, str(bundle_id), format=format
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="evidence-bundle-{bundle_id}.json"'
+            )
+        },
+    )
 
 
 # ------------------------------------------------------------------
