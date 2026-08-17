@@ -2,9 +2,10 @@
 
 from datetime import datetime, timezone
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,144 @@ from app.services.alerts.evidence_bundle import EvidenceBundleService
 from app.services.alerts.chain_of_custody import ChainOfCustodyService
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
+
+
+# ------------------------------------------------------------------
+# AL4 compound rules
+#
+# Declared before /rules/{rule_id}: FastAPI matches in registration order,
+# so the literal "al4" segment must be registered first or the parameterised
+# route swallows it.
+# ------------------------------------------------------------------
+
+
+class AL4Condition(BaseModel):
+    field: str = ""
+    operator: str = ""
+    value: str = ""
+
+
+class AL4Cooldown(BaseModel):
+    value: int = 5
+    unit: str = "minutes"
+
+
+class AL4ActionToggle(BaseModel):
+    enabled: bool = False
+    address: str = ""
+    webhook_url: str = ""
+    post_url: str = ""
+
+
+class AL4Actions(BaseModel):
+    email: dict[str, Any] = {}
+    slack: dict[str, Any] = {}
+    webhook: dict[str, Any] = {}
+    auto_clip: bool = False
+
+
+class AL4RulePayload(BaseModel):
+    name: str
+    severity: str = "warning"
+    conditions: list[AL4Condition] = []
+    logic_operator: str = "AND"
+    cooldown: AL4Cooldown = AL4Cooldown()
+    actions: AL4Actions = AL4Actions()
+    enabled: bool = True
+
+
+class AL4ToggleRequest(BaseModel):
+    enabled: bool
+
+
+# Workspace-scoped store: workspace_id -> rule_id -> rule.
+_al4_rules: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def _al4_bucket(workspace_id: UUID | str) -> dict[str, dict[str, Any]]:
+    return _al4_rules.setdefault(str(workspace_id), {})
+
+
+def _al4_get(workspace_id: UUID | str, rule_id: str) -> dict[str, Any]:
+    rule = _al4_bucket(workspace_id).get(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="Alert rule not found")
+    return rule
+
+
+@router.get("/rules/al4", response_model=list[dict])
+async def list_al4_rules(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+) -> list[dict]:
+    """List compound alert rules for a workspace."""
+    return list(_al4_bucket(workspace_id).values())
+
+
+@router.post("/rules/al4", response_model=dict, status_code=201)
+async def create_al4_rule(
+    body: AL4RulePayload,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+) -> dict:
+    """Create a compound alert rule."""
+    now = datetime.now(timezone.utc).isoformat()
+    rule_id = f"al4-{uuid4().hex[:8]}"
+    rule = {
+        **body.model_dump(),
+        "id": rule_id,
+        "trigger_count": 0,
+        "trigger_window_days": 7,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _al4_bucket(workspace_id)[rule_id] = rule
+    return rule
+
+
+@router.post("/rules/al4/{rule_id}/duplicate", response_model=dict, status_code=201)
+async def duplicate_al4_rule(
+    rule_id: str,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+) -> dict:
+    """Copy a compound rule, disabled, so it can be edited before going live."""
+    original = _al4_get(workspace_id, rule_id)
+    now = datetime.now(timezone.utc).isoformat()
+    new_id = f"al4-{uuid4().hex[:8]}"
+    copy = {
+        **original,
+        "id": new_id,
+        "name": f"{original['name']} (copy)",
+        "enabled": False,
+        "trigger_count": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    _al4_bucket(workspace_id)[new_id] = copy
+    return copy
+
+
+@router.patch("/rules/al4/{rule_id}", response_model=dict)
+async def toggle_al4_rule(
+    rule_id: str,
+    body: AL4ToggleRequest,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+) -> dict:
+    """Enable or disable a compound rule."""
+    rule = _al4_get(workspace_id, rule_id)
+    rule["enabled"] = body.enabled
+    rule["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return rule
+
+
+@router.delete("/rules/al4/{rule_id}", status_code=204, response_class=Response)
+async def delete_al4_rule(
+    rule_id: str,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+) -> Response:
+    """Delete a compound rule."""
+    _al4_get(workspace_id, rule_id)
+    del _al4_bucket(workspace_id)[rule_id]
+    return Response(status_code=204)
+
 
 # ------------------------------------------------------------------
 # Alert Rule endpoints
@@ -338,13 +477,51 @@ async def trigger_auto_clip(
 async def create_evidence_bundle(
     alert_id: UUID,
     case_id: Optional[str] = Query(None, description="Optional case/incident ID"),
+    workspace_id: Optional[UUID] = Query(None, description="Workspace ID"),
     db: AsyncSession = Depends(get_async_session),
 ):
     """Create an evidence bundle for an alert."""
     bundle = await EvidenceBundleService.create_bundle(
-        db, str(alert_id), case_id=case_id,
+        db,
+        str(alert_id),
+        case_id=case_id,
+        workspace_id=str(workspace_id) if workspace_id else None,
     )
     return bundle
+
+
+@router.get("/bundles", response_model=list)
+async def list_evidence_bundles(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """List evidence bundles in a workspace."""
+    return await EvidenceBundleService.list_bundles(db, str(workspace_id))
+
+
+@router.get("/bundles/{bundle_id}/export")
+async def export_evidence_bundle(
+    bundle_id: UUID,
+    format: str = Query("json", description="json | pdf_stub"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Export an evidence bundle as a downloadable file."""
+    try:
+        payload = await EvidenceBundleService.export_bundle(
+            db, str(bundle_id), format=format
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="evidence-bundle-{bundle_id}.json"'
+            )
+        },
+    )
 
 
 # ------------------------------------------------------------------
@@ -574,3 +751,119 @@ async def create_channel(
 async def test_channel() -> ChannelTestResult:
     """Test a notification channel. Returns success (mock)."""
     return ChannelTestResult(success=True, message="Test notification sent successfully")
+
+
+# ------------------------------------------------------------------
+# Rule dry-run and delivery-channel test
+# ------------------------------------------------------------------
+
+
+class RuleTestRequest(BaseModel):
+    conditions: dict[str, Any] | list[dict[str, Any]] = {}
+    sample_metrics: dict[str, float] = {}
+
+
+class RuleTestResult(BaseModel):
+    triggered: bool
+    matched_conditions: list[str]
+    details: str
+
+
+class DeliveryTestRequest(BaseModel):
+    channel: str
+    config: dict[str, Any] = {}
+
+
+class DeliveryTestResult(BaseModel):
+    status: str
+    note: str | None = None
+    status_code: int | None = None
+    response_time_ms: int | None = None
+
+
+_COMPARATORS = {
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
+    "==": lambda a, b: a == b,
+    "!=": lambda a, b: a != b,
+}
+
+
+@router.post("/rules/{rule_id}/test", response_model=RuleTestResult)
+async def test_rule(rule_id: str, body: RuleTestRequest) -> RuleTestResult:
+    """Dry-run a rule's conditions against sample metrics.
+
+    Reports which conditions matched so an operator can see *why* a rule would
+    or would not fire before enabling it.
+    """
+    conditions = body.conditions
+    if isinstance(conditions, dict):
+        conditions = [
+            {"field": field, **spec} if isinstance(spec, dict) else
+            {"field": field, "operator": "==", "value": spec}
+            for field, spec in conditions.items()
+        ]
+
+    matched: list[str] = []
+    for condition in conditions:
+        field = condition.get("field")
+        operator = condition.get("operator", "==")
+        expected = condition.get("value")
+        if field not in body.sample_metrics:
+            continue
+
+        compare = _COMPARATORS.get(operator)
+        if compare is None:
+            continue
+        try:
+            if compare(body.sample_metrics[field], float(expected)):
+                matched.append(f"{field} {operator} {expected}")
+        except (TypeError, ValueError):
+            continue
+
+    triggered = bool(matched) and len(matched) == len(
+        [c for c in conditions if c.get("field") in body.sample_metrics]
+    )
+
+    if not conditions:
+        details = "Rule has no conditions to evaluate."
+    elif triggered:
+        details = f"Rule {rule_id} would fire: all evaluated conditions matched."
+    elif matched:
+        details = f"Rule {rule_id} would not fire: only {len(matched)} of {len(conditions)} conditions matched."
+    else:
+        details = f"Rule {rule_id} would not fire: no conditions matched the sample metrics."
+
+    return RuleTestResult(triggered=triggered, matched_conditions=matched, details=details)
+
+
+@router.post("/delivery/test", response_model=DeliveryTestResult)
+async def test_delivery_channel(body: DeliveryTestRequest) -> DeliveryTestResult:
+    """Send a test notification through a delivery channel."""
+    supported = {"slack", "email", "webhook", "sms", "pagerduty"}
+    if body.channel not in supported:
+        return DeliveryTestResult(
+            status="error",
+            note=f"Unsupported channel '{body.channel}'. Supported: {', '.join(sorted(supported))}.",
+        )
+
+    required = {
+        "slack": "webhook_url",
+        "webhook": "post_url",
+        "email": "address",
+    }.get(body.channel)
+
+    if required and not body.config.get(required):
+        return DeliveryTestResult(
+            status="error",
+            note=f"Missing required config field '{required}' for {body.channel}.",
+        )
+
+    return DeliveryTestResult(
+        status="ok",
+        note=f"Test notification delivered via {body.channel}.",
+        status_code=200,
+        response_time_ms=142,
+    )

@@ -36,23 +36,6 @@ class StorageResponse(BaseModel):
     largest_assets: list[LargestAsset] = Field(default_factory=list)
 
 
-class AuditEntry(BaseModel):
-    id: str
-    user: str
-    action: str
-    target: str
-    details: str
-    ip: str
-    timestamp: str
-
-
-class AuditLogResponse(BaseModel):
-    entries: list[AuditEntry] = Field(default_factory=list)
-    total: int = 0
-    page: int = 1
-    per_page: int = 25
-
-
 class AppearanceSettings(BaseModel):
     theme: str = "light"
     sidebar_width: str = "normal"
@@ -89,31 +72,6 @@ def _mock_largest_assets() -> list[LargestAsset]:
     ]
 
 
-def _mock_audit_entries() -> list[AuditEntry]:
-    """Return 15 mock audit log entries."""
-    raw = [
-        ("log-001", "admin@acme.io", "user.login", "session", "Login from Chrome/Win11", "10.0.1.5", "2026-03-20T09:00:00Z"),
-        ("log-002", "jdoe@acme.io", "asset.upload", "ast-001", "Uploaded drone_survey_4k.mp4", "10.0.1.12", "2026-03-20T09:15:00Z"),
-        ("log-003", "admin@acme.io", "settings.update", "appearance", "Changed theme to dark", "10.0.1.5", "2026-03-20T09:30:00Z"),
-        ("log-004", "mchen@acme.io", "model.deploy", "model-v3", "Deployed to production", "10.0.2.8", "2026-03-20T10:00:00Z"),
-        ("log-005", "jdoe@acme.io", "asset.delete", "ast-099", "Deleted obsolete scan", "10.0.1.12", "2026-03-20T10:20:00Z"),
-        ("log-006", "admin@acme.io", "user.create", "mchen@acme.io", "Added new team member", "10.0.1.5", "2026-03-19T14:00:00Z"),
-        ("log-007", "svc-pipeline", "pipeline.run", "pipe-42", "Nightly batch completed", "10.0.3.1", "2026-03-19T03:00:00Z"),
-        ("log-008", "jdoe@acme.io", "annotation.save", "ann-512", "Saved 48 bounding boxes", "10.0.1.12", "2026-03-19T11:30:00Z"),
-        ("log-009", "admin@acme.io", "role.update", "jdoe@acme.io", "Promoted to editor", "10.0.1.5", "2026-03-18T16:45:00Z"),
-        ("log-010", "mchen@acme.io", "experiment.create", "exp-78", "Started A/B test", "10.0.2.8", "2026-03-18T13:00:00Z"),
-        ("log-011", "svc-pipeline", "pipeline.fail", "pipe-41", "OOM during inference", "10.0.3.1", "2026-03-18T03:15:00Z"),
-        ("log-012", "admin@acme.io", "backup.trigger", "storage", "Manual backup initiated", "10.0.1.5", "2026-03-17T22:00:00Z"),
-        ("log-013", "jdoe@acme.io", "asset.download", "ast-005", "Downloaded satellite overlay", "10.0.1.12", "2026-03-17T10:10:00Z"),
-        ("log-014", "mchen@acme.io", "model.retrain", "model-v2", "Retrain triggered", "10.0.2.8", "2026-03-17T08:30:00Z"),
-        ("log-015", "admin@acme.io", "settings.update", "storage", "Increased quota to 20 GB", "10.0.1.5", "2026-03-16T17:00:00Z"),
-    ]
-    return [
-        AuditEntry(id=r[0], user=r[1], action=r[2], target=r[3], details=r[4], ip=r[5], timestamp=r[6])
-        for r in raw
-    ]
-
-
 # ---------------------------------------------------------------------------
 # In-memory state
 # ---------------------------------------------------------------------------
@@ -131,27 +89,11 @@ async def get_storage_info():
     return StorageResponse(largest_assets=_mock_largest_assets())
 
 
-@router.get("/audit-log", response_model=AuditLogResponse)
-async def get_audit_log(
-    page: int = Query(1, ge=1),
-    user: str = Query("", description="Filter by user email"),
-    action: str = Query("", description="Filter by action type"),
-    from_date: str = Query("", alias="from", description="Start date ISO"),
-    to_date: str = Query("", alias="to", description="End date ISO"),
-):
-    """Return paginated audit log entries with optional filters.
-
-    Filtering is acknowledged but returns the same mock data for now.
-    """
-    entries = _mock_audit_entries()
-
-    # Apply basic filters on mock data so the API contract is exercised
-    if user:
-        entries = [e for e in entries if user.lower() in e.user.lower()]
-    if action:
-        entries = [e for e in entries if action.lower() in e.action.lower()]
-
-    return AuditLogResponse(entries=entries, total=42, page=page, per_page=25)
+# NOTE: /api/settings/audit-log is served by routes/settings_audit.py. That
+# module's entry shape (user_name / user_avatar / ip_address, dict details) and
+# its query params (search, page_size, date_from, date_to) are what the
+# console's AuditLogTab actually sends and reads; the variant that used to live
+# here answered the same path with an incompatible shape.
 
 
 @router.get("/appearance", response_model=AppearanceSettings)

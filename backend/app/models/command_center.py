@@ -14,6 +14,9 @@ class StreamSourceType(str, enum.Enum):
     webrtc = "webrtc"
     file = "file"
     usb = "usb"
+    # The console's stream picker offers these two alongside rtsp.
+    camera = "camera"
+    screen = "screen"
 
 
 class StreamStatus(str, enum.Enum):

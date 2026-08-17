@@ -12,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert, AlertStatus
 from app.models.event import Event
+from app.models.integration import SyncConflict
 
 logger = logging.getLogger(__name__)
 
-# In-memory conflict store (replace with DB table in production)
-_conflicts: dict[str, dict[str, Any]] = {}
+# Conflicts live in sync_conflicts. An unresolved conflict is exactly the
+# state that must not be lost: dropping one silently discards an edit
+# somebody made in the field.
 
 
 class OfflineSyncService:
@@ -140,15 +142,28 @@ class OfflineSyncService:
 
                     # Conflict: alert already resolved/dismissed
                     if alert.status in (AlertStatus.resolved, AlertStatus.dismissed):
-                        conflict_id = str(uuid.uuid4())
-                        conflict = {
-                            "conflict_id": conflict_id,
-                            "action": action,
-                            "reason": f"Alert already {alert.status.value} by another user",
-                            "current_status": alert.status.value,
-                        }
-                        conflicts.append(conflict)
-                        _conflicts[conflict_id] = conflict
+                        row = SyncConflict(
+                            id=uuid.uuid4(),
+                            workspace_id=alert.workspace_id,
+                            entity_type="alert",
+                            entity_id=str(alert_id),
+                            local_version=action,
+                            server_version={"status": alert.status.value},
+                        )
+                        db.add(row)
+                        await db.flush()
+
+                        conflicts.append(
+                            {
+                                "conflict_id": str(row.id),
+                                "action": action,
+                                "reason": (
+                                    f"Alert already {alert.status.value} "
+                                    "by another user"
+                                ),
+                                "current_status": alert.status.value,
+                            }
+                        )
                         continue
 
                     alert.status = AlertStatus.acknowledged
@@ -215,9 +230,56 @@ class OfflineSyncService:
 
         resolution: 'accept_server' | 'force_local' | 'dismiss'
         """
-        conflict = _conflicts.pop(conflict_id, None)
-        if conflict is None:
+        try:
+            key = uuid.UUID(conflict_id)
+        except (ValueError, AttributeError, TypeError):
             return {"resolved": False, "error": "Conflict not found"}
+
+        result = await db.execute(
+            select(SyncConflict).where(SyncConflict.id == key)
+        )
+        conflict = result.scalar_one_or_none()
+        if conflict is None or conflict.resolution is not None:
+            return {"resolved": False, "error": "Conflict not found"}
+
+        conflict.resolution = resolution
+        conflict.resolved_at = datetime.now(timezone.utc)
+        await db.commit()
 
         logger.info("Conflict %s resolved with: %s", conflict_id, resolution)
         return {"resolved": True, "conflict_id": conflict_id, "resolution": resolution}
+
+    # ------------------------------------------------------------------
+    # List conflicts
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def list_conflicts(
+        db: AsyncSession,
+        workspace_id: uuid.UUID | None = None,
+        unresolved_only: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Return sync conflicts, newest first.
+
+        Unresolved conflicts are work waiting on a human decision, so they are
+        the default view.
+        """
+        query = select(SyncConflict).order_by(SyncConflict.created_at.desc())
+        if workspace_id is not None:
+            query = query.where(SyncConflict.workspace_id == workspace_id)
+        if unresolved_only:
+            query = query.where(SyncConflict.resolution.is_(None))
+
+        result = await db.execute(query)
+        return [
+            {
+                "conflict_id": str(c.id),
+                "entity_type": c.entity_type,
+                "entity_id": c.entity_id,
+                "local_version": c.local_version,
+                "server_version": c.server_version,
+                "resolution": c.resolution,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+            for c in result.scalars().all()
+        ]

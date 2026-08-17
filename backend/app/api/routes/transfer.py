@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,7 @@ from app.services.models.experiments import ExperimentService
 from app.services.models.fewshot import FewShotClassifier
 from app.services.models.training import FinetuneConfig
 from app.services.models.zeroshot import ZeroShotClassifier
+from app.tasks.dispatch import DispatchError, dispatch
 from app.tasks.training import run_finetune_task
 
 router = APIRouter(prefix="/api/transfer", tags=["transfer"])
@@ -95,24 +96,35 @@ async def start_transfer(
         num_classes=body.num_classes,
     )
 
-    # Queue Celery task
-    task = run_finetune_task.delay(
-        config_dict={
-            "backbone": config.backbone,
-            "dataset_path": config.dataset_path,
-            "num_epochs": config.num_epochs,
-            "learning_rate": config.learning_rate,
-            "batch_size": config.batch_size,
-            "freeze_layers": config.freeze_layers,
-            "gradient_clip_value": config.gradient_clip_value,
-            "early_stopping_patience": config.early_stopping_patience,
-            "num_classes": config.num_classes,
-        },
-        experiment_id=str(experiment.id),
-    )
+    # Queue the training job. A dispatch failure marks the experiment failed
+    # rather than leaving a job the console polls forever.
+    try:
+        task_id = dispatch(
+            run_finetune_task,
+            config_dict={
+                "backbone": config.backbone,
+                "dataset_path": config.dataset_path,
+                "num_epochs": config.num_epochs,
+                "learning_rate": config.learning_rate,
+                "batch_size": config.batch_size,
+                "freeze_layers": config.freeze_layers,
+                "gradient_clip_value": config.gradient_clip_value,
+                "early_stopping_patience": config.early_stopping_patience,
+                "num_classes": config.num_classes,
+            },
+            experiment_id=str(experiment.id),
+        )
+    except DispatchError as exc:
+        experiment.status = "failed"
+        experiment.error_message = f"Could not queue the training job: {exc}"
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail="Training queue is unavailable; the job was not started.",
+        )
 
     return FinetuneResponse(
-        job_id=task.id,
+        job_id=task_id or "",
         experiment_id=experiment.id,
         status="queued",
     )

@@ -132,7 +132,7 @@ async def uninstall_item(item_id: str):
     raise HTTPException(status_code=404, detail="Item not found")
 
 
-@router.get("/installed", response_model=list[MarketplaceItem])
-async def list_installed():
-    """List currently installed marketplace items."""
-    return [item for item in _CATALOGUE if item["id"] in _installed]
+# NOTE: /api/marketplace/installed is served by routes/marketplace.py, which
+# returns the {plugins, total_installed, updates_available} wrapper the
+# console's InstalledTab destructures. The bare-list variant that used to live
+# here answered the same path first and broke that view.

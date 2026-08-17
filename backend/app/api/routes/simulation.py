@@ -8,9 +8,53 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
+
+
+def _render_pdf(lines: list[str]) -> bytes:
+    """Render text lines as a single-page PDF.
+
+    Written by hand rather than pulling in a PDF library: the report is plain
+    left-aligned text, and this keeps the dependency surface unchanged.
+    """
+    def _escape(text: str) -> str:
+        return text.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+
+    text_ops = ["BT", "/F1 11 Tf", "14 TL", "56 760 Td"]
+    for line in lines:
+        text_ops.append(f"({_escape(line)}) Tj")
+        text_ops.append("T*")
+    text_ops.append("ET")
+    stream = "\n".join(text_ops).encode("latin-1", "replace")
+
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, body in enumerate(objects, start=1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+
+    xref_at = len(out)
+    out += f"xref\n0 {len(objects) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for offset in offsets[1:]:
+        out += f"{offset:010d} 00000 n \n".encode()
+    out += (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_at}\n%%EOF\n"
+    ).encode()
+    return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +246,39 @@ async def get_simulation_run(simulation_id: str) -> dict[str, Any]:
     if simulation_id not in _simulations:
         raise HTTPException(status_code=404, detail="Simulation run not found")
     return _simulations[simulation_id]
+
+
+@router.post("/runs/{simulation_id}/report")
+async def export_run_report(simulation_id: str) -> Response:
+    """Export a simulation run's report as a downloadable PDF.
+
+    The console POSTs here and saves the response body straight to disk, so the
+    body must be the file itself rather than JSON.
+    """
+    report = await get_report(simulation_id)
+
+    lines = [
+        "VisionAudioForge — Simulation Report",
+        "",
+        f"Simulation: {report['simulation_id']}",
+        f"Scenario:   {report['scenario']}",
+        f"Status:     {report['status']}",
+        "",
+        report["summary"],
+        "",
+        "Results:",
+    ]
+    lines += [f"  {key}: {value}" for key, value in report["results"].items()]
+
+    return Response(
+        content=_render_pdf(lines),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="simulation-report-{simulation_id}.pdf"'
+            )
+        },
+    )
 
 
 @router.get("/report/{simulation_id}")

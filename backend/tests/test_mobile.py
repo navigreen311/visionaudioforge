@@ -8,14 +8,17 @@ import pytest
 
 from app.models.alert import Alert, AlertSeverity, AlertStatus
 from app.models.event import Event
+from app.models.integration import FieldLocation
 from app.services.mobile.biometric_auth import BiometricAuthService
 from app.services.mobile.field_annotation import FieldAnnotationService
 from app.services.mobile.mobile_api import MobileAPIService
 from app.services.mobile.offline_sync import OfflineSyncService
-from app.services.mobile.push_notifications import (
-    PushNotificationService,
-    _device_registry,
-    _user_preferences,
+from app.services.mobile.push_notifications import PushNotificationService
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
 )
 
 # ---------------------------------------------------------------------------
@@ -264,22 +267,104 @@ async def test_push_notification_stub():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_push_preferences():
-    """Preferences can be read and updated."""
-    db = _mock_db_session()
+@pytest.fixture
+async def mobile_db():
+    """A real session — push registrations and preferences are rows now."""
+    await requires_postgres()
 
-    prefs = await PushNotificationService.notification_preferences(db, USER_ID)
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_push_preferences(mobile_db):
+    """Preferences default sensibly, then round-trip through the database."""
+    user_id = uuid.uuid4()
+
+    prefs = await PushNotificationService.notification_preferences(mobile_db, user_id)
     assert prefs["alerts_enabled"] is True
 
     updated = await PushNotificationService.update_preferences(
-        db, USER_ID, {"alerts_enabled": False, "sound": False},
+        mobile_db, user_id, {"alerts_enabled": False, "sound": False},
     )
     assert updated["alerts_enabled"] is False
     assert updated["sound"] is False
 
-    # Clean up
-    _user_preferences.pop(str(USER_ID), None)
+    # Unspecified keys keep their defaults.
+    assert updated["severity_filter"] == "all"
+
+    again = await PushNotificationService.notification_preferences(mobile_db, user_id)
+    assert again["alerts_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_device_registration_round_trip(mobile_db):
+    """A registered device is listed, deduplicated, and can be removed."""
+    user_id = uuid.uuid4()
+
+    await PushNotificationService.register_device(
+        mobile_db, user_id, "token-abc", "ios",
+    )
+    # Registering the same token again must not create a duplicate the same
+    # push would be delivered to twice.
+    await PushNotificationService.register_device(
+        mobile_db, user_id, "token-abc", "android",
+    )
+
+    devices = await PushNotificationService.list_devices(mobile_db, user_id)
+    assert devices == [{"token": "token-abc", "platform": "android"}]
+
+    sent = await PushNotificationService.send_to_user(
+        mobile_db, user_id, "Title", "Body",
+    )
+    assert sent["devices_notified"] == 1
+
+    assert (
+        await PushNotificationService.unregister_device(
+            mobile_db, user_id, "token-abc"
+        )
+    )["unregistered"] is True
+    assert await PushNotificationService.list_devices(mobile_db, user_id) == []
+
+
+@pytest.mark.asyncio
+async def test_push_registrations_survive_a_restart():
+    """Registrations and preferences outlive the process that made them."""
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    user_id = uuid.uuid4()
+
+    try:
+        async with factory() as session:
+            await PushNotificationService.register_device(
+                session, user_id, "durable-token", "ios",
+            )
+            await PushNotificationService.update_preferences(
+                session, user_id, {"sound": False},
+            )
+    finally:
+        await engine.dispose()
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            devices = await PushNotificationService.list_devices(session, user_id)
+            assert [d["token"] for d in devices] == ["durable-token"]
+
+            prefs = await PushNotificationService.notification_preferences(
+                session, user_id
+            )
+            assert prefs["sound"] is False
+    finally:
+        await restarted_engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -305,12 +390,19 @@ async def test_field_note_with_gps():
         location={"latitude": 51.5074, "longitude": -0.1278, "accuracy_m": 3.0},
     )
 
-    db.add.assert_called_once()
     db.commit.assert_awaited_once()
-    # The event was added — verify it was an Event with field_note type
-    added_event = db.add.call_args[0][0]
-    assert added_event.type == "field_note"
+
+    # Two rows are staged: the note itself and the operator's position, which
+    # is now recorded in field_locations rather than a module dict.
+    added = [call.args[0] for call in db.add.call_args_list]
+    assert len(added) == 2
+
+    added_event = next(obj for obj in added if getattr(obj, "type", None) == "field_note")
     assert added_event.payload["location"]["latitude"] == 51.5074
+
+    location_row = next(obj for obj in added if isinstance(obj, FieldLocation))
+    assert location_row.latitude == 51.5074
+    assert location_row.user_ref == str(USER_ID)
 
 
 # ---------------------------------------------------------------------------

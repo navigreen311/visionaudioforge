@@ -5,14 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from app.services.verticals import VERTICAL_PACKS
 from app.services.verticals.base import VerticalPack
-from app.services.verticals.callcenter import CallCenterVerticalPack
-from app.services.verticals.education import EducationVerticalPack
-from app.services.verticals.healthcare import HealthcareVerticalPack
-from app.services.verticals.industrial import IndustrialVerticalPack
-from app.services.verticals.media import MediaVerticalPack
-from app.services.verticals.retail import RetailVerticalPack
-from app.services.verticals.security import SecurityVerticalPack
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +14,8 @@ logger = logging.getLogger(__name__)
 # Pack registry — every available vertical pack
 # ---------------------------------------------------------------------------
 
-AVAILABLE_PACKS: dict[str, type[VerticalPack]] = {
-    "security": SecurityVerticalPack,
-    "healthcare": HealthcareVerticalPack,
-    "callcenter": CallCenterVerticalPack,
-    "retail": RetailVerticalPack,
-    "industrial": IndustrialVerticalPack,
-    "media": MediaVerticalPack,
-    "education": EducationVerticalPack,
-}
+# Alias of the package-level registry. Kept so the two cannot drift apart.
+AVAILABLE_PACKS: dict[str, type[VerticalPack]] = VERTICAL_PACKS
 
 # In-memory store of installed packs (slug → instance).
 # In a real deployment this would be backed by a database.

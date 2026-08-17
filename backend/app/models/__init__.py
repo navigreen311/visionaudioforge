@@ -24,6 +24,42 @@ from app.models.command_center import (
     OperatorActionLog,
 )
 from app.models.review import ReviewTask, Review, ReviewShift
+from app.models.plugin import (
+    BYOMModel,
+    CustomNode,
+    InstalledPlugin,
+    ModelAdapter,
+    Plugin,
+    PluginReview,
+)
+from app.models.integration import (
+    EventLogEntry,
+    FieldLocation,
+    PushDevice,
+    PushPreference,
+    SyncConflict,
+    Webhook,
+    WebhookDelivery,
+)
+from app.models.evidence import (
+    AssetIntegrity,
+    CustodyAction,
+    CustodyEvent,
+    EvidenceBundle,
+    EvidenceBundleItem,
+)
+from app.models.edge_fleet import (
+    EdgeDevice,
+    DeviceMetric,
+    DeviceStatus,
+    OTAUpdate,
+    OTADeviceRollout,
+    OTAStatus,
+    OTADeviceStatus,
+    DeviceConfig,
+    OfflinePackage,
+    SyncPlan,
+)
 
 __all__ = [
     "Base",
@@ -58,4 +94,32 @@ __all__ = [
     "ReviewTask",
     "Review",
     "ReviewShift",
+    "EdgeDevice",
+    "DeviceMetric",
+    "DeviceStatus",
+    "OTAUpdate",
+    "OTADeviceRollout",
+    "OTAStatus",
+    "OTADeviceStatus",
+    "DeviceConfig",
+    "OfflinePackage",
+    "SyncPlan",
+    "AssetIntegrity",
+    "CustodyAction",
+    "CustodyEvent",
+    "EvidenceBundle",
+    "EvidenceBundleItem",
+    "BYOMModel",
+    "CustomNode",
+    "InstalledPlugin",
+    "ModelAdapter",
+    "Plugin",
+    "PluginReview",
+    "EventLogEntry",
+    "FieldLocation",
+    "PushDevice",
+    "PushPreference",
+    "SyncConflict",
+    "Webhook",
+    "WebhookDelivery",
 ]

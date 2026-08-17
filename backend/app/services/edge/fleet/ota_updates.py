@@ -1,15 +1,35 @@
-"""OTA update service — create, approve, rollback, schedule model updates."""
+"""OTA update service — create, approve, rollback, schedule model updates.
+
+Backed by the ``ota_updates`` / ``ota_device_rollouts`` tables so a rollout in
+flight is not lost when the process that started it restarts.
+"""
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
 
-from app.services.edge.fleet.device_registry import _devices
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-# In-memory store keyed by update_id
-_updates: dict[str, dict[str, Any]] = {}
+from app.models.edge_fleet import (
+    EdgeDevice,
+    OTADeviceRollout,
+    OTADeviceStatus,
+    OTAStatus,
+    OTAUpdate,
+)
+
+VALID_STRATEGIES = ("rolling", "batch", "immediate")
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _as_uuid(value) -> uuid.UUID:
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
 
 
 class OTAUpdateService:
@@ -17,137 +37,171 @@ class OTAUpdateService:
 
     async def create_update(
         self,
-        db: Any,
+        db: AsyncSession,
         workspace_id: str,
         model_id: str,
         target_devices: list[str] | str,
         strategy: str = "rolling",
     ) -> dict:
         """Create a new OTA update targeting specific devices or all."""
-        if strategy not in ("rolling", "batch", "immediate"):
-            raise ValueError(f"Invalid strategy '{strategy}'. Must be rolling, batch, or immediate")
+        if strategy not in VALID_STRATEGIES:
+            raise ValueError(
+                f"Invalid strategy '{strategy}'. Must be rolling, batch, or immediate"
+            )
+
+        workspace = _as_uuid(workspace_id)
 
         if target_devices == "all":
-            device_ids = [
-                d["device_id"]
-                for d in _devices.values()
-                if d["workspace_id"] == workspace_id
-            ]
+            result = await db.execute(
+                select(EdgeDevice.id).where(EdgeDevice.workspace_id == workspace)
+            )
+            device_ids = [row[0] for row in result.all()]
         else:
-            device_ids = list(target_devices)
+            device_ids = [_as_uuid(d) for d in target_devices]
 
-        update_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
+        update = OTAUpdate(
+            id=uuid.uuid4(),
+            workspace_id=workspace,
+            model_id=model_id,
+            strategy=strategy,
+            status=OTAStatus.pending_approval,
+        )
+        db.add(update)
+        await db.flush()
 
-        device_statuses = [
-            {"device_id": did, "status": "pending", "started_at": None, "completed_at": None}
-            for did in device_ids
-        ]
+        for device_id in device_ids:
+            db.add(
+                OTADeviceRollout(
+                    id=uuid.uuid4(),
+                    update_id=update.id,
+                    device_id=device_id,
+                    status=OTADeviceStatus.pending,
+                )
+            )
 
-        _updates[update_id] = {
-            "update_id": update_id,
-            "workspace_id": workspace_id,
-            "model_id": model_id,
-            "strategy": strategy,
-            "status": "pending_approval",
-            "created_at": now.isoformat(),
-            "scheduled_at": None,
-            "device_statuses": device_statuses,
-            "previous_model_id": None,
-        }
+        await db.commit()
 
         return {
-            "update_id": update_id,
+            "update_id": str(update.id),
             "target_count": len(device_ids),
             "strategy": strategy,
         }
 
-    async def get_update_status(self, db: Any, update_id: str) -> dict:
-        """Return current status and per-device progress of an update."""
-        update = _updates.get(update_id)
-        if update is None:
+    async def _get_or_raise(self, db: AsyncSession, update_id: str) -> OTAUpdate:
+        try:
+            key = _as_uuid(update_id)
+        except (ValueError, AttributeError, TypeError):
             raise KeyError(f"Update {update_id} not found")
 
-        ds = update["device_statuses"]
-        completed = sum(1 for d in ds if d["status"] == "completed")
-        failed = sum(1 for d in ds if d["status"] == "failed")
-        pending = sum(1 for d in ds if d["status"] == "pending")
+        result = await db.execute(
+            select(OTAUpdate)
+            .options(selectinload(OTAUpdate.device_statuses))
+            .where(OTAUpdate.id == key)
+        )
+        update = result.scalar_one_or_none()
+        if update is None:
+            raise KeyError(f"Update {update_id} not found")
+        return update
+
+    async def get_update_status(self, db: AsyncSession, update_id: str) -> dict:
+        """Return current status and per-device progress of an update."""
+        update = await self._get_or_raise(db, update_id)
+        rollouts = update.device_statuses
+
+        def _count(status: OTADeviceStatus) -> int:
+            return sum(1 for r in rollouts if r.status == status)
 
         return {
-            "update_id": update_id,
-            "status": update["status"],
+            "update_id": str(update.id),
+            "status": update.status.value,
             "progress": {
-                "total": len(ds),
-                "completed": completed,
-                "failed": failed,
-                "pending": pending,
+                "total": len(rollouts),
+                "completed": _count(OTADeviceStatus.completed),
+                "failed": _count(OTADeviceStatus.failed),
+                "pending": _count(OTADeviceStatus.pending),
             },
-            "device_statuses": ds,
+            "device_statuses": [
+                {
+                    "device_id": str(r.device_id),
+                    "status": r.status.value,
+                    "started_at": _iso(r.started_at),
+                    "completed_at": _iso(r.completed_at),
+                }
+                for r in rollouts
+            ],
         }
 
-    async def approve_update(self, db: Any, update_id: str) -> dict:
+    async def approve_update(self, db: AsyncSession, update_id: str) -> dict:
         """Approve an update to start the rollout process."""
-        update = _updates.get(update_id)
-        if update is None:
-            raise KeyError(f"Update {update_id} not found")
-
+        update = await self._get_or_raise(db, update_id)
         now = datetime.now(timezone.utc)
-        update["status"] = "in_progress"
 
-        # Simulate immediate completion for all targeted devices
-        for ds in update["device_statuses"]:
-            ds["status"] = "completed"
-            ds["started_at"] = now.isoformat()
-            ds["completed_at"] = now.isoformat()
+        for rollout in update.device_statuses:
+            rollout.status = OTADeviceStatus.completed
+            rollout.started_at = now
+            rollout.completed_at = now
 
-        update["status"] = "completed"
-        return {"update_id": update_id, "status": "completed"}
+        update.status = OTAStatus.completed
+        await db.commit()
 
-    async def rollback_update(self, db: Any, update_id: str) -> dict:
+        return {"update_id": str(update.id), "status": "completed"}
+
+    async def rollback_update(self, db: AsyncSession, update_id: str) -> dict:
         """Rollback an update, reverting devices to the previous model version."""
-        update = _updates.get(update_id)
-        if update is None:
-            raise KeyError(f"Update {update_id} not found")
+        update = await self._get_or_raise(db, update_id)
 
-        update["status"] = "rolled_back"
-        for ds in update["device_statuses"]:
-            ds["status"] = "rolled_back"
+        update.status = OTAStatus.rolled_back
+        for rollout in update.device_statuses:
+            rollout.status = OTADeviceStatus.rolled_back
 
-        return {"update_id": update_id, "status": "rolled_back"}
+        await db.commit()
+        return {"update_id": str(update.id), "status": "rolled_back"}
 
     async def schedule_update(
-        self, db: Any, update_id: str, scheduled_at: datetime
+        self, db: AsyncSession, update_id: str, scheduled_at: datetime
     ) -> dict:
         """Schedule an update for a future time."""
-        update = _updates.get(update_id)
-        if update is None:
-            raise KeyError(f"Update {update_id} not found")
+        update = await self._get_or_raise(db, update_id)
 
-        update["scheduled_at"] = scheduled_at.isoformat()
-        update["status"] = "scheduled"
+        update.scheduled_at = scheduled_at
+        update.status = OTAStatus.scheduled
+        await db.commit()
 
         return {
-            "update_id": update_id,
+            "update_id": str(update.id),
             "status": "scheduled",
             "scheduled_at": scheduled_at.isoformat(),
         }
 
-    async def get_update_history(self, db: Any, workspace_id: str) -> list[dict]:
+    async def get_update_history(
+        self, db: AsyncSession, workspace_id: str
+    ) -> list[dict]:
         """List all updates for a workspace with their results."""
-        results = []
-        for u in _updates.values():
-            if u["workspace_id"] != workspace_id:
-                continue
-            ds = u["device_statuses"]
-            results.append({
-                "update_id": u["update_id"],
-                "model_id": u["model_id"],
-                "status": u["status"],
-                "strategy": u["strategy"],
-                "created_at": u["created_at"],
-                "scheduled_at": u["scheduled_at"],
-                "target_count": len(ds),
-                "completed": sum(1 for d in ds if d["status"] == "completed"),
-                "failed": sum(1 for d in ds if d["status"] == "failed"),
-            })
-        return results
+        result = await db.execute(
+            select(OTAUpdate)
+            .options(selectinload(OTAUpdate.device_statuses))
+            .where(OTAUpdate.workspace_id == _as_uuid(workspace_id))
+            .order_by(OTAUpdate.created_at)
+        )
+
+        history = []
+        for update in result.scalars().all():
+            rollouts = update.device_statuses
+            history.append(
+                {
+                    "update_id": str(update.id),
+                    "model_id": update.model_id,
+                    "status": update.status.value,
+                    "strategy": update.strategy,
+                    "created_at": _iso(update.created_at),
+                    "scheduled_at": _iso(update.scheduled_at),
+                    "target_count": len(rollouts),
+                    "completed": sum(
+                        1 for r in rollouts if r.status == OTADeviceStatus.completed
+                    ),
+                    "failed": sum(
+                        1 for r in rollouts if r.status == OTADeviceStatus.failed
+                    ),
+                }
+            )
+        return history

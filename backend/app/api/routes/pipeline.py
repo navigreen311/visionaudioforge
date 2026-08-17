@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
-from app.models.pipeline import Pipeline, PipelineRun
+from app.models.pipeline import Pipeline, PipelineRun, PipelineRunStatus
 from app.schemas.common import PaginatedResponse
 from app.schemas.pipeline import (
     NodeTypeInfo,
@@ -155,76 +157,13 @@ MOCK_RUNS = [
 ]
 
 
-@router.get("/pipeline/list")
-async def list_pipelines_mock() -> list[dict[str, Any]]:
-    """Return mock pipeline list for Pipeline page UI."""
-    return MOCK_PIPELINES
-
-
-@router.post("/pipeline/save")
-async def save_pipeline_mock(body: PipelineSaveRequest) -> dict[str, Any]:
-    """Accept a pipeline definition and return a draft stub."""
-    return {
-        "id": f"pipe_{uuid.uuid4().hex[:6]}",
-        "name": body.name,
-        "status": "draft",
-    }
-
-
-@router.patch("/pipeline/{pipeline_id}/schedule")
-async def update_pipeline_schedule(
-    pipeline_id: str,
-    body: PipelineScheduleUpdate,
-) -> dict[str, Any]:
-    """Accept schedule config and return the updated pipeline stub."""
-    return {
-        "id": pipeline_id,
-        "name": next(
-            (p["name"] for p in MOCK_PIPELINES if p["id"] == pipeline_id),
-            "Unknown Pipeline",
-        ),
-        "status": "scheduled" if body.enabled else "draft",
-        "schedule": {
-            "cron": body.cron,
-            "enabled": body.enabled,
-            "timezone": body.timezone,
-        },
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-    }
-
-
-@router.post("/pipeline/run")
-async def run_pipeline_mock() -> dict[str, Any]:
-    """Start a mock pipeline run and return a run stub."""
-    return {"run_id": "run_001", "status": "running"}
-
-
-@router.get("/pipeline/runs/{run_id}/status")
-async def get_run_status(run_id: str) -> dict[str, Any]:
-    """Return mock status for a specific pipeline run."""
-    run = next((r for r in MOCK_RUNS if r["run_id"] == run_id), None)
-    if run:
-        return {
-            "run_id": run["run_id"],
-            "status": run["status"],
-            "nodes_completed": run["nodes_completed"],
-            "nodes_total": run["nodes_total"],
-            "current_node": None if run["status"] == "completed" else run["log"][-1]["node"],
-        }
-    # Default fallback for unknown run_id
-    return {
-        "run_id": run_id,
-        "status": "completed",
-        "nodes_completed": 5,
-        "nodes_total": 5,
-        "current_node": None,
-    }
-
-
-@router.get("/pipeline/runs")
-async def list_pipeline_runs_mock() -> list[dict[str, Any]]:
-    """Return mock run history for Pipeline page UI."""
-    return MOCK_RUNS
+# NOTE: /pipeline/list, /save, /run, /runs, /runs/{id}/status and
+# /{id}/schedule used to be answered here by mock handlers. Registered first,
+# they shadowed the real implementations further down this file, so the
+# database-backed versions were unreachable dead code. The console reads
+# `data.items ?? data` and ActiveJobs requires the `{items: [...]}` envelope,
+# i.e. it is written against the real handlers — the mocks have been removed.
+# MOCK_PIPELINES / MOCK_RUNS remain as fixtures for the endpoints below.
 
 
 # --------------------------------------------------------------------------
@@ -409,20 +348,41 @@ async def run_pipeline(
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
-    run = PipelineRun(pipeline_id=pipeline_id, status="pending")
+    run = PipelineRun(pipeline_id=pipeline_id, status=PipelineRunStatus.pending)
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
-    # Dispatch Celery task (best-effort; won't fail the request if broker is down)
+    await _queue_run(db, run, pipeline)
+    return {"run_id": run.id, "status": run.status.value}
+
+
+async def _queue_run(
+    db: AsyncSession, run: PipelineRun, pipeline: Pipeline
+) -> None:
+    """Hand a created run to Celery, recording the failure if that is not possible.
+
+    A run nobody queued must not sit at "pending" indefinitely: the console
+    would poll it forever with nothing to say why it never started.
+    """
+    from app.tasks.dispatch import DispatchError, dispatch
+    from app.tasks.pipeline import run_pipeline_task
+
     try:
-        from app.tasks.pipeline import run_pipeline_task
-
-        run_pipeline_task.delay(str(pipeline_id), pipeline.definition)
-    except Exception:
-        pass  # Task dispatch is fire-and-forget in dev mode
-
-    return {"run_id": run.id, "status": "pending"}
+        dispatch(
+            run_pipeline_task,
+            str(run.id),
+            str(pipeline.id),
+            pipeline.definition,
+        )
+    except DispatchError as exc:
+        run.status = PipelineRunStatus.failed
+        run.finished_at = datetime.now(timezone.utc)
+        run.results = {
+            "errors": [f"Could not queue the run: {exc}"],
+            "status": "failed",
+        }
+        await db.commit()
 
 
 # --------------------------------------------------------------------------
@@ -557,19 +517,17 @@ async def start_pipeline_run(
     if not pipeline:
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
-    run = PipelineRun(pipeline_id=pid, status="pending")
+    run = PipelineRun(pipeline_id=pid, status=PipelineRunStatus.pending)
     db.add(run)
     await db.commit()
     await db.refresh(run)
 
-    # Fire-and-forget task dispatch
-    try:
-        from app.tasks.pipeline import run_pipeline_task
-        run_pipeline_task.delay(str(pid), pipeline.definition)
-    except Exception:
-        pass
-
-    return {"run_id": str(run.id), "status": "pending", "rerun_of": body.rerun_of}
+    await _queue_run(db, run, pipeline)
+    return {
+        "run_id": str(run.id),
+        "status": run.status.value,
+        "rerun_of": body.rerun_of,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -677,3 +635,83 @@ async def list_pipeline_runs(
         })
 
     return items
+
+
+# --------------------------------------------------------------------------
+# Live status summaries — polled by the agent Live Context and Patrol panels
+# --------------------------------------------------------------------------
+
+@router.get("/pipeline/running")
+async def list_running_pipelines(
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Return the pipelines with a run currently in flight."""
+    result = await db.execute(
+        select(Pipeline.name, PipelineRun.status)
+        .join(Pipeline, Pipeline.id == PipelineRun.pipeline_id)
+        .where(PipelineRun.status == "running")
+    )
+    return [
+        {
+            "name": name,
+            "status": status.value if hasattr(status, "value") else str(status),
+        }
+        for name, status in result.all()
+    ]
+
+
+@router.get("/pipeline/summary")
+async def get_pipeline_summary(
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Return a one-number summary of pipeline activity."""
+    running = await db.execute(
+        select(func.count())
+        .select_from(PipelineRun)
+        .where(PipelineRun.status == "running")
+    )
+    total = await db.execute(select(func.count()).select_from(Pipeline))
+    return {
+        "running": running.scalar() or 0,
+        "total": total.scalar() or 0,
+    }
+
+
+@router.get("/pipeline/pipelines", response_model=PaginatedResponse)
+async def list_pipelines_alias(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> PaginatedResponse:
+    """Alias of GET /api/pipelines, the path the API Playground documents."""
+    return await list_pipelines(page=page, page_size=page_size, db=db)
+
+
+@router.get("/pipeline/runs/{run_id}/download")
+async def download_run_output(
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Download a run's output as a JSON attachment."""
+    result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
+    run = result.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Pipeline run not found")
+
+    status_str = run.status.value if hasattr(run.status, "value") else str(run.status)
+    payload = {
+        "run_id": str(run.id),
+        "pipeline_id": str(run.pipeline_id),
+        "status": status_str,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "results": run.results or {},
+    }
+
+    return Response(
+        content=json.dumps(payload, indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="pipeline-run-{run_id}.json"'
+        },
+    )

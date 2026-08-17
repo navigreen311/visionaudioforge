@@ -7,12 +7,29 @@ import logging
 import time
 import textwrap
 import uuid
-from typing import Any
+from typing import Any, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.plugin import CustomNode
 
 logger = logging.getLogger(__name__)
 
-# In-memory store for V1 (database-backed in V2)
-_custom_nodes: dict[str, dict] = {}
+
+def _as_uuid(value: Any) -> Optional[uuid.UUID]:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+# Custom node definitions live in the custom_nodes table. Scaffolded code has
+# to outlive the request that produced it — a pipeline referencing a node whose
+# definition is gone cannot run.
 
 NODE_TEMPLATE = textwrap.dedent("""\
     from visionaudioforge.pipeline import BaseNode
@@ -137,17 +154,14 @@ class CustomNodeSDK:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def register_custom_node(
-        db: Any,
+    async def register_custom_node(
+        db: AsyncSession,
         workspace_id: str,
         name: str,
         code: str,
         config: dict | None = None,
     ) -> dict:
-        """Register a custom node for a workspace.
-
-        V1 uses an in-memory store; V2 will persist to the database.
-        """
+        """Register a custom node for a workspace."""
         validation = CustomNodeSDK.validate_custom_node(code)
         if not validation["valid"]:
             return {
@@ -156,32 +170,40 @@ class CustomNodeSDK:
                 "errors": validation["errors"],
             }
 
-        node_id = str(uuid.uuid4())
-        _custom_nodes[node_id] = {
-            "node_id": node_id,
-            "workspace_id": workspace_id,
-            "name": name,
-            "code": code,
-            "config": config or {},
-        }
-        return {"node_id": node_id, "registered": True}
+        node = CustomNode(
+            id=uuid.uuid4(),
+            workspace_id=_as_uuid(workspace_id),
+            name=name,
+            code=code,
+            node_metadata=config or {},
+            status="registered",
+        )
+        db.add(node)
+        await db.commit()
+        return {"node_id": str(node.id), "registered": True}
 
     # ------------------------------------------------------------------
     # Listing
     # ------------------------------------------------------------------
 
     @staticmethod
-    def list_custom_nodes(db: Any, workspace_id: str) -> list[dict]:
+    async def list_custom_nodes(
+        db: AsyncSession, workspace_id: str
+    ) -> list[dict]:
         """List all custom nodes registered for a workspace."""
+        result = await db.execute(
+            select(CustomNode)
+            .where(CustomNode.workspace_id == _as_uuid(workspace_id))
+            .order_by(CustomNode.created_at)
+        )
         return [
             {
-                "node_id": n["node_id"],
-                "name": n["name"],
-                "workspace_id": n["workspace_id"],
-                "config": n["config"],
+                "node_id": str(node.id),
+                "name": node.name,
+                "workspace_id": str(node.workspace_id) if node.workspace_id else None,
+                "config": node.node_metadata or {},
             }
-            for n in _custom_nodes.values()
-            if n["workspace_id"] == workspace_id
+            for node in result.scalars().all()
         ]
 
     # ------------------------------------------------------------------

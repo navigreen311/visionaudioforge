@@ -94,10 +94,10 @@ MOCK_SUGGESTIONS: list[dict[str, Any]] = [
 # ------------------------------------------------------------------
 
 
-@router.get("/assets", response_model=list[AssetItem])
-async def list_annotate_assets():
-    """Return mock assets available for annotation."""
-    return MOCK_ASSETS
+# NOTE: GET /api/annotate/assets is served by routes/annotations.py. This
+# module registers first, so its bare-list version shadowed that one and the
+# Annotate page — which sends workspace_id/dataset_id and reads `data.items` —
+# got a payload it could not parse. The duplicate was removed.
 
 
 @router.post("/auto-label", response_model=AutoLabelResponse)
