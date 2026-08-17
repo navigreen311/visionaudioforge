@@ -1,11 +1,20 @@
-"""Marketplace service — browse, install, rate built-in and community plugins."""
+"""Marketplace service — browse, install, rate built-in and community plugins.
+
+Install counts and reviews come out of the database rather than per-instance
+dicts. Held in memory they were both lost on restart and invisible to every
+other worker, so two users could see different ratings for the same plugin.
+"""
 
 from __future__ import annotations
 
 import uuid
 from typing import Any
 
-from app.services.plugins.framework import PluginManager, PluginManifest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.plugin import Plugin, PluginReview
+from app.services.plugins.framework import PluginManager, PluginManifest, _as_uuid
 
 
 class MarketplaceService:
@@ -80,51 +89,63 @@ class MarketplaceService:
 
     def __init__(self) -> None:
         self._plugin_manager = PluginManager()
-        # Track install counts and reviews per plugin name
-        self._install_counts: dict[str, int] = {}
-        self._reviews: dict[str, list[dict]] = {}
 
     # -- browse -------------------------------------------------------------
 
     async def browse_marketplace(
         self,
+        db: AsyncSession,
         category: str | None = None,
         search: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[dict]:
+        """List catalogue entries with live install counts and ratings."""
+        stats = await self._stats_by_name(db, workspace_id)
+
         results = []
-        for p in self.BUILT_IN_PLUGINS:
-            if category and p["category"] != category:
+        for plugin in self.BUILT_IN_PLUGINS:
+            if category and plugin["category"] != category:
                 continue
-            if search and search.lower() not in p["name"].lower() and search.lower() not in p["description"].lower():
-                continue
-            results.append(
-                {
-                    **p,
-                    "install_count": self._install_counts.get(p["name"], 0),
-                    "avg_rating": self._avg_rating(p["name"]),
-                }
-            )
+            if search:
+                needle = search.lower()
+                if (
+                    needle not in plugin["name"].lower()
+                    and needle not in plugin["description"].lower()
+                ):
+                    continue
+
+            entry = stats.get(plugin["name"], {"install_count": 0, "avg_rating": 0.0})
+            results.append({**plugin, **entry})
         return results
 
     # -- details ------------------------------------------------------------
 
-    async def get_plugin_details(self, plugin_name: str) -> dict:
-        for p in self.BUILT_IN_PLUGINS:
-            if p["name"] == plugin_name:
+    async def get_plugin_details(
+        self,
+        db: AsyncSession,
+        plugin_name: str,
+        workspace_id: str | None = None,
+    ) -> dict:
+        """Return one catalogue entry with its reviews."""
+        for plugin in self.BUILT_IN_PLUGINS:
+            if plugin["name"] == plugin_name:
+                stats = (await self._stats_by_name(db, workspace_id)).get(
+                    plugin_name, {"install_count": 0, "avg_rating": 0.0}
+                )
                 return {
-                    **p,
-                    "install_count": self._install_counts.get(plugin_name, 0),
-                    "reviews": self._reviews.get(plugin_name, []),
-                    "avg_rating": self._avg_rating(plugin_name),
+                    **plugin,
+                    **stats,
+                    "reviews": await self._reviews_for(db, plugin_name, workspace_id),
                 }
         raise ValueError(f"Plugin '{plugin_name}' not found in marketplace")
 
     # -- install ------------------------------------------------------------
 
     async def install_from_marketplace(
-        self, db: Any, workspace_id: str, plugin_name: str
+        self, db: AsyncSession, workspace_id: str, plugin_name: str
     ) -> dict:
-        details = await self.get_plugin_details(plugin_name)
+        """Register a catalogue plugin into a workspace."""
+        details = await self.get_plugin_details(db, plugin_name, workspace_id)
         manifest = PluginManifest(
             name=details["name"],
             version=details["version"],
@@ -137,39 +158,99 @@ class MarketplaceService:
             icon_url=None,
         )
         await self._plugin_manager.register_plugin(db, workspace_id, manifest)
-        self._install_counts[plugin_name] = self._install_counts.get(plugin_name, 0) + 1
         return {"installed": True}
 
     # -- rate ---------------------------------------------------------------
 
     async def rate_plugin(
-        self, db: Any, plugin_id: str, user_id: str, rating: int, review: str
+        self,
+        db: AsyncSession,
+        plugin_id: str,
+        user_id: str,
+        rating: int,
+        review: str,
     ) -> dict:
+        """Attach a rating to a registered plugin."""
         if not 1 <= rating <= 5:
             raise ValueError("Rating must be between 1 and 5")
-        # Resolve plugin name from store
-        from app.services.plugins.framework import _PLUGIN_STORE
 
-        plugin = _PLUGIN_STORE.get(plugin_id)
-        name = plugin["name"] if plugin else plugin_id
-        if name not in self._reviews:
-            self._reviews[name] = []
-        self._reviews[name].append(
-            {"user_id": user_id, "rating": rating, "review": review}
+        plugin = await self._plugin_manager._load(db, plugin_id)
+        db.add(
+            PluginReview(
+                id=uuid.uuid4(),
+                plugin_id=plugin.id,
+                rating=float(rating),
+                comment=review,
+                author=str(user_id) if user_id else None,
+            )
         )
+        await db.commit()
         return {"rated": True}
 
     # -- popular ------------------------------------------------------------
 
-    async def get_popular_plugins(self, limit: int = 10) -> list[dict]:
-        plugins = await self.browse_marketplace()
+    async def get_popular_plugins(
+        self, db: AsyncSession, limit: int = 10, workspace_id: str | None = None
+    ) -> list[dict]:
+        plugins = await self.browse_marketplace(db, workspace_id=workspace_id)
         plugins.sort(key=lambda p: p.get("install_count", 0), reverse=True)
         return plugins[:limit]
 
     # -- helpers ------------------------------------------------------------
 
-    def _avg_rating(self, plugin_name: str) -> float:
-        reviews = self._reviews.get(plugin_name, [])
-        if not reviews:
-            return 0.0
-        return round(sum(r["rating"] for r in reviews) / len(reviews), 1)
+    async def _stats_by_name(
+        self, db: AsyncSession, workspace_id: str | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Install count and mean rating per plugin name.
+
+        A plugin's install count is how many registrations exist, which is a
+        fact in the table rather than a counter that can drift. Scoped to a
+        workspace when one is given, so one tenant's installs are not reported
+        to another.
+        """
+        installs_q = select(Plugin.name, func.count(Plugin.id)).group_by(Plugin.name)
+        if workspace_id is not None:
+            installs_q = installs_q.where(Plugin.workspace_id == _as_uuid(workspace_id))
+        installs = await db.execute(installs_q)
+        stats: dict[str, dict[str, Any]] = {
+            name: {"install_count": count, "avg_rating": 0.0}
+            for name, count in installs.all()
+        }
+
+        ratings_q = (
+            select(Plugin.name, func.avg(PluginReview.rating))
+            .join(PluginReview, PluginReview.plugin_id == Plugin.id)
+            .group_by(Plugin.name)
+        )
+        if workspace_id is not None:
+            ratings_q = ratings_q.where(Plugin.workspace_id == _as_uuid(workspace_id))
+        ratings = await db.execute(ratings_q)
+        for name, average in ratings.all():
+            stats.setdefault(name, {"install_count": 0})
+            stats[name]["avg_rating"] = round(float(average), 1) if average else 0.0
+
+        return stats
+
+    async def _reviews_for(
+        self,
+        db: AsyncSession,
+        plugin_name: str,
+        workspace_id: str | None = None,
+    ) -> list[dict]:
+        query = (
+            select(PluginReview)
+            .join(Plugin, PluginReview.plugin_id == Plugin.id)
+            .where(Plugin.name == plugin_name)
+            .order_by(PluginReview.created_at)
+        )
+        if workspace_id is not None:
+            query = query.where(Plugin.workspace_id == _as_uuid(workspace_id))
+        result = await db.execute(query)
+        return [
+            {
+                "user_id": review.author,
+                "rating": int(review.rating),
+                "review": review.comment,
+            }
+            for review in result.scalars().all()
+        ]

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import time
 import uuid
-from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
+from app.models.plugin import BYOMModel
 
 router = APIRouter(prefix="/api/marketplace/byom", tags=["byom"])
 
@@ -64,11 +70,9 @@ class ValidationResponse(BaseModel):
     param_count: int
 
 
-# ---------------------------------------------------------------------------
-# In-memory store
-# ---------------------------------------------------------------------------
-
-_models: dict[str, dict[str, Any]] = {}
+# Registered models live in the byom_models table. A registration that
+# disappears on restart leaves the pipeline node it created pointing at
+# nothing.
 
 
 # ---------------------------------------------------------------------------
@@ -129,34 +133,79 @@ async def validate_model(
     )
 
 
-@router.post("/register", response_model=BYOMModelResponse)
-async def register_model(body: BYOMRegisterRequest) -> BYOMModelResponse:
+def _model_out(model: BYOMModel) -> BYOMModelResponse:
+    return BYOMModelResponse(
+        model_id=str(model.id),
+        model_name=model.model_name,
+        model_type=model.model_type,
+        file_name=model.file_name,
+        status=model.status,
+        node_name=model.node_name,
+        created_at=model.created_at.isoformat() if model.created_at else "",
+        input_shape=model.input_shape,
+        output_shape=model.output_shape,
+    )
+
+
+@router.post("/register", response_model=BYOMModelResponse, status_code=201)
+async def register_model(
+    body: BYOMRegisterRequest,
+    workspace_id: UUID | None = Query(None, description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> BYOMModelResponse:
     """Register a validated BYOM model and create its pipeline node entry."""
-    model_id = str(uuid.uuid4())
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    model = BYOMModel(
+        id=uuid.uuid4(),
+        workspace_id=workspace_id,
+        model_name=body.model_name,
+        model_type=body.model_type,
+        file_name=body.file_name,
+        input_shape=body.input_shape,
+        output_shape=body.output_shape,
+        adapter=body.adapter.model_dump(),
+        node_name=body.node.node_name,
+        node_config=body.node.model_dump(),
+        status="registered",
+    )
+    db.add(model)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"A model named '{body.model_name}' is already registered",
+        )
+    await db.refresh(model)
 
-    record: dict[str, Any] = {
-        "model_id": model_id,
-        "model_name": body.model_name,
-        "model_type": body.model_type,
-        "file_name": body.file_name,
-        "status": "registered",
-        "node_name": body.node.node_name,
-        "created_at": now,
-        "input_shape": body.input_shape,
-        "output_shape": body.output_shape,
-        "adapter": body.adapter.model_dump(),
-        "node": body.node.model_dump(),
-    }
-    _models[model_id] = record
-
-    return BYOMModelResponse(**{k: record[k] for k in BYOMModelResponse.model_fields})
+    return _model_out(model)
 
 
 @router.get("/models", response_model=list[BYOMModelResponse])
-async def list_models() -> list[BYOMModelResponse]:
-    """List all registered BYOM models."""
-    return [
-        BYOMModelResponse(**{k: m[k] for k in BYOMModelResponse.model_fields})
-        for m in _models.values()
-    ]
+async def list_models(
+    workspace_id: UUID | None = Query(None, description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> list[BYOMModelResponse]:
+    """List registered BYOM models, scoped to a workspace when given."""
+    query = select(BYOMModel)
+    if workspace_id is not None:
+        query = query.where(BYOMModel.workspace_id == workspace_id)
+
+    result = await db.execute(query.order_by(BYOMModel.created_at))
+    return [_model_out(m) for m in result.scalars().all()]
+
+
+@router.delete("/models/{model_id}", status_code=204, response_class=Response)
+async def delete_model(
+    model_id: UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Remove a registered BYOM model."""
+    result = await db.execute(select(BYOMModel).where(BYOMModel.id == model_id))
+    model = result.scalar_one_or_none()
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    await db.delete(model)
+    await db.commit()
+    return Response(status_code=204)

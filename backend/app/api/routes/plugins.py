@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-import time
 import uuid
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
+from app.models.plugin import Plugin, PluginReview as PluginReviewRow
 
 router = APIRouter(prefix="/api/plugins", tags=["plugins"])
 
@@ -44,72 +49,127 @@ class WidgetGenerateRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory store
+# Storage
+#
+# Registrations live in the plugins table. A registration held in one worker's
+# memory resolves on that process and 404s on the next.
 # ---------------------------------------------------------------------------
-_plugins: dict[str, dict] = {}
+
+def _plugin_out(plugin: Plugin) -> dict[str, Any]:
+    return {
+        "id": str(plugin.id),
+        "name": plugin.name,
+        "version": plugin.version,
+        "description": plugin.description,
+        "author": plugin.author,
+        "entry_point": plugin.entry_point,
+        "capabilities": (plugin.config_schema or {}).get("capabilities", []),
+        "enabled": plugin.enabled,
+        "installed_at": plugin.created_at.isoformat() if plugin.created_at else "",
+    }
+
+
+async def _load(db: AsyncSession, plugin_id: str) -> Plugin:
+    try:
+        key = uuid.UUID(plugin_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Plugin not found")
+
+    result = await db.execute(select(Plugin).where(Plugin.id == key))
+    plugin = result.scalar_one_or_none()
+    if plugin is None:
+        raise HTTPException(status_code=404, detail="Plugin not found")
+    return plugin
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/register")
-async def register_plugin(body: PluginRegister) -> dict[str, Any]:
+@router.post("/register", status_code=201)
+async def register_plugin(
+    body: PluginRegister,
+    workspace_id: UUID | None = Query(None, description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Register a new plugin."""
-    pid = str(uuid.uuid4())
-    plugin = {
-        "id": pid,
-        "name": body.name,
-        "version": body.version,
-        "description": body.description,
-        "author": body.author,
-        "entry_point": body.entry_point,
-        "capabilities": body.capabilities,
-        "enabled": False,
-        "installed_at": time.time(),
-    }
-    _plugins[pid] = plugin
-    return plugin
+    plugin = Plugin(
+        id=uuid.uuid4(),
+        workspace_id=workspace_id,
+        name=body.name,
+        version=body.version,
+        description=body.description,
+        author=body.author,
+        category="integration",
+        entry_point=body.entry_point,
+        permissions=[],
+        config_schema={"capabilities": body.capabilities},
+        config={},
+        enabled=False,
+        status="registered",
+    )
+    db.add(plugin)
+    await db.commit()
+    await db.refresh(plugin)
+    return _plugin_out(plugin)
 
 
 @router.get("/")
-async def list_plugins() -> list[dict]:
-    """List all registered plugins."""
-    return list(_plugins.values())
+async def list_plugins(
+    workspace_id: UUID | None = Query(None, description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """List registered plugins, scoped to a workspace when given."""
+    query = select(Plugin)
+    if workspace_id is not None:
+        query = query.where(Plugin.workspace_id == workspace_id)
+
+    result = await db.execute(query.order_by(Plugin.created_at))
+    return [_plugin_out(p) for p in result.scalars().all()]
 
 
 @router.get("/{plugin_id}")
-async def get_plugin(plugin_id: str) -> dict:
+async def get_plugin(
+    plugin_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """Get plugin details."""
-    if plugin_id not in _plugins:
-        raise HTTPException(status_code=404, detail="Plugin not found")
-    return _plugins[plugin_id]
+    return _plugin_out(await _load(db, plugin_id))
 
 
 @router.post("/{plugin_id}/enable")
-async def enable_plugin(plugin_id: str) -> dict[str, Any]:
+async def enable_plugin(
+    plugin_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Enable a plugin."""
-    if plugin_id not in _plugins:
-        raise HTTPException(status_code=404, detail="Plugin not found")
-    _plugins[plugin_id]["enabled"] = True
+    plugin = await _load(db, plugin_id)
+    plugin.enabled = True
+    await db.commit()
     return {"plugin_id": plugin_id, "enabled": True}
 
 
 @router.post("/{plugin_id}/disable")
-async def disable_plugin(plugin_id: str) -> dict[str, Any]:
+async def disable_plugin(
+    plugin_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Disable a plugin."""
-    if plugin_id not in _plugins:
-        raise HTTPException(status_code=404, detail="Plugin not found")
-    _plugins[plugin_id]["enabled"] = False
+    plugin = await _load(db, plugin_id)
+    plugin.enabled = False
+    await db.commit()
     return {"plugin_id": plugin_id, "enabled": False}
 
 
 @router.post("/{plugin_id}/execute")
-async def execute_plugin(plugin_id: str, body: PluginExecute) -> dict[str, Any]:
+async def execute_plugin(
+    plugin_id: str,
+    body: PluginExecute,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Execute a plugin action."""
-    if plugin_id not in _plugins:
-        raise HTTPException(status_code=404, detail="Plugin not found")
-    if not _plugins[plugin_id]["enabled"]:
+    plugin = await _load(db, plugin_id)
+    if not plugin.enabled:
         raise HTTPException(status_code=400, detail="Plugin is not enabled")
     return {
         "plugin_id": plugin_id,
@@ -130,29 +190,54 @@ async def marketplace_featured() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Review endpoint
+# Review endpoints
 # ---------------------------------------------------------------------------
-_reviews: dict[str, list[dict[str, Any]]] = {}
 
-
-@router.post("/{plugin_id}/reviews")
-async def submit_review(plugin_id: str, body: PluginReview) -> dict[str, Any]:
-    """Submit a review for a plugin."""
-    review = {
-        "id": str(uuid.uuid4()),
-        "plugin_id": plugin_id,
-        "rating": body.rating,
-        "text": body.text,
-        "created_at": time.time(),
+def _review_out(review: PluginReviewRow) -> dict[str, Any]:
+    return {
+        "id": str(review.id),
+        "plugin_id": str(review.plugin_id),
+        "rating": int(review.rating),
+        "text": review.comment,
+        "created_at": review.created_at.isoformat() if review.created_at else "",
     }
-    _reviews.setdefault(plugin_id, []).append(review)
-    return review
+
+
+@router.post("/{plugin_id}/reviews", status_code=201)
+async def submit_review(
+    plugin_id: str,
+    body: PluginReview,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Submit a review for a plugin."""
+    plugin = await _load(db, plugin_id)
+
+    review = PluginReviewRow(
+        id=uuid.uuid4(),
+        plugin_id=plugin.id,
+        rating=float(body.rating),
+        comment=body.text,
+    )
+    db.add(review)
+    await db.commit()
+    await db.refresh(review)
+    return _review_out(review)
 
 
 @router.get("/{plugin_id}/reviews")
-async def list_reviews(plugin_id: str) -> list[dict[str, Any]]:
-    """List reviews for a plugin."""
-    return _reviews.get(plugin_id, [])
+async def list_reviews(
+    plugin_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List reviews for a plugin, oldest first."""
+    plugin = await _load(db, plugin_id)
+
+    result = await db.execute(
+        select(PluginReviewRow)
+        .where(PluginReviewRow.plugin_id == plugin.id)
+        .order_by(PluginReviewRow.created_at)
+    )
+    return [_review_out(r) for r in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,14 @@ from app.models.command_center import (
     OperatorActionLog,
 )
 from app.models.review import ReviewTask, Review, ReviewShift
+from app.models.plugin import (
+    BYOMModel,
+    CustomNode,
+    InstalledPlugin,
+    ModelAdapter,
+    Plugin,
+    PluginReview,
+)
 from app.models.evidence import (
     AssetIntegrity,
     CustodyAction,
@@ -92,4 +100,10 @@ __all__ = [
     "CustodyEvent",
     "EvidenceBundle",
     "EvidenceBundleItem",
+    "BYOMModel",
+    "CustomNode",
+    "InstalledPlugin",
+    "ModelAdapter",
+    "Plugin",
+    "PluginReview",
 ]
