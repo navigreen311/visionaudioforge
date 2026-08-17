@@ -161,11 +161,13 @@ same middleware — which is one of the reasons it is raw ASGI rather than
 through without ever seeing them.
 
 The browser `WebSocket` constructor cannot set request headers, so the token
-travels in the query string:
+travels in the query string. Use the helper rather than building the URL by
+hand:
 
 ```ts
-const token = localStorage.getItem("access_token");
-const ws = new WebSocket(`${wsUrl}/ws/live/stream/${sessionId}?token=${token}`);
+import { authenticatedWsUrl } from "@/lib/session";
+
+const ws = new WebSocket(authenticatedWsUrl(`${wsUrl}/ws/live/stream/${sessionId}`));
 ```
 
 `?token=` is honoured for websocket handshakes **only**. Bearer tokens in URLs
@@ -173,19 +175,27 @@ end up in access logs, browser history and `Referer` headers, so plain HTTP
 still requires the header. An unauthenticated handshake is closed with code
 `1008` (policy violation).
 
-### ⚠️ Coordination needed
+### Call it at connect time, not at module scope
 
-Three console files open sockets without a token and will fail to connect until
-`?token=` is appended. They belong to other workstreams, so WS-A did not touch
-them:
+`authenticatedWsUrl` reads `localStorage`, which does not exist during SSR, and
+a token captured at import time is stale by the time the socket opens. Build
+the base URL wherever you like; append the token inside the connect callback.
 
-- `frontend/src/app/(dashboard)/capture/page.tsx` (~line 126)
-- `frontend/src/app/(dashboard)/agents/page.tsx` (~line 78)
-- `frontend/src/components/agents/CopilotChat.tsx` (~line 290)
+That is why `CopilotChat` takes a plain `wsUrl` prop and appends the token
+itself in `connectWs` — its caller (`(dashboard)/agents/page.tsx`) computes the
+URL at module scope, where there is no session to read.
 
-If the fix needs to land after this branch, `WS`-scoped enforcement can be
-staged off with `AUTH_REQUIRED=false` — but that opens every HTTP route too, so
-the one-line frontend change is by far the better trade.
+Current consumers:
+
+| File | Socket |
+| --- | --- |
+| `src/app/(dashboard)/capture/page.tsx` | `/ws/live/stream/{session_id}` |
+| `src/components/agents/CopilotChat.tsx` | `/ws/agents/stream` |
+
+`src/lib/socket.ts` builds a **socket.io** client, which the backend does not
+serve (the two WebSocket routes are raw ASGI). It is unused dead code as far as
+this boundary is concerned; if socket.io is ever wired up it will need its own
+auth handshake.
 
 ---
 

@@ -123,6 +123,29 @@ export function clearSession(): void {
   deleteCookie(SESSION_COOKIE);
 }
 
+/**
+ * Attach the session token to a WebSocket URL.
+ *
+ * The browser `WebSocket` constructor cannot set request headers, so the token
+ * has to ride in the query string. The backend honours `?token=` for websocket
+ * handshakes only — see `docs/auth.md`.
+ *
+ * Call this at connect time, never at module scope: `localStorage` does not
+ * exist during SSR, and a token read at import time would be stale by the time
+ * the socket actually opens.
+ *
+ * Returns the URL unchanged when there is no session. The handshake is then
+ * refused with close code 1008, which is the correct outcome — better a clean
+ * rejection than a socket that looks connected and streams nothing.
+ */
+export function authenticatedWsUrl(url: string): string {
+  const token = readAccessToken();
+  if (!token) return url;
+
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}token=${encodeURIComponent(token)}`;
+}
+
 export function readAccessToken(): string | null {
   if (typeof window === "undefined") return null;
   return localStorage.getItem(ACCESS_TOKEN_KEY);
