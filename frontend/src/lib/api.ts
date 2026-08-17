@@ -1,5 +1,7 @@
 import axios from "axios";
 
+import { clearSession, readAccessToken, readWorkspaceId } from "@/lib/session";
+
 const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
   headers: {
@@ -8,14 +10,32 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  if (typeof window !== "undefined") {
-    const token = localStorage.getItem("access_token");
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+  const token = readAccessToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
+
+// Every backend route now answers 401 without a valid token, so a 401 means
+// this session is over — expired, revoked, or signed out in another tab.
+// Clear it and hand the browser back to the login page rather than letting the
+// console sit there retrying with a dead credential.
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    if (status === 401 && typeof window !== "undefined") {
+      clearSession();
+      const { pathname, search } = window.location;
+      if (pathname !== "/login" && pathname !== "/register") {
+        const next = encodeURIComponent(`${pathname}${search}`);
+        window.location.replace(`/login?next=${next}`);
+      }
+    }
+    return Promise.reject(error);
+  },
+);
 
 export default api;
 
@@ -23,13 +43,29 @@ export default api;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const WORKSPACE_ID_PARAM = "00000000-0000-0000-0000-000000000001";
-
+/**
+ * The workspace the current session acts in.
+ *
+ * There used to be a `00000000-0000-0000-0000-000000000001` constant here that
+ * every call fell back to, which meant every browser on earth asked the API for
+ * the same tenant — there was no isolation to enforce. The value now comes from
+ * the authenticated session only (the token's `workspace_id` claim, or the
+ * `user.workspace_id` returned by `/api/auth/me`), and there is no default.
+ *
+ * Throws when there is no session. Callers are inside the console, which is
+ * gated by `src/middleware.ts` and the dashboard layout, so reaching this
+ * without a session is a bug worth surfacing rather than papering over with
+ * somebody else's tenant id.
+ */
 function getWorkspaceId(): string {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("workspace_id") || WORKSPACE_ID_PARAM;
+  const workspaceId = readWorkspaceId();
+  if (!workspaceId) {
+    throw new Error(
+      "No workspace in the current session. Sign in again — the workspace is " +
+        "read from the authenticated session and is never defaulted.",
+    );
   }
-  return WORKSPACE_ID_PARAM;
+  return workspaceId;
 }
 
 // ---------------------------------------------------------------------------
