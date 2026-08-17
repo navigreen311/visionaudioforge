@@ -4,14 +4,26 @@ import os
 from datetime import datetime, timedelta
 from typing import Any
 
+import bcrypt
 from fastapi import HTTPException, status
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from app.config import settings
 
-# Bcrypt with explicit rounds (default 12, ~250ms per hash on modern hardware)
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+# Bcrypt cost factor (12 ≈ 250 ms per hash on modern hardware).
+BCRYPT_ROUNDS = 12
+
+# bcrypt only reads the first 72 bytes of a password; anything past that is
+# silently ignored by the algorithm itself. We truncate explicitly so a long
+# passphrase hashes instead of raising, and so hash and verify agree.
+BCRYPT_MAX_BYTES = 72
+
+# NOTE: this used to go through passlib's CryptContext. passlib 1.7.4 probes
+# `bcrypt.__about__.__version__`, which bcrypt 4.1+ removed, and its
+# wrap-bug detection feeds an over-length password to the backend — which
+# bcrypt 5 rejects with ValueError. The result was that hash_password() raised
+# on every call. The `bcrypt` package is a direct dependency and produces the
+# same `$2b$` hashes, so existing stored hashes keep verifying.
 
 # JWT secret MUST come from environment — fail loudly if using the insecure default
 _JWT_SECRET = os.environ.get("JWT_SECRET_KEY", settings.JWT_SECRET_KEY)
@@ -29,14 +41,27 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 
+def _to_bcrypt_bytes(password: str) -> bytes:
+    return password.encode("utf-8")[:BCRYPT_MAX_BYTES]
+
+
 def hash_password(password: str) -> str:
     """Hash a plaintext password using bcrypt."""
-    return pwd_context.hash(password)
+    salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
+    return bcrypt.hashpw(_to_bcrypt_bytes(password), salt).decode("ascii")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a plaintext password against a bcrypt hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(
+            _to_bcrypt_bytes(plain_password),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        # Malformed or non-bcrypt hash — never leak the difference between
+        # "wrong password" and "corrupt record" to the caller.
+        return False
 
 
 def create_access_token(

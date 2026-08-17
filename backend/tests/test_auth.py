@@ -175,9 +175,15 @@ async def test_invalid_login_returns_401(client):
 
 @pytest.mark.anyio
 async def test_me_requires_auth(client):
-    """GET /api/auth/me without a token returns 403 (HTTPBearer rejects)."""
+    """GET /api/auth/me without a token returns 401.
+
+    Previously asserted 403. ``HTTPBearer`` is configured with
+    ``auto_error=False``, so the rejection comes from ``get_current_user`` (and,
+    with ``AUTH_REQUIRED`` on, from the auth middleware before that) — both of
+    which correctly answer 401 "who are you?" rather than 403 "not allowed".
+    """
     resp = await client.get("/api/auth/me")
-    assert resp.status_code == 403
+    assert resp.status_code == 401
 
 
 @pytest.mark.anyio

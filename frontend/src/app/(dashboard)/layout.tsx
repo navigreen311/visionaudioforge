@@ -1,12 +1,33 @@
 "use client";
 
-import { useState } from "react";
-import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import Sidebar from "@/components/ui/Sidebar";
 import UserMenu from "@/components/header/UserMenu";
 import NotificationCenter from "@/components/header/NotificationCenter";
 import GlobalSearch from "@/components/header/GlobalSearch";
+import { useAuthStore } from "@/stores/auth";
+
+/**
+ * Shown while the session is resolving and while a redirect is in flight.
+ *
+ * It renders the chrome and nothing else on purpose: no sidebar links, no
+ * notifications, no children. A spinner that replaces the whole page is what
+ * keeps protected content from flashing before we know who is looking at it.
+ */
+function SessionGate({ message }: { message: string }) {
+  return (
+    <div
+      className="flex min-h-screen flex-col items-center justify-center gap-3 bg-gray-50"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-brand-600" />
+      <p className="text-sm text-gray-500">{message}</p>
+    </div>
+  );
+}
 
 export default function DashboardLayout({
   children,
@@ -15,6 +36,39 @@ export default function DashboardLayout({
 }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
+  const isLoading = useAuthStore((s) => s.isLoading);
+  const initialize = useAuthStore((s) => s.initialize);
+
+  // `src/middleware.ts` already turned anonymous visitors away at the edge, but
+  // it only sees a cookie it cannot verify. This is the check that runs against
+  // a session the backend has actually confirmed.
+  useEffect(() => {
+    void initialize();
+  }, [initialize]);
+
+  useEffect(() => {
+    if (isLoading || isAuthenticated) return;
+    if (pathname === "/") {
+      router.replace("/login");
+      return;
+    }
+    // Read the query string off `location` rather than `useSearchParams`, which
+    // would force this layout — and therefore every dashboard page — behind a
+    // Suspense boundary at build time.
+    const search = typeof window === "undefined" ? "" : window.location.search;
+    router.replace(`/login?next=${encodeURIComponent(`${pathname}${search}`)}`);
+  }, [isLoading, isAuthenticated, pathname, router]);
+
+  if (isLoading) {
+    return <SessionGate message="Checking your session…" />;
+  }
+
+  if (!isAuthenticated) {
+    return <SessionGate message="Redirecting to sign in…" />;
+  }
 
   // Build breadcrumbs from pathname
   const segments = pathname.split("/").filter(Boolean);

@@ -3,6 +3,7 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.config import settings
 from app.main import app
 from tests.utils import (
     audio_to_wav_bytes,
@@ -11,6 +12,40 @@ from tests.utils import (
     create_test_user_data,
     image_to_png_bytes,
 )
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "auth_enforced: run this test with the app-level auth middleware active "
+        "(settings.AUTH_REQUIRED=True). Without it the suite runs open.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "audit_enabled: run this test with request audit logging active "
+        "(settings.AUDIT_ENABLED=True).",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _auth_enforcement(request):
+    """Opt the suite *out* of app-level auth, deliberately and visibly.
+
+    ``settings.AUTH_REQUIRED`` defaults to True in production so that a route
+    added tomorrow is protected the moment it is registered. The existing test
+    suite predates that boundary and calls endpoints anonymously, so tests run
+    with it off unless they ask for it with ``@pytest.mark.auth_enforced``.
+
+    The opt-out lives here, in one visible place, rather than being an accident
+    of how each test happens to build its client.
+    """
+    previous = (settings.AUTH_REQUIRED, settings.AUDIT_ENABLED)
+    settings.AUTH_REQUIRED = request.node.get_closest_marker("auth_enforced") is not None
+    settings.AUDIT_ENABLED = request.node.get_closest_marker("audit_enabled") is not None
+    try:
+        yield
+    finally:
+        settings.AUTH_REQUIRED, settings.AUDIT_ENABLED = previous
 
 
 @pytest.fixture

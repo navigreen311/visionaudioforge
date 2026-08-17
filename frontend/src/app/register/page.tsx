@@ -25,16 +25,27 @@ export default function RegisterPage() {
       return;
     }
 
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+
     setLoading(true);
     try {
       await register(email, password, workspace);
-      router.push("/");
+      // replace, not push: the back button should not return to a form whose
+      // submission already created the account.
+      router.replace("/");
     } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Registration failed. Please try again.";
-      setError(message);
+      const status =
+        typeof err === "object" && err !== null
+          ? (err as { response?: { status?: number } }).response?.status
+          : undefined;
+      setError(
+        status === 409
+          ? "That email is already registered. Try signing in instead."
+          : "Registration failed. Please try again.",
+      );
     } finally {
       setLoading(false);
     }

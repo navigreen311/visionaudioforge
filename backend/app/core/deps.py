@@ -1,4 +1,4 @@
-"""FastAPI dependencies: DB session, auth (JWT + API key), RBAC."""
+"""FastAPI dependencies: DB session, auth (JWT + API key), RBAC, tenancy."""
 
 from typing import AsyncGenerator, Callable
 from uuid import UUID
@@ -8,6 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.identity import Identity
 from app.core.security import decode_token
 from app.database import async_session_factory
 from app.models.user import User
@@ -22,12 +23,37 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
+def get_identity(request: Request) -> Identity | None:
+    """Return the identity resolved by ``AuthenticationMiddleware``, if any.
+
+    ``None`` means the request reached the handler without credentials — only
+    possible on an allowlisted path or with ``AUTH_REQUIRED=False``.
+    """
+    return getattr(request.state, "identity", None)
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(security_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> User:
-    """Authenticate via Bearer token or X-API-Key header."""
+    """Authenticate via Bearer token or X-API-Key header.
+
+    When ``AuthenticationMiddleware`` already resolved the caller, this reuses
+    that result and only loads the ``User`` row — the token is not verified
+    twice.
+    """
+    identity = get_identity(request)
+    if identity is not None:
+        result = await db.execute(select(User).where(User.id == identity.user_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="User not found",
+            )
+        return user
+
     # Check for API key in X-API-Key header
     api_key = request.headers.get("X-API-Key")
     if api_key:
@@ -115,3 +141,70 @@ async def get_current_workspace(
             detail="Workspace not found",
         )
     return workspace
+
+
+# ---------------------------------------------------------------------------
+# Tenancy — the single source of truth for "which workspace is this request?"
+# ---------------------------------------------------------------------------
+# Every route that reads or writes tenant-scoped data MUST take the workspace
+# from here and never from a path/query parameter or request body. A caller who
+# can name a workspace can name someone else's.
+#
+#     @router.get("/api/assets")
+#     async def list_assets(
+#         workspace_id: UUID = Depends(get_workspace_id),
+#         db: AsyncSession = Depends(get_db),
+#     ):
+#         ...
+#
+# See docs/auth.md.
+
+
+async def get_workspace_id(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> UUID:
+    """Return the workspace the caller is authenticated for.
+
+    Order of resolution:
+
+    1. ``request.state.workspace_id`` — put there by the middleware from the
+       token's ``workspace_id`` claim. No I/O.
+    2. The ``users.workspace_id`` column, for tokens minted before the claim
+       existed. One indexed lookup, and only on routes that need a tenant.
+
+    Fails closed: a caller with no resolvable workspace gets 403, never a
+    default and never someone else's.
+    """
+    workspace_id = getattr(request.state, "workspace_id", None)
+    if workspace_id is not None:
+        return workspace_id if isinstance(workspace_id, UUID) else UUID(str(workspace_id))
+
+    identity = get_identity(request)
+    if identity is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    result = await db.execute(
+        select(User.workspace_id).where(User.id == identity.user_id)
+    )
+    resolved = result.scalar_one_or_none()
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authenticated user is not attached to a workspace",
+        )
+
+    # Memoise for the rest of the request.
+    request.state.workspace_id = resolved
+    return resolved
+
+
+async def get_optional_workspace_id(request: Request) -> UUID | None:
+    """Non-raising variant for endpoints that may legitimately be unscoped."""
+    workspace_id = getattr(request.state, "workspace_id", None)
+    if workspace_id is None:
+        return None
+    return workspace_id if isinstance(workspace_id, UUID) else UUID(str(workspace_id))
