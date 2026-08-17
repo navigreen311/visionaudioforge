@@ -433,3 +433,38 @@ async def test_debug_errors_flag_restores_the_verbose_form(client, exploding_rou
     payload = response.json()
     assert "RuntimeError" in payload["exception"]
     assert payload["traceback"]
+
+
+# ---------------------------------------------------------------------------
+# 5. WebSockets — BaseHTTPMiddleware would have skipped these entirely
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_websocket_handshake_without_a_token_is_refused():
+    """Live capture and copilot streams are behind the same boundary.
+
+    ``BaseHTTPMiddleware`` passes websocket scopes straight through, which is
+    one of the reasons the auth layer is raw ASGI.
+    """
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    with TestClient(app) as tc:
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with tc.websocket_connect("/ws/live/stream/abc"):
+                pass
+
+    assert excinfo.value.code == 1008
+
+
+def test_websocket_token_is_read_from_the_query_string():
+    """Browsers cannot set headers on a WebSocket, so ?token= is the way in."""
+    from app.middleware.auth import _websocket_query_token
+
+    ws_scope = {"type": "websocket", "query_string": b"token=abc.def.ghi&x=1"}
+    assert _websocket_query_token(ws_scope) == "abc.def.ghi"
+
+    # ...and never for plain HTTP: URLs land in access logs and Referer.
+    http_scope = {"type": "http", "query_string": b"token=abc.def.ghi"}
+    assert _websocket_query_token(http_scope) is None

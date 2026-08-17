@@ -152,6 +152,43 @@ right value; it does not prove every query uses it.
 
 ---
 
+## WebSockets
+
+`/ws/live/stream/{session_id}` and `/ws/agents/stream` stream live video and
+copilot chat, and they were as open as everything else. They are now behind the
+same middleware — which is one of the reasons it is raw ASGI rather than
+`BaseHTTPMiddleware`, since the latter passes `websocket` scopes straight
+through without ever seeing them.
+
+The browser `WebSocket` constructor cannot set request headers, so the token
+travels in the query string:
+
+```ts
+const token = localStorage.getItem("access_token");
+const ws = new WebSocket(`${wsUrl}/ws/live/stream/${sessionId}?token=${token}`);
+```
+
+`?token=` is honoured for websocket handshakes **only**. Bearer tokens in URLs
+end up in access logs, browser history and `Referer` headers, so plain HTTP
+still requires the header. An unauthenticated handshake is closed with code
+`1008` (policy violation).
+
+### ⚠️ Coordination needed
+
+Three console files open sockets without a token and will fail to connect until
+`?token=` is appended. They belong to other workstreams, so WS-A did not touch
+them:
+
+- `frontend/src/app/(dashboard)/capture/page.tsx` (~line 126)
+- `frontend/src/app/(dashboard)/agents/page.tsx` (~line 78)
+- `frontend/src/components/agents/CopilotChat.tsx` (~line 290)
+
+If the fix needs to land after this branch, `WS`-scoped enforcement can be
+staged off with `AUTH_REQUIRED=false` — but that opens every HTTP route too, so
+the one-line frontend change is by far the better trade.
+
+---
+
 ## Middleware restoration
 
 All four custom middlewares were commented out in `main.py` with:

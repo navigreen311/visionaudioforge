@@ -17,6 +17,7 @@ through) and so that it adds no task-group hop to the hot path.
 from __future__ import annotations
 
 from typing import Any, MutableMapping
+from urllib.parse import parse_qs
 
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
@@ -29,6 +30,23 @@ from app.core.logging_config import user_id_ctx, workspace_id_ctx
 
 # Sent on an unauthenticated WebSocket handshake. 1008 = policy violation.
 WS_POLICY_VIOLATION = 1008
+
+
+def _websocket_query_token(scope: Scope) -> str | None:
+    """Read ``?token=`` from a WebSocket handshake.
+
+    The browser ``WebSocket`` constructor cannot set request headers, so the
+    query string is the only place a token can ride. Restricted to websocket
+    scopes on purpose: URLs land in access logs, browser history and
+    ``Referer``, which is exactly where a bearer token must not be.
+    """
+    if scope["type"] != "websocket":
+        return None
+    query = scope.get("query_string") or b""
+    if not query:
+        return None
+    values = parse_qs(query.decode("latin-1")).get("token")
+    return values[0] if values else None
 
 
 def attach_identity(scope: MutableMapping[str, Any], identity: Identity | None) -> None:
@@ -75,7 +93,9 @@ class AuthenticationMiddleware:
             return
 
         try:
-            identity: Identity | None = await resolve_identity(headers)
+            identity: Identity | None = await resolve_identity(
+                headers, fallback_token=_websocket_query_token(scope)
+            )
         except AuthError as exc:
             if not self.required:
                 # Opted out: an unusable credential is not fatal, but we still

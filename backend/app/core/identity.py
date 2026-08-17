@@ -133,10 +133,19 @@ async def _identity_from_bearer(token: str) -> Identity:
     )
 
 
-async def resolve_identity(headers: Mapping[str, str]) -> Identity:
+async def resolve_identity(
+    headers: Mapping[str, str],
+    fallback_token: str | None = None,
+) -> Identity:
     """Resolve the caller from request headers, or raise :class:`AuthError`.
 
     *headers* must be case-insensitive (Starlette's ``Headers`` is).
+
+    *fallback_token* is used only when no header credential is present. It
+    exists for WebSocket handshakes: the browser ``WebSocket`` constructor
+    cannot set an ``Authorization`` header, so the token has to travel in the
+    query string. It is deliberately **not** honoured for ordinary HTTP —
+    tokens in URLs end up in access logs, browser history and ``Referer``.
     """
     api_key = headers.get("x-api-key")
     if api_key:
@@ -144,10 +153,13 @@ async def resolve_identity(headers: Mapping[str, str]) -> Identity:
 
     authorization = headers.get("authorization") or ""
     scheme, _, credentials = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not credentials.strip():
-        raise AuthError(
-            "Missing authentication: provide an Authorization: Bearer "
-            "<token> header or an X-API-Key header"
-        )
+    if scheme.lower() == "bearer" and credentials.strip():
+        return await _identity_from_bearer(credentials.strip())
 
-    return await _identity_from_bearer(credentials.strip())
+    if fallback_token:
+        return await _identity_from_bearer(fallback_token)
+
+    raise AuthError(
+        "Missing authentication: provide an Authorization: Bearer "
+        "<token> header or an X-API-Key header"
+    )
