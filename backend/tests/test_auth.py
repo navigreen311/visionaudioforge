@@ -31,6 +31,43 @@ def test_hash_and_verify_password():
     assert verify_password("wrongpassword!", hashed) is False
 
 
+def test_stored_hash_format_is_bcrypt_cost_12():
+    """Pin the on-disk format. Changing it silently orphans the users table."""
+    assert hash_password("securepassword123").startswith("$2b$12$")
+
+
+def test_legacy_hash_still_verifies():
+    """A hash written by the previous passlib-based implementation must
+    keep working. passlib's bcrypt backend emitted standard $2b$ hashes, so
+    this cost-12 hash of "legacy-password" is byte-identical to what is
+    already stored for existing users.
+
+    If this fails, everyone who registered before the passlib removal is
+    locked out.
+    """
+    legacy = "$2b$12$lwkfJJoHg0tdl2CyGy5iF.2cTs8E5ZZhyoxKy5OkYiOklCh2mN/6a"
+
+    assert verify_password("legacy-password", legacy) is True
+    assert verify_password("not-it", legacy) is False
+
+
+def test_verify_password_returns_false_on_a_malformed_hash():
+    """A corrupt record is a failed login, not a 500."""
+    assert verify_password("anything", "not-a-bcrypt-hash") is False
+    assert verify_password("anything", "") is False
+
+
+def test_overlong_password_hashes_instead_of_raising():
+    """bcrypt reads 72 bytes; passlib used to raise on anything longer."""
+    long_password = "a" * 200
+    hashed = hash_password(long_password)
+
+    assert verify_password(long_password, hashed) is True
+    # Truncation is the algorithm's behaviour, made explicit rather than hidden:
+    # the first 72 bytes are what was actually hashed.
+    assert verify_password("a" * 72, hashed) is True
+
+
 # ---------------------------------------------------------------------------
 # Unit tests — JWT tokens
 # ---------------------------------------------------------------------------

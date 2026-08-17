@@ -12,7 +12,8 @@ VisionAudioForge uses a dual authentication scheme:
 
 ### API Keys
 - Service-to-service communication uses API keys managed through the developer portal.
-- API keys are hashed (bcrypt, 12 rounds) before storage; the raw key is shown only once at creation time.
+- API keys are hashed with **SHA-256** before storage; the raw key is shown only once at creation time. A fast hash is the right choice here — unlike a password, an API key is a high-entropy value this system generated, so there is no low-entropy guess space for an attacker to grind through and nothing for a slow KDF to buy.
+- **Passwords** are a different matter and use **bcrypt at cost factor 12** (`app/core/security.py`). Inputs are truncated to bcrypt's 72-byte limit, which the algorithm ignores past regardless.
 
 ## RBAC Roles and Permissions
 

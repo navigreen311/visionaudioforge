@@ -16,7 +16,10 @@ celery[redis]>=5.3.6
 
 # Auth
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+# bcrypt directly — passlib 1.7.4 is broken against bcrypt 4.1+. See
+# requirements.txt for the detail. Floor is the oldest release carrying the
+# gensalt/hashpw/checkpw API app/core/security.py uses.
+bcrypt>=4.0.0
 
 # Vision
 opencv-python-headless>=4.9.0.80

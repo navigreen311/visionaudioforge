@@ -16,7 +16,12 @@ celery[redis]==5.3.6
 
 # Auth
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+# bcrypt directly, no passlib. passlib 1.7.4 probes bcrypt.__about__.__version__
+# (removed in bcrypt 4.1) and its wrap-bug detection feeds an over-length
+# password to the backend, which bcrypt 5 rejects with ValueError — so
+# hash_password() raised on every call. app/core/security.py uses the bcrypt
+# API directly and emits the same $2b$ hashes.
+bcrypt==5.0.0
 
 # Vision
 opencv-python-headless==4.9.0.80
