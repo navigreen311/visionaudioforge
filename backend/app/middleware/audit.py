@@ -1,14 +1,37 @@
-"""Audit middleware: logs every request to the audit_logs table (non-blocking)."""
+"""Audit middleware: logs every request to the audit_logs table (non-blocking).
+
+The README claims an audit trail for compliance; this is the code that has to
+actually run for that claim to be true.
+
+Three defects kept the previous version from being safe to enable:
+
+1. ``asyncio.ensure_future`` with no reference held — the event loop only keeps
+   a weak reference to a task, so an audit write could be garbage-collected
+   before it ran. Tasks are now held in a module-level set until done.
+2. No exception handling on the orphaned task — a database that is down turned
+   into a bare "Task exception was never retrieved" on stderr and, on Windows,
+   a ``RuntimeError: Event loop is closed`` at shutdown. That is the
+   "incompatibility" the disable comment was pointing at.
+3. It re-decoded the JWT itself. The auth middleware has already done that, so
+   the identity is read off the ASGI scope instead.
+"""
+
+from __future__ import annotations
 
 import asyncio
+from typing import Any
 from uuid import UUID
 
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.database import async_session_factory
-from app.models.audit_log import AuditLog
+from app.config import settings
+from app.core.logging_config import get_logger
+
+logger = get_logger("audit")
+
+# Strong references to in-flight writes. Without this the loop may collect a
+# task mid-await and the audit entry silently disappears.
+_pending: set[asyncio.Task[None]] = set()
 
 
 async def _write_audit_log(
@@ -18,6 +41,9 @@ async def _write_audit_log(
     ip_address: str | None,
 ) -> None:
     """Persist an audit log entry in a separate DB session (background)."""
+    from app.database import async_session_factory
+    from app.models.audit_log import AuditLog
+
     async with async_session_factory() as session:
         log = AuditLog(
             user_id=UUID(user_id) if user_id else None,
@@ -29,35 +55,52 @@ async def _write_audit_log(
         await session.commit()
 
 
-class AuditMiddleware(BaseHTTPMiddleware):
-    """Log user_id, HTTP method, path, and client IP after each response."""
+def _spawn(coro: Any) -> None:
+    """Run *coro* detached, keeping a reference and swallowing failures."""
+    try:
+        task = asyncio.ensure_future(coro)
+    except RuntimeError:  # no running loop (e.g. interpreter shutting down)
+        coro.close()
+        return
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        response = await call_next(request)
+    _pending.add(task)
 
-        # Extract user_id from request state if auth dependency set it,
-        # otherwise try to parse the Authorization header without blocking.
-        user_id: str | None = None
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            try:
-                from app.core.security import decode_token
+    def _done(finished: asyncio.Task[None]) -> None:
+        _pending.discard(finished)
+        if finished.cancelled():
+            return
+        exc = finished.exception()
+        if exc is not None:
+            logger.warning("audit log write failed", exc_info=exc)
 
-                payload = decode_token(auth_header[7:])
-                user_id = payload.get("sub")
-            except Exception:
-                pass
+    task.add_done_callback(_done)
 
-        # Fire-and-forget background task so audit logging never blocks the response.
-        asyncio.ensure_future(
-            _write_audit_log(
-                user_id=user_id,
-                action=request.method,
-                resource_type=request.url.path,
-                ip_address=request.client.host if request.client else None,
+
+class AuditMiddleware:
+    """Record user_id, HTTP method, path, and client IP for every request."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not settings.AUDIT_ENABLED:
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            # Read *after* the downstream call: the auth middleware sits inside
+            # this one, so the identity is only on the scope by now.
+            state = scope.get("state") or {}
+            user_id = state.get("user_id")
+            client = scope.get("client")
+
+            _spawn(
+                _write_audit_log(
+                    user_id=str(user_id) if user_id else None,
+                    action=scope.get("method", ""),
+                    resource_type=scope.get("path", ""),
+                    ip_address=client[0] if client else None,
+                )
             )
-        )
-
-        return response
