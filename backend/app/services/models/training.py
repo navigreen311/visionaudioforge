@@ -9,9 +9,85 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 logger = logging.getLogger(__name__)
+
+#: Input size expected by the torchvision ResNet backbones used here.
+IMAGE_SIZE = 224
+
+
+def _as_uuid(value: str | None) -> uuid.UUID | None:
+    """Parse *value* as a UUID, or None if it is not one.
+
+    Lets the existing ``dataset_path`` field carry a dataset id, so callers that
+    already pass one get real data without an API change.
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+class _AssetImageDataset(Dataset):
+    """Torch dataset over dataset samples stored in object storage.
+
+    Samples come from ``DatasetService.list_samples``; each carries a storage
+    path and a label. Images are fetched and decoded lazily so a large dataset
+    is never held in memory at once.
+    """
+
+    def __init__(
+        self,
+        samples: list[dict],
+        class_to_idx: dict[str, int],
+        storage,
+    ) -> None:
+        self.samples = samples
+        self.class_to_idx = class_to_idx
+        self.storage = storage
+
+        from torchvision import transforms
+
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+                transforms.ToTensor(),
+                # ImageNet statistics — the backbones are pretrained on it.
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def _read_bytes(self, storage_path: str) -> bytes:
+        """Fetch one object, accepting either 'bucket/key' or a bare key."""
+        from app.services.data.dataset_manager import BUCKET
+
+        path = str(storage_path)
+        bucket, key = BUCKET, path
+        if path.startswith(f"{BUCKET}/"):
+            key = path[len(BUCKET) + 1 :]
+
+        # DataLoader workers are synchronous, so drive the async client here.
+        return asyncio.run(self.storage.download_file(bucket, key))
+
+    def __getitem__(self, index: int):
+        import io
+
+        from PIL import Image
+
+        sample = self.samples[index]
+        label = self.class_to_idx[str(sample["label"])]
+
+        raw = self._read_bytes(sample["storage_path"])
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        return self.transform(image), torch.tensor(label, dtype=torch.long)
 
 
 @dataclass
@@ -32,6 +108,17 @@ class FinetuneConfig:
     lr_scheduler_factor: float = 0.5
     lora_config: dict | None = None
     quantize_after: bool = False
+
+    #: Dataset to fine-tune on, loaded through DatasetService. When set, the
+    #: uploaded samples are used and num_classes is derived from their labels.
+    dataset_id: str | None = None
+    #: Opt in to synthetic tensors explicitly. Required for a run with no
+    #: dataset_id, so a job never silently trains on noise while appearing to
+    #: have trained on the user's data.
+    use_synthetic_data: bool = False
+    #: Fraction of samples held out for validation when the dataset carries no
+    #: explicit train/val split in its asset metadata.
+    val_split: float = 0.2
 
 
 class TransferLearningService:
@@ -62,10 +149,94 @@ class TransferLearningService:
 
         return model
 
+    async def _build_dataloaders(
+        self, config: FinetuneConfig
+    ) -> tuple[DataLoader, DataLoader]:
+        """Build train/val dataloaders for a fine-tune run.
+
+        Loads the uploaded samples for ``config.dataset_id`` via DatasetService.
+        Synthetic tensors are only used when ``use_synthetic_data`` is set
+        explicitly, so a job cannot quietly train on noise.
+        """
+        dataset_id = config.dataset_id or _as_uuid(config.dataset_path)
+        if dataset_id:
+            return await self._load_dataset(config, dataset_id)
+
+        if config.use_synthetic_data:
+            logger.warning(
+                "Fine-tune running on SYNTHETIC data — no dataset_id supplied. "
+                "Resulting metrics describe random tensors, not real samples."
+            )
+            return self._create_synthetic_data(config)
+
+        raise ValueError(
+            f"No dataset to train on: dataset_id is unset and dataset_path "
+            f"({config.dataset_path!r}) is not a dataset id. Supply a "
+            "dataset_id, or set use_synthetic_data=True to deliberately train "
+            "on synthetic tensors."
+        )
+
+    async def _load_dataset(
+        self, config: FinetuneConfig, dataset_id: uuid.UUID
+    ) -> tuple[DataLoader, DataLoader]:
+        """Load a real dataset's samples into train/val dataloaders."""
+        from app.database import async_session_factory
+        from app.services.data.dataset_manager import DatasetService
+        from app.services.data.storage import MinIOStorageService
+
+        storage = MinIOStorageService()
+
+        async with async_session_factory() as db:
+            samples = await DatasetService.list_samples(db, dataset_id)
+
+        if not samples:
+            raise ValueError(
+                f"Dataset {dataset_id} has no samples to train on."
+            )
+
+        labelled = [s for s in samples if s.get("label")]
+        if not labelled:
+            raise ValueError(
+                f"Dataset {dataset_id} has samples but none carry a "
+                "label; supervised fine-tuning needs labelled data."
+            )
+
+        classes = sorted({str(s["label"]) for s in labelled})
+        class_to_idx = {name: i for i, name in enumerate(classes)}
+        # The dataset defines the head size — trust it over the config default.
+        config.num_classes = len(classes)
+
+        explicit = [s for s in labelled if s.get("split") in ("train", "val")]
+        if explicit:
+            train_samples = [s for s in explicit if s["split"] == "train"]
+            val_samples = [s for s in explicit if s["split"] == "val"]
+        else:
+            cut = max(1, int(len(labelled) * (1 - config.val_split)))
+            train_samples, val_samples = labelled[:cut], labelled[cut:]
+
+        if not val_samples:  # tiny dataset — validate on the training split
+            val_samples = train_samples
+
+        logger.info(
+            "Fine-tuning dataset %s: %d train / %d val samples across %d classes",
+            dataset_id,
+            len(train_samples),
+            len(val_samples),
+            len(classes),
+        )
+
+        train_ds = _AssetImageDataset(train_samples, class_to_idx, storage)
+        val_ds = _AssetImageDataset(val_samples, class_to_idx, storage)
+
+        return (
+            DataLoader(train_ds, batch_size=config.batch_size, shuffle=True),
+            DataLoader(val_ds, batch_size=config.batch_size, shuffle=False),
+        )
+
     def _create_synthetic_data(
         self, config: FinetuneConfig
     ) -> tuple[DataLoader, DataLoader]:
-        """Create synthetic train/val dataloaders for V1 (no real dataset required)."""
+        """Create synthetic train/val dataloaders (tests and smoke runs only)."""
         num_train = 256
         num_val = 64
 
@@ -100,6 +271,11 @@ class TransferLearningService:
         from app.services.models.experiments import ExperimentService
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Build the data first: loading a real dataset sets config.num_classes
+        # from its labels, and the classifier head is sized from that.
+        train_loader, val_loader = await self._build_dataloaders(config)
+
         model = self._build_model(config)
         model = model.to(device)
 
@@ -127,8 +303,6 @@ class TransferLearningService:
             patience=config.lr_scheduler_patience,
             factor=config.lr_scheduler_factor,
         )
-
-        train_loader, val_loader = self._create_synthetic_data(config)
 
         best_val_loss = float("inf")
         best_model_state = None

@@ -29,6 +29,15 @@ def _dataset_modality(dataset: Any) -> str | None:
     return getattr(dataset, "modality", None) or getattr(dataset, "format", None)
 
 
+def _asset_path(asset: Any) -> str | None:
+    """Storage location of an asset.
+
+    app/models/asset.py names the column `path`; older code and the test fakes
+    use `storage_path`. Accept either.
+    """
+    return getattr(asset, "path", None) or getattr(asset, "storage_path", None)
+
+
 class DatasetService:
     """High-level operations on datasets and their samples (assets)."""
 
@@ -152,6 +161,38 @@ class DatasetService:
         await db.commit()
 
         return {"uploaded": uploaded, "failed": failed, "errors": errors}
+
+    # ------------------------------------------------------------------
+    # Samples
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def list_samples(
+        db: AsyncSession, dataset_id: uuid.UUID
+    ) -> list[dict[str, Any]]:
+        """Return this dataset's samples with their storage path and label.
+
+        This is the read path used by training (services/models/training.py) to
+        fine-tune on uploaded data instead of synthetic tensors.
+        """
+        result = await db.execute(
+            select(Asset).where(
+                Asset.metadata_["dataset_id"].as_string() == str(dataset_id)
+            )
+        )
+        assets = list(result.scalars().all())
+
+        return [
+            {
+                "id": str(a.id),
+                "filename": a.filename,
+                "storage_path": _asset_path(a),
+                "label": (a.metadata_ or {}).get("label"),
+                "split": (a.metadata_ or {}).get("split"),
+                "size_bytes": a.size_bytes,
+            }
+            for a in assets
+        ]
 
     # ------------------------------------------------------------------
     # Stats
