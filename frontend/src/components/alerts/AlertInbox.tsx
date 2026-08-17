@@ -66,7 +66,7 @@ export default function AlertInbox() {
   useEffect(() => {
     if (!alerts.length) return;
     const criticalNew = alerts.filter(
-      (a) => a.severity === "critical" && a.status === "firing",
+      (a) => a.severity === "critical" && a.status === "new",
     ).length;
     if (criticalNew > prevCountRef.current && prevCountRef.current !== 0) {
       try {

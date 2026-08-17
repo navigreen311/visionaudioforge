@@ -300,25 +300,31 @@ function AugmentationTab({
   };
 
   const handleStudioAugment = useCallback((augConfig: AugmentConfig) => {
-    // Convert AugmentConfig to AugmentationConfig steps and trigger augmentation
+    // Convert AugmentConfig to AugmentationConfig steps and trigger augmentation.
+    // TODO(ws-c): these step names do not match the server's augmenter vocabulary.
+    // backend/app/services/audio/augmentation.py dispatches on
+    // "noise" | "stretch" | "pitch" | "shift" (with noise_type/rate/n_steps/shift_ms
+    // params), and has no "frequency_mask" handler at all. Correcting the mapping
+    // needs product decisions (amplitude->SNR, shift_pct->ms, dropping frequency
+    // mask), so it is deliberately left as-is here rather than guessed at.
     const steps: AugmentationStep[] = [];
     if (augConfig.whiteNoise.enabled) {
-      steps.push({ name: "white_noise", params: { snr_db: augConfig.whiteNoise.snrDb } });
+      steps.push({ type: "white_noise", params: { snr_db: augConfig.whiteNoise.snrDb } });
     }
     if (augConfig.pinkNoise.enabled) {
-      steps.push({ name: "pink_noise", params: { amplitude: augConfig.pinkNoise.amplitude } });
+      steps.push({ type: "pink_noise", params: { amplitude: augConfig.pinkNoise.amplitude } });
     }
     if (augConfig.timeStretch.enabled) {
-      steps.push({ name: "time_stretch", params: { rate: augConfig.timeStretch.rate } });
+      steps.push({ type: "time_stretch", params: { rate: augConfig.timeStretch.rate } });
     }
     if (augConfig.pitchShift.enabled) {
-      steps.push({ name: "pitch_shift", params: { semitones: augConfig.pitchShift.semitones } });
+      steps.push({ type: "pitch_shift", params: { semitones: augConfig.pitchShift.semitones } });
     }
     if (augConfig.timeShift.enabled) {
-      steps.push({ name: "time_shift", params: { shift_pct: augConfig.timeShift.shiftPct } });
+      steps.push({ type: "time_shift", params: { shift_pct: augConfig.timeShift.shiftPct } });
     }
     if (augConfig.frequencyMask.enabled) {
-      steps.push({ name: "frequency_mask", params: { mask_size_pct: augConfig.frequencyMask.maskSizePct } });
+      steps.push({ type: "frequency_mask", params: { mask_size_pct: augConfig.frequencyMask.maskSizePct } });
     }
     if (steps.length > 0 && file) {
       setConfig({ steps });

@@ -23,7 +23,16 @@ interface DataTableProps<T> {
   pagination?: PaginationConfig;
 }
 
-export default function DataTable<T extends Record<string, unknown>>({
+/**
+ * Read an arbitrary column key off a row. Column keys are plain strings so that
+ * synthetic columns (e.g. "actions") are expressible, which means the value is
+ * only ever knowable as `unknown` — `render` narrows it per column.
+ */
+function cellValue<T extends object>(row: T, key: string): unknown {
+  return (row as Record<string, unknown>)[key];
+}
+
+export default function DataTable<T extends object>({
   columns,
   data,
   onSort,
@@ -84,8 +93,8 @@ export default function DataTable<T extends Record<string, unknown>>({
                 {columns.map((col) => (
                   <td key={col.key} className="px-6 py-4 text-sm text-gray-900 whitespace-nowrap">
                     {col.render
-                      ? col.render(row[col.key], row)
-                      : String(row[col.key] ?? "")}
+                      ? col.render(cellValue(row, col.key), row)
+                      : String(cellValue(row, col.key) ?? "")}
                   </td>
                 ))}
               </tr>

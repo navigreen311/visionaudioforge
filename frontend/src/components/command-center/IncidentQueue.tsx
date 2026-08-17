@@ -54,7 +54,7 @@ const severityOrder: Record<AlertSeverity, number> = {
 };
 
 const statusBadge: Record<AlertStatus, { bg: string; text: string; label: string }> = {
-  firing: { bg: "bg-red-50", text: "text-red-700", label: "Open" },
+  new: { bg: "bg-red-50", text: "text-red-700", label: "Open" },
   acknowledged: { bg: "bg-yellow-50", text: "text-yellow-700", label: "Acknowledged" },
   resolved: { bg: "bg-green-50", text: "text-green-700", label: "Resolved" },
   dismissed: { bg: "bg-gray-50", text: "text-gray-500", label: "Dismissed" },
@@ -98,7 +98,7 @@ export default function IncidentQueue({ onIncidentClick }: IncidentQueueProps) {
   const fetchAlerts = useCallback(async () => {
     try {
       setLoading(true);
-      const { items } = await listAlerts({ status: "firing" });
+      const { items } = await listAlerts({ status: "new" });
       setAlerts(items);
     } catch {
       // keep current state on error

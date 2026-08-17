@@ -7,7 +7,20 @@ from typing import Any
 
 
 class ScenarioGenerator:
-    """Generates synthetic incident scenarios for simulation testing."""
+    """Generates synthetic incident scenarios for simulation testing.
+
+    The randomness here is the algorithm, not a stand-in for a measurement:
+    the whole point is to synthesise varied incident sequences, exactly as with
+    data augmentation. It is therefore kept — but an optional *seed* makes a
+    generated scenario reproducible, which matters when one is used as a test
+    fixture or attached to a bug report.
+    """
+
+    def __init__(self, seed: int | None = None) -> None:
+        # A private Random keeps seeding local instead of perturbing the global
+        # random module for everything else in the process.
+        self._rng = random.Random(seed)
+        self.seed = seed
 
     SCENARIO_TYPES = [
         "intrusion",
@@ -57,12 +70,12 @@ class ScenarioGenerator:
 
     def generate_random_scenario(self, difficulty: str = "medium") -> dict[str, Any]:
         """Generate a random scenario with randomized parameters."""
-        scenario_type = random.choice(self.SCENARIO_TYPES)
+        scenario_type = self._rng.choice(self.SCENARIO_TYPES)
         diff = self.DIFFICULTY_PARAMS.get(difficulty, self.DIFFICULTY_PARAMS["medium"])
         params = {
             "noise": diff["noise"],
-            "event_count": random.randint(*diff["event_count_range"]),
-            "duration_s": random.uniform(*diff["duration_range"]),
+            "event_count": self._rng.randint(*diff["event_count_range"]),
+            "duration_s": self._rng.uniform(*diff["duration_range"]),
         }
         return self.generate_scenario(scenario_type, params)
 
@@ -91,17 +104,17 @@ class ScenarioGenerator:
         duration = params.get("duration_s", 30.0)
         noise = params.get("noise", 0.1)
         zones = ["perimeter-north", "perimeter-east", "perimeter-south", "perimeter-west"]
-        zone = random.choice(zones)
+        zone = self._rng.choice(zones)
         events: list[dict[str, Any]] = []
         for i in range(count):
             t = (i / max(count - 1, 1)) * duration
-            confidence = min(0.3 + (i / max(count - 1, 1)) * 0.65 + random.uniform(-noise, noise), 1.0)
+            confidence = min(0.3 + (i / max(count - 1, 1)) * 0.65 + self._rng.uniform(-noise, noise), 1.0)
             events.append({
                 "timestamp": self._ts(t),
                 "type": "motion_detected",
                 "zone": zone,
                 "confidence": round(confidence, 4),
-                "metadata": {"frame_idx": i * 30, "bbox": [random.randint(0, 500) for _ in range(4)]},
+                "metadata": {"frame_idx": i * 30, "bbox": [self._rng.randint(0, 500) for _ in range(4)]},
             })
         # Final alert event
         events.append({

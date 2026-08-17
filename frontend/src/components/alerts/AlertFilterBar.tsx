@@ -36,7 +36,7 @@ const SEVERITY_PILLS: SeverityPill[] = [
 
 const STATUS_PILLS: StatusPill[] = [
   { label: "All", value: "" },
-  { label: "Open", value: "firing" },
+  { label: "Open", value: "new" },
   { label: "Acknowledged", value: "acknowledged" },
   { label: "Dismissed", value: "dismissed" },
 ];
@@ -76,7 +76,7 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 const STATUS_COLORS: Record<string, string> = {
   "": "bg-gray-800 text-white",
-  firing: "bg-red-500 text-white",
+  new: "bg-red-500 text-white",
   acknowledged: "bg-yellow-500 text-white",
   dismissed: "bg-gray-500 text-white",
 };

@@ -523,8 +523,8 @@ export default function InvestigatePage() {
       <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white">
         <CaseList
           cases={cases}
-          selectedCaseId={selectedCase?.id || null}
-          onSelectCase={(c) => {
+          selectedId={selectedCase?.id || null}
+          onSelect={(c) => {
             setSelectedCase(c);
             setSelectedEvent(null);
           }}

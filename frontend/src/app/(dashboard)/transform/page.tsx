@@ -72,6 +72,10 @@ export default function TransformPage() {
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
   const [processingTimeMs, setProcessingTimeMs] = useState<number | null>(null);
 
+  // Params emitted by OperationControls (see the TODO at its render site).
+  const [operationParams, setOperationParams] = useState<Record<string, unknown>>({});
+  void operationParams;
+
   // Track which dynamic components are available
   const [hasOperationControls, setHasOperationControls] = useState(false);
   const [hasTransformHistory, setHasTransformHistory] = useState(false);
@@ -610,7 +614,12 @@ export default function TransformPage() {
 
             {/* Placeholder for OperationControls (created by other agents) */}
             {hasOperationControls ? (
-              <OperationControls />
+              // TODO(ws-c): OperationControls emits a generic params bag, but this
+              // page drives requests off the per-mode state below (bgMethod,
+              // srScale, ...). The emitted params are captured but not yet folded
+              // into the request payload — wiring them up is a behavioural change
+              // left to the transform owner.
+              <OperationControls operation={mode} onParamsChange={setOperationParams} />
             ) : (
               /* Inline mode-specific options (existing controls) */
               <div className="bg-gray-50 rounded-lg p-4 space-y-3">
@@ -813,7 +822,7 @@ export default function TransformPage() {
             )}
 
             {/* Processing progress (created by other agents) */}
-            {loading && <ProcessingProgress />}
+            {loading && <ProcessingProgress isProcessing={loading} />}
 
             {/* Error */}
             {error && (

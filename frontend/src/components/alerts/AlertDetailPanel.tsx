@@ -32,7 +32,7 @@ const severityConfig: Record<
 };
 
 const statusConfig: Record<AlertStatus, { variant: string; label: string }> = {
-  firing: { variant: "error", label: "Firing" },
+  new: { variant: "error", label: "Firing" },
   acknowledged: { variant: "warning", label: "Acknowledged" },
   resolved: { variant: "success", label: "Resolved" },
   dismissed: { variant: "neutral", label: "Dismissed" },

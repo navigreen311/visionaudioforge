@@ -7,13 +7,18 @@ SLA reports.
 from __future__ import annotations
 
 import logging
-import random
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.observability import metrics_source
+
 logger = logging.getLogger(__name__)
+
+#: Marker used whenever a figure could not be measured. Callers/UI should render
+#: this as "unknown", never as a zero or a passing value.
+UNMEASURED: None = None
 
 # ---------------------------------------------------------------------------
 # Standard SLA tiers
@@ -58,36 +63,64 @@ class SLAService:
         sla_config: dict[str, Any],
         period_hours: int = 24,
     ) -> dict[str, Any]:
-        """Check current metrics against the given SLA config.
+        """Check measured metrics against the given SLA config.
 
-        Returns a dict with ``compliant``, measured values, and any
-        violations.
+        Values that cannot be measured are reported as ``None`` and listed in
+        ``unmeasured``. Compliance **fails closed**: a report never claims the
+        SLA was met on the strength of data that was never collected.
         """
-        # V1: simulated metrics — replace with real Prometheus / DB queries
-        uptime_pct = round(random.uniform(99.0, 100.0), 4)
-        avg_latency_ms = round(random.uniform(30, 300), 2)
-        error_rate = round(random.uniform(0.0, 0.03), 4)
+        latency = metrics_source.average_request_latency_ms()
+        errors = metrics_source.error_rate()
+
+        # Uptime needs external probing (a blackbox exporter or synthetic
+        # check); nothing in-process can attest to it, so it stays unmeasured
+        # rather than being approximated.
+        uptime_pct = UNMEASURED
+
+        avg_latency_ms = round(latency.value, 2) if latency.observed else UNMEASURED
+        error_rate = round(errors.value, 6) if errors.observed else UNMEASURED
 
         violations: list[str] = []
-        if uptime_pct < sla_config["target_uptime"]:
+        unmeasured: list[str] = []
+
+        if uptime_pct is None:
+            unmeasured.append("uptime_pct")
+        elif uptime_pct < sla_config["target_uptime"]:
             violations.append(
                 f"Uptime {uptime_pct}% < target {sla_config['target_uptime']}%"
             )
-        if avg_latency_ms > sla_config["max_latency_ms"]:
+
+        if avg_latency_ms is None:
+            unmeasured.append("avg_latency_ms")
+        elif avg_latency_ms > sla_config["max_latency_ms"]:
             violations.append(
                 f"Latency {avg_latency_ms}ms > max {sla_config['max_latency_ms']}ms"
             )
-        if error_rate > sla_config["max_error_rate"]:
+
+        if error_rate is None:
+            unmeasured.append("error_rate")
+        elif error_rate > sla_config["max_error_rate"]:
             violations.append(
                 f"Error rate {error_rate} > max {sla_config['max_error_rate']}"
             )
 
+        if unmeasured:
+            status = "insufficient_data"
+            compliant = False
+        else:
+            status = "measured"
+            compliant = len(violations) == 0
+
         return {
-            "compliant": len(violations) == 0,
+            "compliant": compliant,
+            "status": status,
             "uptime_pct": uptime_pct,
             "avg_latency_ms": avg_latency_ms,
             "error_rate": error_rate,
             "violations": violations,
+            "unmeasured": unmeasured,
+            "period_hours": period_hours,
+            "request_sample_count": errors.sample_count,
         }
 
     # ------------------------------------------------------------------
@@ -112,19 +145,38 @@ class SLAService:
         delta = delta_map.get(period, timedelta(weeks=1))
         start = now - delta
 
-        # V1: simulated report data
-        uptime = round(random.uniform(99.5, 100.0), 4)
-        latency_p50 = round(random.uniform(30, 150), 2)
-        latency_p99 = round(latency_p50 * random.uniform(3, 6), 2)
-        incidents = random.randint(0, 5)
+        latency = metrics_source.average_request_latency_ms()
+
+        # Only the mean is derivable from the current histogram configuration;
+        # p50/p99 need quantile buckets that are not configured, and uptime and
+        # incident counts have no recorded source at all. All are reported as
+        # unmeasured instead of being synthesised.
+        avg_latency_ms = round(latency.value, 2) if latency.observed else UNMEASURED
+
+        unmeasured = [
+            name
+            for name, value in (
+                ("uptime", UNMEASURED),
+                ("latency_p50", UNMEASURED),
+                ("latency_p99", UNMEASURED),
+                ("incidents", UNMEASURED),
+                ("avg_latency_ms", avg_latency_ms),
+            )
+            if value is None
+        ]
 
         return {
             "period": period,
             "start": start.isoformat(),
             "end": now.isoformat(),
-            "uptime": uptime,
-            "latency_p50": latency_p50,
-            "latency_p99": latency_p99,
-            "incidents": incidents,
-            "compliance": uptime >= 99.9 and latency_p99 < 500,
+            "status": "insufficient_data" if unmeasured else "measured",
+            "uptime": UNMEASURED,
+            "latency_p50": UNMEASURED,
+            "latency_p99": UNMEASURED,
+            "avg_latency_ms": avg_latency_ms,
+            "incidents": UNMEASURED,
+            "unmeasured": unmeasured,
+            # Fails closed: compliance is never asserted from absent data.
+            "compliance": False,
+            "request_sample_count": latency.sample_count,
         }

@@ -143,14 +143,41 @@ async def test_alert_fatigue_analysis(fake_db):
 
 
 @pytest.mark.anyio
-async def test_rule_tuning_suggestion(fake_db):
+async def test_rule_tuning_reports_unavailable_without_a_rule(fake_db):
+    """With no readable rule there is no threshold to tune against.
+
+    The previous version of this test asserted suggested > current, which only
+    held because both numbers were generated with random.uniform. Reporting an
+    invented "current threshold" would misstate the user's own configuration.
+    """
     rule_id = UUID("00000000-0000-0000-0000-000000000002")
     result = await AlertAnalytics.suggest_rule_tuning(fake_db, rule_id)
-    assert "current_threshold" in result
-    assert "suggested_threshold" in result
-    assert result["suggested_threshold"] > result["current_threshold"]
+    assert result["status"] == "unavailable"
+    assert result["current_threshold"] is None
+    assert result["suggested_threshold"] is None
     assert "reason" in result
-    assert "expected_reduction_pct" in result
+
+
+@pytest.mark.anyio
+async def test_rule_tuning_raises_the_rule_s_own_threshold():
+    """A real threshold is read from the rule and raised by the policy bump."""
+    rule_id = UUID("00000000-0000-0000-0000-000000000002")
+
+    class _Rule:
+        conditions = {"threshold": 80}
+
+    class _DBWithRule:
+        async def execute(self, stmt):
+            class _Result:
+                def scalar_one_or_none(self):
+                    return _Rule()
+
+            return _Result()
+
+    result = await AlertAnalytics.suggest_rule_tuning(_DBWithRule(), rule_id)
+    assert result["status"] == "suggested"
+    assert result["current_threshold"] == 80.0
+    assert result["suggested_threshold"] > result["current_threshold"]
 
 
 # ---------------------------------------------------------------------------

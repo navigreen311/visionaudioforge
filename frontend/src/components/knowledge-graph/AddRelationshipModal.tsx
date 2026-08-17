@@ -159,7 +159,9 @@ export default function AddRelationshipModal({
 }: AddRelationshipModalProps) {
   const [sourceId, setSourceId] = useState("");
   const [targetId, setTargetId] = useState("");
-  const [relationType, setRelationType] = useState(RELATIONSHIP_TYPES[0]);
+  const [relationType, setRelationType] = useState<
+    (typeof RELATIONSHIP_TYPES)[number]
+  >(RELATIONSHIP_TYPES[0]);
   const [customRelation, setCustomRelation] = useState("");
   const [useCustom, setUseCustom] = useState(false);
   const [properties, setProperties] = useState<PropertyEntry[]>([]);
