@@ -126,22 +126,36 @@ JWT "workspace_id" claim  ──(present)──▶ request.state.workspace_id �
 `get_workspace_id` never returns a default. A caller with no resolvable
 workspace gets `403 Authenticated user is not attached to a workspace`.
 
-### Open handoff to whoever owns `app/services/auth_service.py`
+### Minting tokens
 
-Tokens are currently minted as `{"sub": str(user.id)}`. Adding the workspace
-makes resolution completely I/O-free:
+`AuthService` builds its claims through two helpers, so the rule lives in one
+place rather than at each of the four mint sites:
 
 ```python
-token_data = {"sub": str(user.id), "workspace_id": str(user.workspace_id)}
+from app.services.auth_service import access_token_claims, refresh_token_claims
+
+create_access_token(access_token_claims(user))    # {"sub": …, "workspace_id": …}
+create_refresh_token(refresh_token_claims(user))  # {"sub": …}
 ```
 
-Both call sites are `AuthService.register` and `AuthService.login` (and the
-re-mint inside `AuthService.refresh`). Nothing breaks without it — the
-dependency falls back to a `users.workspace_id` lookup — but every
-tenant-scoped request pays for a query until it lands.
+Three decisions worth knowing:
 
-WS-A did not make this change because `app/services/**` belongs to another
-workstream.
+- **Access tokens carry the workspace; refresh tokens do not.** A refresh token
+  lives 7 days. Baking a tenant into it would let a stale workspace survive a
+  week, so `AuthService.refresh` re-reads `users.workspace_id` and that is the
+  point at which a reassignment lands.
+- **The claim is omitted, not null, when a user has no workspace.** A `"None"`
+  string reaching a UUID parser is worse than an absent key; absent means
+  `get_workspace_id` falls through to its lookup and then fails closed with
+  403.
+- **The claim is a snapshot with bounded staleness.** Moving a user to another
+  workspace takes effect on their next access token — at most 30 minutes. That
+  is the JWT trade: nothing on the hot path, staleness capped by expiry. If a
+  reassignment ever has to be instant, revoke the session; do not reintroduce a
+  per-request lookup.
+
+The `users.workspace_id` fallback in `get_workspace_id` stays regardless — it
+covers tokens issued before this change, for the remainder of their expiry.
 
 ### Enforcing the filter
 
