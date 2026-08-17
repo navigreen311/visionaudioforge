@@ -1,5 +1,6 @@
 """Auto-ML service: hyperparameter sweeps, backbone recommendation, and training recipes."""
 
+import hashlib
 import itertools
 import logging
 import math
@@ -7,6 +8,21 @@ import random
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: Default seed for the sampling that random search legitimately needs. Fixed so
+#: a sweep is reproducible; callers can override per call.
+DEFAULT_SWEEP_SEED = 0
+
+
+def _unit_hash(*parts: str) -> float:
+    """Stable pseudo-value in [0, 1) derived from *parts*.
+
+    Used to make simulated training metrics deterministic. random.* here meant
+    the same hyper-parameter config scored differently on every sweep, which
+    makes a "best config" recommendation meaningless.
+    """
+    digest = hashlib.sha256("|".join(parts).encode()).digest()
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
 # ---------------------------------------------------------------------------
 # Training recipe presets
@@ -61,24 +77,30 @@ class AutoMLService:
         base_config: dict[str, Any],
         param_grid: dict[str, list[Any]],
         num_trials: int = 10,
+        seed: int = DEFAULT_SWEEP_SEED,
     ) -> list[dict[str, Any]]:
-        """Run a grid search over *param_grid* up to *num_trials* configs.
+        """Run a randomised search over *param_grid* up to *num_trials* configs.
 
-        For each config the method simulates a training run and returns
-        realistic (but synthetic) metrics so callers can evaluate the sweep
-        without real GPU time.
+        No training is performed. Each trial's metrics come from
+        ``_simulate_training`` and every result carries ``simulated: True`` —
+        the ranking shows how the sweep *would* be ordered, not measured
+        outcomes.
         """
         keys = list(param_grid.keys())
         values = list(param_grid.values())
         all_combos = list(itertools.product(*values))
-        random.shuffle(all_combos)
+        # Randomised order is the actual search strategy here, so it stays —
+        # but seeded, so a sweep can be reproduced and compared.
+        random.Random(seed).shuffle(all_combos)
         combos = all_combos[:num_trials]
 
         results: list[dict[str, Any]] = []
         for combo in combos:
             config = {**base_config, **dict(zip(keys, combo))}
             metrics = AutoMLService._simulate_training(config)
-            results.append({"config": config, "metrics": metrics, "rank": 0})
+            results.append(
+                {"config": config, "metrics": metrics, "rank": 0, "simulated": True}
+            )
 
         # Rank by val_loss ascending (lower is better)
         results.sort(key=lambda r: r["metrics"]["val_loss"])
@@ -147,11 +169,19 @@ class AutoMLService:
 
         trials: list[dict[str, Any]] = []
         for preset in presets[:num_trials]:
-            # Simulate validation metric variance for the preset
-            variance = random.uniform(0.005, 0.05)
+            # Modelled, not measured: no training runs to observe variance from.
+            # Deterministic per preset so the recommendation is stable — with
+            # random.uniform the "best" augmentation changed on every call.
+            variance = 0.005 + _unit_hash(str(preset["name"]), "variance") * 0.045
             if preset["name"] in ("light", "medium"):
                 variance *= 0.5  # moderate augmentation tends to be most stable
-            trials.append({"augmentation": preset, "val_metric_variance": round(variance, 5)})
+            trials.append(
+                {
+                    "augmentation": preset,
+                    "val_metric_variance": round(variance, 5),
+                    "simulated": True,
+                }
+            )
 
         trials.sort(key=lambda t: t["val_metric_variance"])
         return {
@@ -178,19 +208,35 @@ class AutoMLService:
 
     @staticmethod
     def _simulate_training(config: dict[str, Any]) -> dict[str, Any]:
-        """Generate synthetic but realistic training metrics for a config."""
+        """Model synthetic training metrics for a config.
+
+        These are NOT measurements — no training runs. The values are a
+        deterministic function of the config so the same hyper-parameters always
+        score the same, making a sweep's ranking reproducible. Callers must
+        surface the accompanying ``simulated`` flag.
+        """
         lr = config.get("learning_rate", 0.001)
         epochs = config.get("epochs", config.get("num_epochs", 10))
         batch_size = config.get("batch_size", 32)
+        key = f"lr={lr},epochs={epochs},bs={batch_size}"
 
-        # Base final loss influenced by hyper-params
-        base_loss = 0.3 + abs(math.log10(lr + 1e-8)) * 0.05 + random.uniform(-0.05, 0.05)
+        # Base final loss influenced by hyper-params, plus a deterministic
+        # per-config offset standing in for run-to-run variance.
+        base_loss = 0.3 + abs(math.log10(lr + 1e-8)) * 0.05
+        base_loss += (_unit_hash(key, "base") - 0.5) * 0.10
         # Larger batch → slightly higher loss in small-data regime
         base_loss += (batch_size / 256) * 0.02
 
-        train_loss = round(max(0.01, base_loss - 0.1 + random.gauss(0, 0.02)), 4)
-        val_loss = round(max(0.01, base_loss + random.gauss(0, 0.03)), 4)
-        accuracy = round(min(0.99, max(0.3, 1.0 - val_loss + random.gauss(0, 0.02))), 4)
+        train_loss = round(
+            max(0.01, base_loss - 0.1 + (_unit_hash(key, "train") - 0.5) * 0.04), 4
+        )
+        val_loss = round(
+            max(0.01, base_loss + (_unit_hash(key, "val") - 0.5) * 0.06), 4
+        )
+        accuracy = round(
+            min(0.99, max(0.3, 1.0 - val_loss + (_unit_hash(key, "acc") - 0.5) * 0.04)),
+            4,
+        )
 
         return {
             "train_loss": train_loss,

@@ -1,12 +1,25 @@
 """Stress tester — concurrent load testing, edge-case suites, and adversarial robustness."""
 
 import asyncio
-import random
+import logging
+import os
 import statistics
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+def _rss_mb() -> float | None:
+    """Current resident set size in MB, or None if it cannot be read."""
+    try:
+        import psutil
+
+        return psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -33,8 +46,12 @@ class StressTestResult:
     latency_p95_ms: float = 0.0
     latency_p99_ms: float = 0.0
     error_rate: float = 0.0
-    memory_delta_mb: float = 0.0
+    memory_delta_mb: float | None = 0.0
     duration_s: float = 0.0
+    #: True when the load was generated against a synthetic in-process workload
+    #: rather than the real target module. Latency and throughput then describe
+    #: the harness, not the system under test — surface this in any report.
+    synthetic: bool = True
 
 
 class StressTester:
@@ -46,6 +63,24 @@ class StressTester:
         "large": 1_000_000,   # 1 MB
     }
 
+    #: Edge cases the decode path is known not to handle. Deterministic so the
+    #: suite is usable as a regression signal.
+    KNOWN_FAILING_CASES = ("corrupted_bytes", "zero_length_audio")
+
+    #: Simulation constants for run_adversarial_test. Not measurements.
+    BASELINE_CONFIDENCE = 0.92
+    METHOD_SENSITIVITY = {"noise": 0.55, "brightness": 0.40}
+
+    #: Nominal per-node cost (ms) used by benchmark_pipeline until a real
+    #: pipeline executor can be timed. Not measurements.
+    NODE_COST_PROFILE_MS = {
+        "preprocessor": 4.0,
+        "detector": 18.0,
+        "classifier": 9.0,
+        "postprocessor": 3.0,
+        "aggregator": 2.0,
+    }
+
     # ------------------------------------------------------------------
     # Stress test
     # ------------------------------------------------------------------
@@ -55,24 +90,39 @@ class StressTester:
         db: Any,
         workspace_id: str,
         config: StressTestConfig,
+        request: Any = None,
     ) -> StressTestResult:
-        """Fire concurrent synthetic requests and measure throughput / latency."""
+        """Fire concurrent requests and measure throughput / latency.
+
+        *request* may be an awaitable callable to exercise the real target; when
+        omitted the harness drives a deterministic in-process workload and the
+        result is flagged ``synthetic`` so its latency figures are never read as
+        measurements of the target module.
+
+        Errors are counted only when a request actually raises. The previous
+        implementation injected a 2% failure rate with random.random(), which
+        put a fabricated error_rate into the report.
+        """
         payload_size = self.PAYLOAD_SIZES.get(config.payload_type, self.PAYLOAD_SIZES["medium"])
         latencies: list[float] = []
         errors = 0
         start_time = time.time()
         end_time = start_time + config.duration_s
         total = 0
+        rss_before = _rss_mb()
+
+        # Deterministic: proportional to payload size, so repeated runs are
+        # comparable instead of varying with an RNG.
+        synthetic_delay_s = 0.003 * (payload_size / 10_000)
 
         async def _single_request() -> None:
             nonlocal errors, total
             t0 = time.perf_counter()
             try:
-                # Simulate work proportional to payload size
-                await asyncio.sleep(random.uniform(0.001, 0.005) * (payload_size / 10_000))
-                # Small random failure rate
-                if random.random() < 0.02:
-                    raise RuntimeError("synthetic error")
+                if request is not None:
+                    await request()
+                else:
+                    await asyncio.sleep(synthetic_delay_s)
                 elapsed = (time.perf_counter() - t0) * 1000
                 latencies.append(elapsed)
             except Exception:
@@ -105,8 +155,14 @@ class StressTester:
             latency_p95_ms=round(_percentile(sorted_lat, 95), 3),
             latency_p99_ms=round(_percentile(sorted_lat, 99), 3),
             error_rate=round(errors / max(total, 1), 4),
-            memory_delta_mb=round(random.uniform(0.5, 15.0), 2),
+            # Real RSS delta across the run, or None when psutil is unavailable.
+            memory_delta_mb=(
+                round(rss_after - rss_before, 2)
+                if rss_before is not None and (rss_after := _rss_mb()) is not None
+                else None
+            ),
             duration_s=round(wall_time, 2),
+            synthetic=request is None,
         )
 
     # ------------------------------------------------------------------
@@ -136,11 +192,12 @@ class StressTester:
 
         for case in edge_cases:
             try:
-                # Simulate model processing each edge case
+                # No model is invoked here yet; the suite reports which cases a
+                # model is *known* to mishandle. This is deterministic — the
+                # previous 70% random gate made the same input pass or fail
+                # between runs, which is useless as a regression signal.
                 await asyncio.sleep(0.001)
-                # Simulate that some edge cases expose issues
-                is_problematic = case["name"] in ("corrupted_bytes", "zero_length_audio")
-                if is_problematic and random.random() < 0.7:
+                if case["name"] in self.KNOWN_FAILING_CASES:
                     raise ValueError(f"Model {model_name} failed on {case['name']}")
                 results.append({"case": case["name"], "status": "passed", "error": None})
                 passed += 1
@@ -167,26 +224,30 @@ class StressTester:
         image: bytes | None = None,
         method: str = "noise",
     ) -> dict[str, Any]:
-        """Incrementally perturb an input until the model prediction changes."""
+        """Incrementally perturb an input until the model prediction changes.
+
+        No model is loaded yet, so this walks a deterministic sensitivity curve
+        per method rather than sampling one. Everything here is simulated —
+        ``simulated: True`` in the result says so, and the confidences must not
+        be presented as a real model's output.
+        """
         original_label = "person"
-        original_conf = round(random.uniform(0.85, 0.98), 4)
+        original_conf = self.BASELINE_CONFIDENCE
         adversarial_label = original_label
         adversarial_conf = original_conf
         perturbation = 0.0
         robust = True
+
+        # Fixed sensitivity per perturbation method (confidence lost at full
+        # magnitude), replacing random.uniform ranges.
+        sensitivity = self.METHOD_SENSITIVITY.get(method, 0.5)
 
         steps = 20
         for i in range(1, steps + 1):
             magnitude = i / steps
             await asyncio.sleep(0.001)
 
-            if method == "noise":
-                conf_drop = magnitude * random.uniform(0.3, 0.8)
-            elif method == "brightness":
-                conf_drop = magnitude * random.uniform(0.2, 0.6)
-            else:
-                conf_drop = magnitude * 0.5
-
+            conf_drop = magnitude * sensitivity
             new_conf = max(original_conf - conf_drop, 0.0)
             if new_conf < 0.5:
                 adversarial_label = "unknown"
@@ -204,6 +265,8 @@ class StressTester:
             "adversarial_prediction": {"label": adversarial_label, "confidence": adversarial_conf},
             "perturbation_magnitude": perturbation,
             "model_robust": robust,
+            # No model was invoked — these are curve values, not observations.
+            "simulated": True,
         }
 
     # ------------------------------------------------------------------
@@ -215,17 +278,22 @@ class StressTester:
         pipeline_id: str,
         iterations: int = 100,
     ) -> dict[str, Any]:
-        """Benchmark a pipeline's latency across N iterations."""
-        node_names = ["preprocessor", "detector", "classifier", "postprocessor", "aggregator"]
+        """Benchmark a pipeline's latency across N iterations.
+
+        There is no pipeline executor to drive yet, so each node's cost comes
+        from a fixed per-node profile instead of random.uniform(1, 25) — which
+        made the reported bottleneck a coin toss that changed between runs.
+        The result is flagged ``simulated`` so a stable bottleneck is not
+        mistaken for a measured one.
+        """
         durations: list[float] = []
-        node_totals: dict[str, float] = {n: 0.0 for n in node_names}
+        node_totals: dict[str, float] = {n: 0.0 for n in self.NODE_COST_PROFILE_MS}
 
         for _ in range(iterations):
             iter_dur = 0.0
-            for node in node_names:
-                d = random.uniform(1.0, 25.0)
-                node_totals[node] += d
-                iter_dur += d
+            for node, cost_ms in self.NODE_COST_PROFILE_MS.items():
+                node_totals[node] += cost_ms
+                iter_dur += cost_ms
             durations.append(iter_dur)
             await asyncio.sleep(0.0001)
 
@@ -246,4 +314,6 @@ class StressTester:
             "throughput_per_s": round(1000.0 / max(statistics.mean(durations), 0.001), 2),
             "bottleneck_node": bottleneck,
             "node_avg_ms": {n: round(v / iterations, 3) for n, v in node_totals.items()},
+            # Derived from NODE_COST_PROFILE_MS, not from executing a pipeline.
+            "simulated": True,
         }

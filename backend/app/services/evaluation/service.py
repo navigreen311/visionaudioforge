@@ -1,6 +1,6 @@
 """Evaluation service — benchmarks, model comparison, threshold tuning, scorecards."""
 
-import random
+import hashlib
 import time
 import uuid
 from typing import Any
@@ -9,6 +9,32 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.event import Event
+
+
+def _unit_hash(*parts: str) -> float:
+    """Stable pseudo-value in [0, 1) derived from *parts*.
+
+    Deterministic across runs and processes, unlike random.*, so a benchmark
+    that has not actually been executed at least reports the same placeholder
+    every time instead of reshuffling the leaderboard.
+    """
+    digest = hashlib.sha256("|".join(parts).encode()).digest()
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+
+def _placeholder_scores(model_id: str, metrics: list[str]) -> dict[str, float]:
+    """Deterministic stand-in scores for a model that was never evaluated."""
+    base = 0.65 + _unit_hash(model_id, "base") * 0.30
+    scores: dict[str, float] = {}
+    for metric in metrics:
+        if metric == "latency_ms":
+            scores[metric] = round(5.0 + _unit_hash(model_id, metric) * 195.0, 2)
+        elif metric == "throughput":
+            scores[metric] = round(50.0 + _unit_hash(model_id, metric) * 450.0, 2)
+        else:
+            spread = (_unit_hash(model_id, metric) - 0.5) * 0.16
+            scores[metric] = round(min(1.0, max(0.0, base + spread)), 4)
+    return scores
 
 
 class EvaluationService:
@@ -67,20 +93,15 @@ class EvaluationService:
 
         start = time.perf_counter()
 
-        # Generate realistic simulated scores per model
-        results: dict[str, dict[str, float]] = {}
-        for model_id in model_ids:
-            base = random.uniform(0.65, 0.95)
-            model_scores: dict[str, float] = {}
-            for metric in metrics:
-                if metric == "latency_ms":
-                    model_scores[metric] = round(random.uniform(5.0, 200.0), 2)
-                elif metric == "throughput":
-                    model_scores[metric] = round(random.uniform(50.0, 500.0), 2)
-                else:
-                    noise = random.uniform(-0.08, 0.08)
-                    model_scores[metric] = round(min(1.0, max(0.0, base + noise)), 4)
-            results[model_id] = model_scores
+        # No evaluation runner exists yet: nothing loads a model or scores it
+        # against a dataset. Scores are therefore placeholders derived
+        # deterministically from the model id, and the benchmark is marked
+        # `simulated` so a ranking is never mistaken for an measured result.
+        # Previously these came from random.uniform, so the "winner" changed on
+        # every run and looked like a real evaluation.
+        results: dict[str, dict[str, float]] = {
+            model_id: _placeholder_scores(model_id, metrics) for model_id in model_ids
+        }
 
         duration_ms = round((time.perf_counter() - start) * 1000, 2)
 
@@ -98,10 +119,18 @@ class EvaluationService:
         payload["results"] = results
         payload["ranking"] = ranking
         payload["duration_ms"] = duration_ms
+        payload["simulated"] = True
         event.payload = payload
         await db.commit()
 
-        return {"results": results, "ranking": ranking, "duration_ms": duration_ms}
+        return {
+            "results": results,
+            "ranking": ranking,
+            "duration_ms": duration_ms,
+            # Scores are placeholders, not evaluation output. See
+            # _placeholder_scores; the UI must label this run as unmeasured.
+            "simulated": True,
+        }
 
     @staticmethod
     async def compare_models_tournament(
@@ -114,14 +143,12 @@ class EvaluationService:
         matchups: list[dict[str, Any]] = []
         wins: dict[str, int] = {mid: 0 for mid in model_ids}
 
-        # Generate per-model scores once for consistency within the tournament
-        model_scores: dict[str, dict[str, float]] = {}
-        for mid in model_ids:
-            base = random.uniform(0.65, 0.95)
-            model_scores[mid] = {
-                m: round(min(1.0, max(0.0, base + random.uniform(-0.08, 0.08))), 4)
-                for m in metrics
-            }
+        # As with run_benchmark, no model is actually scored here — the
+        # round-robin logic is real but its inputs are deterministic
+        # placeholders, flagged as `simulated` in the returned payload.
+        model_scores: dict[str, dict[str, float]] = {
+            mid: _placeholder_scores(mid, metrics) for mid in model_ids
+        }
 
         # Round-robin matchups
         for i, model_a in enumerate(model_ids):
@@ -155,6 +182,8 @@ class EvaluationService:
             "rankings": rankings,
             "overall_winner": overall_winner,
             "wins": wins,
+            # The comparison logic is real; the scores it compared are not.
+            "simulated": True,
         }
 
     @staticmethod
