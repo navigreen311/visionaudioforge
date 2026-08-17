@@ -1,15 +1,28 @@
-"""Edge Fleet Manager routes — device registration, heartbeat, health."""
+"""Edge Fleet Manager routes — device registration, heartbeat, health.
+
+These used to keep their own module-level device dict, separate from the one
+``app.services.edge.fleet`` used, so a device registered through the API was
+invisible to the fleet services and vice versa. Both now read the same tables.
+"""
 
 from __future__ import annotations
 
-import time
-import uuid
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
+from app.services.edge.fleet.device_registry import DeviceRegistry
+from app.services.edge.fleet.health import DeviceHealthService
 
 router = APIRouter(prefix="/api/fleet", tags=["fleet"])
+
+_registry = DeviceRegistry()
+_health = DeviceHealthService()
 
 
 # ---------------------------------------------------------------------------
@@ -18,9 +31,10 @@ router = APIRouter(prefix="/api/fleet", tags=["fleet"])
 
 class DeviceRegister(BaseModel):
     name: str
-    device_type: str = "edge-node"
+    device_type: str = "x86_server"
     capabilities: dict[str, Any] = Field(default_factory=dict)
     location: str | None = None
+    network_info: dict[str, Any] = Field(default_factory=dict)
 
 
 class HeartbeatPayload(BaseModel):
@@ -32,72 +46,106 @@ class HeartbeatPayload(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory store
-# ---------------------------------------------------------------------------
-_devices: dict[str, dict] = {}
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/devices")
-async def register_device(body: DeviceRegister) -> dict[str, Any]:
+@router.post("/devices", status_code=201)
+async def register_device(
+    body: DeviceRegister,
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Register an edge device."""
-    did = str(uuid.uuid4())
-    device = {
-        "id": did,
-        "name": body.name,
-        "device_type": body.device_type,
-        "capabilities": body.capabilities,
-        "location": body.location,
-        "status": "online",
-        "last_heartbeat": time.time(),
-        "registered_at": time.time(),
+    hardware_info = dict(body.capabilities)
+    if body.location:
+        hardware_info["location"] = body.location
+
+    try:
+        registered = await _registry.register_device(
+            db,
+            str(workspace_id),
+            device_name=body.name,
+            device_type=body.device_type,
+            hardware_info=hardware_info,
+            network_info=body.network_info,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return await _registry.get_device(db, registered["device_id"]) | {
+        "api_key": registered["api_key"],
     }
-    _devices[did] = device
-    return device
 
 
 @router.get("/devices")
-async def list_devices() -> list[dict]:
-    """List all registered devices."""
-    return list(_devices.values())
+async def list_devices(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    status: str | None = Query(None, description="Filter by device status"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """List registered devices in a workspace."""
+    return await _registry.list_devices(db, str(workspace_id), status=status)
 
 
 @router.get("/devices/{device_id}")
-async def get_device(device_id: str) -> dict:
-    """Get device details."""
-    if device_id not in _devices:
+async def get_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Get device details including recent telemetry."""
+    try:
+        return await _registry.get_device(db, device_id)
+    except KeyError:
         raise HTTPException(status_code=404, detail="Device not found")
-    return _devices[device_id]
+
+
+@router.delete("/devices/{device_id}", status_code=204, response_class=Response)
+async def deregister_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Remove a device from the registry."""
+    if not await _registry.deregister_device(db, device_id):
+        raise HTTPException(status_code=404, detail="Device not found")
+    return Response(status_code=204)
 
 
 @router.post("/devices/{device_id}/heartbeat")
-async def device_heartbeat(device_id: str, body: HeartbeatPayload) -> dict[str, Any]:
-    """Receive heartbeat from a device."""
-    if device_id not in _devices:
-        raise HTTPException(status_code=404, detail="Device not found")
-    _devices[device_id]["last_heartbeat"] = time.time()
-    _devices[device_id]["status"] = "online"
-    _devices[device_id]["metrics"] = {
-        "cpu_percent": body.cpu_percent,
-        "memory_percent": body.memory_percent,
-        "gpu_percent": body.gpu_percent,
+async def device_heartbeat(
+    device_id: str,
+    body: HeartbeatPayload,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Receive a heartbeat from a device and record its telemetry."""
+    # The registry stores canonical *_pct keys; the wire format uses *_percent.
+    payload = {
+        "cpu_pct": body.cpu_percent,
+        "memory_pct": body.memory_percent,
+        "gpu_pct": body.gpu_percent,
         "active_models": body.active_models,
-        "inference_count": body.inference_count,
+        "inference_count_24h": body.inference_count,
     }
+
+    try:
+        await _registry.heartbeat(db, device_id, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Device not found")
+
     return {"device_id": device_id, "status": "acknowledged"}
 
 
 @router.get("/health")
-async def fleet_health() -> dict[str, Any]:
+async def fleet_health(
+    workspace_id: UUID = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Get fleet-wide health summary."""
-    devices = list(_devices.values())
-    online = [d for d in devices if d["status"] == "online"]
+    overview = await _registry.get_fleet_overview(db, str(workspace_id))
+    health = await _health.get_fleet_health(db, str(workspace_id))
+
+    total = overview["total_devices"]
     return {
-        "total_devices": len(devices),
-        "online": len(online),
-        "offline": len(devices) - len(online),
-        "status": "healthy" if len(online) == len(devices) else "degraded",
+        **overview,
+        **health,
+        "status": "healthy" if total and overview["online"] == total else "degraded",
     }

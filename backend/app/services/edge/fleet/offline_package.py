@@ -1,14 +1,20 @@
-"""Offline package builder — create deployable bundles for edge devices."""
+"""Offline package builder — create deployable bundles for edge devices.
+
+Backed by the ``offline_packages`` table: a built package is an artifact
+operators come back to days later, so its manifest and checksum must survive
+a restart.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime
 
-# In-memory package store
-_packages: dict[str, dict[str, Any]] = {}
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.edge_fleet import OfflinePackage
 
 # Model format mapping by device type
 _DEVICE_FORMAT_MAP: dict[str, str] = {
@@ -20,30 +26,39 @@ _DEVICE_FORMAT_MAP: dict[str, str] = {
     "browser": "WebGPU",
 }
 
+_EXT_MAP: dict[str, str] = {
+    "TensorRT": ".engine",
+    "TFLite": ".tflite",
+    "ONNX": ".onnx",
+    "WebGPU": ".wgsl",
+}
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _as_uuid(value) -> uuid.UUID | None:
+    if value is None:
+        return None
+    return value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))
+
 
 class OfflinePackageBuilder:
     """Builds self-contained offline deployment packages for edge devices."""
 
     async def build_package(
         self,
-        db: Any,
+        db: AsyncSession,
         model_id: str,
         device_type: str,
         include_runtime: bool = True,
+        workspace_id: str | None = None,
     ) -> dict:
-        """Build an offline deployment package for a given model and device type."""
+        """Build an offline deployment package for a model and device type."""
         model_format = _DEVICE_FORMAT_MAP.get(device_type, "ONNX")
-        package_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc)
-
-        # Determine model file extension
-        ext_map = {
-            "TensorRT": ".engine",
-            "TFLite": ".tflite",
-            "ONNX": ".onnx",
-            "WebGPU": ".wgsl",
-        }
-        model_ext = ext_map.get(model_format, ".bin")
+        model_ext = _EXT_MAP.get(model_format, ".bin")
+        package_id = uuid.uuid4()
 
         contents = [
             {"file": f"model{model_ext}", "format": model_format, "size_mb": 45.0},
@@ -53,14 +68,15 @@ class OfflinePackageBuilder:
             {"file": "setup.sh", "format": "Shell", "size_mb": 0.002},
             {"file": "README.md", "format": "Markdown", "size_mb": 0.003},
         ]
-
         if include_runtime:
             contents.append(
                 {"file": "runtime/", "format": "Directory", "size_mb": 15.0}
             )
 
         total_size = round(sum(c["size_mb"] for c in contents), 3)
-        checksum = hashlib.sha256(f"{package_id}-{model_id}-{device_type}".encode()).hexdigest()
+        checksum = hashlib.sha256(
+            f"{package_id}-{model_id}-{device_type}".encode()
+        ).hexdigest()
 
         instructions = (
             f"1. Extract package to target device\n"
@@ -70,49 +86,66 @@ class OfflinePackageBuilder:
             f"Model format: {model_format} (optimized for {device_type})"
         )
 
-        package_record = {
-            "package_id": package_id,
-            "model_id": model_id,
-            "device_type": device_type,
-            "model_format": model_format,
-            "size_mb": total_size,
-            "contents": contents,
-            "instructions": instructions,
-            "checksum": checksum,
-            "created_at": now.isoformat(),
-            "workspace_id": None,
-        }
-        _packages[package_id] = package_record
+        package = OfflinePackage(
+            id=package_id,
+            workspace_id=_as_uuid(workspace_id),
+            model_id=model_id,
+            device_type=device_type,
+            model_format=model_format,
+            size_mb=total_size,
+            contents=contents,
+            instructions=instructions,
+            checksum=checksum,
+        )
+        db.add(package)
+        await db.commit()
 
         return {
-            "package_id": package_id,
+            "package_id": str(package_id),
             "size_mb": total_size,
             "contents": contents,
             "instructions": instructions,
         }
 
-    async def list_packages(self, db: Any, workspace_id: str) -> list[dict]:
-        """List all packages, optionally filtered by workspace."""
-        results = []
-        for p in _packages.values():
-            results.append({
-                "package_id": p["package_id"],
-                "model_id": p["model_id"],
-                "device_type": p["device_type"],
-                "model_format": p["model_format"],
-                "size_mb": p["size_mb"],
-                "created_at": p["created_at"],
-            })
-        return results
+    async def list_packages(
+        self, db: AsyncSession, workspace_id: str | None = None
+    ) -> list[dict]:
+        """List packages, scoped to a workspace when one is given."""
+        query = select(OfflinePackage)
+        if workspace_id is not None:
+            query = query.where(OfflinePackage.workspace_id == _as_uuid(workspace_id))
 
-    async def get_package_manifest(self, package_id: str) -> dict:
-        """Return the manifest for a package including file listing and checksum."""
-        pkg = _packages.get(package_id)
-        if pkg is None:
+        result = await db.execute(query.order_by(OfflinePackage.created_at))
+        return [
+            {
+                "package_id": str(p.id),
+                "model_id": p.model_id,
+                "device_type": p.device_type,
+                "model_format": p.model_format,
+                "size_mb": p.size_mb,
+                "created_at": _iso(p.created_at),
+            }
+            for p in result.scalars().all()
+        ]
+
+    async def get_package_manifest(
+        self, db: AsyncSession, package_id: str
+    ) -> dict:
+        """Return a package's file listing, total size and checksum."""
+        try:
+            key = _as_uuid(package_id)
+        except (ValueError, AttributeError, TypeError):
+            raise KeyError(f"Package {package_id} not found")
+
+        result = await db.execute(
+            select(OfflinePackage).where(OfflinePackage.id == key)
+        )
+        package = result.scalar_one_or_none()
+        if package is None:
             raise KeyError(f"Package {package_id} not found")
 
         return {
-            "files": pkg["contents"],
-            "total_size_mb": pkg["size_mb"],
-            "checksum": pkg["checksum"],
+            "files": package.contents,
+            "total_size_mb": package.size_mb,
+            "checksum": package.checksum,
         }
