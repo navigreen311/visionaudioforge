@@ -7,7 +7,6 @@ queue metrics for the observability dashboard.
 from __future__ import annotations
 
 import logging
-import random
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,7 +14,13 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.services.observability import metrics_source
+
 logger = logging.getLogger(__name__)
+
+#: Returned wherever a figure has no recorded source. The dashboard renders
+#: these as "unknown"; they must never be replaced with a plausible number.
+UNMEASURED: None = None
 
 # ---------------------------------------------------------------------------
 # Service start time — used for uptime calculation
@@ -59,22 +64,39 @@ class SREDashboardService:
 
         uptime_s = round(time.time() - _SERVICE_START, 2)
 
-        # V1: simulated request metrics (replace with Prometheus query later)
-        total_requests_24h = random.randint(8000, 15000)
-        error_count = random.randint(10, 80)
-        error_rate_24h = round(error_count / max(total_requests_24h, 1), 4)
-        avg_latency_ms = round(random.uniform(40, 150), 2)
-        p99_latency_ms = round(avg_latency_ms * random.uniform(3, 6), 2)
+        # Measured from the in-process Prometheus counters. These cover the
+        # lifetime of this process, not a rolling 24h window — `metrics_window`
+        # says so rather than letting the *_24h key names overstate it.
+        total_requests, error_count = metrics_source.request_totals()
+        latency = metrics_source.average_request_latency_ms()
+
+        error_rate = (
+            round(error_count / total_requests, 6) if total_requests else UNMEASURED
+        )
+        avg_latency_ms = round(latency.value, 2) if latency.observed else UNMEASURED
 
         return {
             "api_status": "healthy",
             "db_status": db_status,
             "redis_status": redis_status,
             "uptime_s": uptime_s,
-            "total_requests_24h": total_requests_24h,
-            "error_rate_24h": error_rate_24h,
+            "metrics_window": "process_lifetime",
+            "total_requests_24h": total_requests,
+            "error_count": error_count,
+            "error_rate_24h": error_rate,
             "avg_latency_ms": avg_latency_ms,
-            "p99_latency_ms": p99_latency_ms,
+            # The duration histogram has no quantile buckets configured, so a
+            # p99 cannot be derived from it.
+            "p99_latency_ms": UNMEASURED,
+            "unmeasured": [
+                name
+                for name, value in (
+                    ("error_rate_24h", error_rate),
+                    ("avg_latency_ms", avg_latency_ms),
+                    ("p99_latency_ms", UNMEASURED),
+                )
+                if value is None
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -115,20 +137,37 @@ class SREDashboardService:
                 )
             ).scalar() or 0
         except Exception:
-            total = random.randint(50, 200)
-            success = int(total * random.uniform(0.85, 0.99))
-            success_rate = round(success / max(total, 1), 4)
-            active = random.randint(0, 5)
+            # No pipeline table to read — report unknown rather than inventing
+            # a run count and a healthy-looking success rate.
+            logger.warning("Pipeline health unavailable: could not query PipelineRun")
+            total = UNMEASURED
+            success = UNMEASURED
+            success_rate = UNMEASURED
+            active = UNMEASURED
 
-        avg_duration_ms = round(random.uniform(2000, 15000), 2)
+        duration = metrics_source.histogram_average(
+            "pipeline_run_duration_seconds", scale=1000.0
+        )
+        avg_duration_ms = round(duration.value, 2) if duration.observed else UNMEASURED
         failed_runs: list[dict[str, Any]] = []
 
         return {
             "active_pipelines": active,
             "runs_24h": total,
+            "successful_runs_24h": success,
             "success_rate": success_rate,
             "avg_duration_ms": avg_duration_ms,
             "failed_runs": failed_runs,
+            "unmeasured": [
+                name
+                for name, value in (
+                    ("active_pipelines", active),
+                    ("runs_24h", total),
+                    ("success_rate", success_rate),
+                    ("avg_duration_ms", avg_duration_ms),
+                )
+                if value is None
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -137,16 +176,39 @@ class SREDashboardService:
 
     @staticmethod
     async def get_inference_metrics() -> dict[str, Any]:
-        """Return ML inference metrics.
+        """Return ML inference metrics, as far as they are actually recorded."""
+        inference = metrics_source.histogram_average(
+            "model_inference_duration_seconds", scale=1000.0
+        )
+        queue = metrics_source.gauge_value("inference_queue_depth")
 
-        V1: simulated values — no real GPU monitoring yet.
-        """
+        avg_inference_ms = (
+            round(inference.value, 2) if inference.observed else UNMEASURED
+        )
+        # sample_count is the number of inferences the histogram has observed —
+        # a real count, not an estimate.
+        inference_count = inference.sample_count if inference.observed else UNMEASURED
+        queue_depth = int(queue.value) if queue.observed else UNMEASURED
+
         return {
-            "models_loaded": random.randint(1, 5),
-            "inference_count_24h": random.randint(200, 3000),
-            "avg_inference_ms": round(random.uniform(50, 500), 2),
-            "gpu_utilization_pct": None,  # No GPU monitoring in V1
-            "queue_depth": random.randint(0, 20),
+            # No model registry counter exists, and no GPU monitoring is wired.
+            "models_loaded": UNMEASURED,
+            "inference_count_24h": inference_count,
+            "avg_inference_ms": avg_inference_ms,
+            "gpu_utilization_pct": UNMEASURED,
+            "queue_depth": queue_depth,
+            "metrics_window": "process_lifetime",
+            "unmeasured": [
+                name
+                for name, value in (
+                    ("models_loaded", UNMEASURED),
+                    ("inference_count_24h", inference_count),
+                    ("avg_inference_ms", avg_inference_ms),
+                    ("gpu_utilization_pct", UNMEASURED),
+                    ("queue_depth", queue_depth),
+                )
+                if value is None
+            ],
         }
 
     # ------------------------------------------------------------------
@@ -157,27 +219,19 @@ class SREDashboardService:
     async def get_error_taxonomy(
         db: AsyncSession, hours: int = 24
     ) -> dict[str, Any]:
-        """Categorise recent errors by type and endpoint."""
-        # V1: simulated taxonomy (wire up to real error log table later)
-        error_types = {
-            "ValidationError": random.randint(5, 30),
-            "TimeoutError": random.randint(1, 10),
-            "InternalServerError": random.randint(0, 5),
-            "NotFoundError": random.randint(2, 15),
-        }
-        by_endpoint = {
-            "/api/vision/detect": random.randint(2, 10),
-            "/api/audio/transform": random.randint(1, 8),
-            "/api/pipeline/run": random.randint(0, 5),
-        }
+        """Categorise recorded errors by type and endpoint.
+
+        Read from the ``errors_total`` counter. When nothing has been counted
+        the breakdowns come back empty — which means "no errors observed", not
+        "no data available"; ``observed`` distinguishes the two for the UI.
+        """
+        error_types = metrics_source.counter_by_label("errors_total", "type")
+        by_endpoint = metrics_source.counter_by_label("errors_total", "endpoint")
         total = sum(error_types.values())
-        now = datetime.now(timezone.utc)
+
+        # The counter carries no timestamps, so "last seen" is not derivable.
         top_errors = [
-            {
-                "error": etype,
-                "count": count,
-                "last_seen": (now - timedelta(minutes=random.randint(1, 60))).isoformat(),
-            }
+            {"error": etype, "count": count, "last_seen": UNMEASURED}
             for etype, count in sorted(
                 error_types.items(), key=lambda x: x[1], reverse=True
             )
@@ -188,6 +242,9 @@ class SREDashboardService:
             "by_type": error_types,
             "by_endpoint": by_endpoint,
             "top_errors": top_errors,
+            "observed": bool(error_types),
+            "metrics_window": "process_lifetime",
+            "requested_window_hours": hours,
         }
 
     # ------------------------------------------------------------------
@@ -209,11 +266,23 @@ class SREDashboardService:
             celery_active = sum(len(v) for v in active.values())
             celery_pending = sum(len(v) for v in reserved.values())
         except Exception:
-            celery_active = random.randint(0, 5)
-            celery_pending = random.randint(0, 10)
+            # Broker unreachable — say so instead of reporting a quiet queue.
+            logger.warning("Queue metrics unavailable: could not inspect Celery")
+            celery_active = UNMEASURED
+            celery_pending = UNMEASURED
 
         return {
             "celery_active": celery_active,
             "celery_pending": celery_pending,
-            "celery_failed_24h": random.randint(0, 8),
+            # Celery's inspect API exposes no historical failure count.
+            "celery_failed_24h": UNMEASURED,
+            "unmeasured": [
+                name
+                for name, value in (
+                    ("celery_active", celery_active),
+                    ("celery_pending", celery_pending),
+                    ("celery_failed_24h", UNMEASURED),
+                )
+                if value is None
+            ],
         }
