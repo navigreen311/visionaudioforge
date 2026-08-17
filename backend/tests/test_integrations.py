@@ -23,6 +23,41 @@ from app.services.integrations.storage_connectors import (
 )
 from app.services.integrations.teams import TeamsIntegration
 from app.services.integrations.webhooks import WebhookManager
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
+)
+
+
+@pytest.fixture
+async def webhook_env():
+    """Yield (session_factory, workspace_id) — webhooks are rows now."""
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
+    async with factory() as session:
+        workspace_id = await seed_workspace(session, "integrations")
+
+    try:
+        yield factory, str(workspace_id)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def webhook_db(webhook_env):
+    factory, _ = webhook_env
+    async with factory() as session:
+        yield session
+
+
+@pytest.fixture
+def webhook_workspace(webhook_env):
+    return webhook_env[1]
 
 
 # =====================================================================
@@ -131,11 +166,10 @@ class TestEmailStubWithoutSmtp:
 
 class TestWebhookRegisterAndList:
     @pytest.mark.asyncio
-    async def test_register_and_list(self):
-        WebhookManager._reset()
+    async def test_register_and_list(self, webhook_db, webhook_workspace):
         reg = await WebhookManager.register_webhook(
-            db=None,
-            workspace_id="ws-1",
+            db=webhook_db,
+            workspace_id=webhook_workspace,
             name="My Hook",
             url="https://example.com/hook",
             events=["alert.*"],
@@ -144,13 +178,69 @@ class TestWebhookRegisterAndList:
         assert "webhook_id" in reg
         assert reg["events"] == ["alert.*"]
 
-        hooks = await WebhookManager.list_webhooks(db=None, workspace_id="ws-1")
+        hooks = await WebhookManager.list_webhooks(
+            db=webhook_db, workspace_id=webhook_workspace
+        )
         assert len(hooks) == 1
         assert hooks[0]["name"] == "My Hook"
         # Secret should NOT be exposed in list
         assert "secret" not in hooks[0]
 
-        WebhookManager._reset()
+    @pytest.mark.asyncio
+    async def test_registrations_survive_a_restart(self, webhook_env):
+        """A webhook registered before a restart still fires after it."""
+        factory, workspace_id = webhook_env
+
+        async with factory() as session:
+            registered = await WebhookManager.register_webhook(
+                db=session,
+                workspace_id=workspace_id,
+                name="Durable Hook",
+                url="https://example.com/durable",
+                events=["alert.*"],
+            )
+
+        restarted_engine = await fresh_engine()
+        restarted = db_session_factory(restarted_engine)
+        try:
+            async with restarted() as session:
+                hooks = await WebhookManager.list_webhooks(
+                    db=session, workspace_id=workspace_id
+                )
+                assert [h["webhook_id"] for h in hooks] == [
+                    registered["webhook_id"]
+                ]
+                assert hooks[0]["name"] == "Durable Hook"
+        finally:
+            await restarted_engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_list_is_workspace_scoped(self, webhook_env, webhook_db, webhook_workspace):
+        """Another workspace's webhooks are not listed."""
+        factory, _ = webhook_env
+
+        await WebhookManager.register_webhook(
+            db=webhook_db,
+            workspace_id=webhook_workspace,
+            name="Mine",
+            url="https://example.com/mine",
+            events=["alert.*"],
+        )
+
+        async with factory() as other_session:
+            other_ws = str(await seed_workspace(other_session, "integrations-other"))
+            await WebhookManager.register_webhook(
+                db=other_session,
+                workspace_id=other_ws,
+                name="Theirs",
+                url="https://example.com/theirs",
+                events=["alert.*"],
+            )
+
+        hooks = await WebhookManager.list_webhooks(
+            db=webhook_db, workspace_id=webhook_workspace
+        )
+        assert [h["name"] for h in hooks] == ["Mine"]
 
 
 class TestWebhookSignature:
@@ -166,11 +256,10 @@ class TestWebhookSignature:
 
 class TestWebhookTrigger:
     @pytest.mark.asyncio
-    async def test_trigger_matching(self):
-        WebhookManager._reset()
-        await WebhookManager.register_webhook(
-            db=None,
-            workspace_id="ws-2",
+    async def test_trigger_matching(self, webhook_db, webhook_workspace):
+        registered = await WebhookManager.register_webhook(
+            db=webhook_db,
+            workspace_id=webhook_workspace,
             name="Alert Hook",
             url="https://example.com/hook",
             events=["alert.*"],
@@ -186,15 +275,21 @@ class TestWebhookTrigger:
             MockClient.return_value = mock_instance
 
             results = await WebhookManager.trigger_webhooks(
-                db=None,
-                workspace_id="ws-2",
+                db=webhook_db,
+                workspace_id=webhook_workspace,
                 event_type="alert.created",
                 payload={"id": "a1"},
             )
             assert len(results) == 1
             assert results[0]["status"] == "sent"
 
-        WebhookManager._reset()
+        # The attempt is recorded, so the console's delivery log is real.
+        log = await WebhookManager.delivery_log(
+            webhook_db, registered["webhook_id"]
+        )
+        assert [entry["event_type"] for entry in log] == ["alert.created"]
+        assert log[0]["success"] is True
+        assert log[0]["status_code"] == 200
 
 
 # =====================================================================
@@ -219,14 +314,29 @@ class TestEventBusPublishSubscribe:
 
     @pytest.mark.asyncio
     async def test_emit_logs_event(self):
+        """Without a session the bus still publishes to its local mirror."""
         bus = EventBus(redis_url=None)
-        WebhookManager._reset()
 
         await bus.emit("ws-1", "alert.created", {"id": "a1"})
 
         events = bus.recent_events()
         assert len(events) == 1
         assert events[0]["event_type"] == "alert.created"
+
+    @pytest.mark.asyncio
+    async def test_emit_writes_durable_log(self, webhook_db, webhook_workspace):
+        """With a session the event is written where every worker can see it."""
+        bus = EventBus(redis_url=None)
+
+        await bus.emit(
+            webhook_workspace, "alert.created", {"id": "a1"}, db=webhook_db
+        )
+
+        stored = await EventBus.recent_events_stored(
+            webhook_db, workspace_id=webhook_workspace
+        )
+        assert [e["event_type"] for e in stored] == ["alert.created"]
+        assert stored[0]["payload"] == {"id": "a1"}
 
 
 # =====================================================================
@@ -301,40 +411,53 @@ async def integration_client():
 
 class TestApiWebhookCrud:
     @pytest.mark.asyncio
-    async def test_register_list_delete(self, integration_client):
-        WebhookManager._reset()
-        client = integration_client
+    async def test_register_list_delete(self, webhook_env, webhook_workspace):
+        from app.core.deps import get_db
+        from app.main import app as main_app
 
-        # Register
-        resp = await client.post(
-            "/api/integrations/webhooks",
-            json={
-                "workspace_id": "ws-api",
-                "name": "API Hook",
-                "url": "https://example.com/wh",
-                "events": ["alert.*"],
-            },
-        )
-        assert resp.status_code == 200
-        wh_id = resp.json()["webhook_id"]
+        factory, _ = webhook_env
 
-        # List
-        resp = await client.get(
-            "/api/integrations/webhooks", params={"workspace_id": "ws-api"}
-        )
-        assert resp.status_code == 200
-        assert len(resp.json()) == 1
+        async def _override():
+            async with factory() as session:
+                yield session
 
-        # Delete
-        resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
-        assert resp.status_code == 200
-        assert resp.json()["deleted"] is True
+        main_app.dependency_overrides[get_db] = _override
+        transport = ASGITransport(app=main_app)
+        try:
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                # Register
+                resp = await client.post(
+                    "/api/integrations/webhooks",
+                    json={
+                        "workspace_id": webhook_workspace,
+                        "name": "API Hook",
+                        "url": "https://example.com/wh",
+                        "events": ["alert.*"],
+                    },
+                )
+                assert resp.status_code == 201
+                wh_id = resp.json()["webhook_id"]
 
-        # Delete again → 404
-        resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
-        assert resp.status_code == 404
+                # List
+                resp = await client.get(
+                    "/api/integrations/webhooks",
+                    params={"workspace_id": webhook_workspace},
+                )
+                assert resp.status_code == 200
+                assert len(resp.json()) == 1
 
-        WebhookManager._reset()
+                # Delete
+                resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
+                assert resp.status_code == 200
+                assert resp.json()["deleted"] is True
+
+                # Delete again -> 404
+                resp = await client.delete(f"/api/integrations/webhooks/{wh_id}")
+                assert resp.status_code == 404
+        finally:
+            main_app.dependency_overrides.pop(get_db, None)
 
 
 class TestApiSlackSend:

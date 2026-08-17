@@ -11,11 +11,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.event import Event
+from app.models.integration import FieldLocation
 
 logger = logging.getLogger(__name__)
 
-# In-memory location history (replace with DB/time-series store in production)
-_location_history: dict[str, list[dict[str, Any]]] = {}  # user_id -> [points]
+
+def _as_uuid(value: Any) -> uuid.UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, uuid.UUID):
+        return value
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+# Location points are rows in field_locations: an operator's track is
+# evidence of where they were, so it cannot live in one worker's memory.
 
 
 class FieldAnnotationService:
@@ -47,7 +59,7 @@ class FieldAnnotationService:
         }
         if location:
             payload["location"] = location
-            _record_location(user_id, location)
+            _record_location(db, user_id, location)
         if attached_asset_id:
             payload["attached_asset_id"] = attached_asset_id
 
@@ -102,7 +114,7 @@ class FieldAnnotationService:
         }
         if location:
             payload["location"] = location
-            _record_location(user_id, location)
+            _record_location(db, user_id, location)
 
         event = Event(
             id=uuid.uuid4(),
@@ -172,10 +184,23 @@ class FieldAnnotationService:
         hours: int = 8,
     ) -> list[dict[str, Any]]:
         """Return location points for an operator within the last *hours*."""
-        uid = str(user_id)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        points = _location_history.get(uid, [])
-        return [p for p in points if p.get("timestamp", "") >= cutoff.isoformat()]
+
+        result = await db.execute(
+            select(FieldLocation)
+            .where(
+                FieldLocation.user_ref == str(user_id),
+                FieldLocation.timestamp >= cutoff,
+            )
+            .order_by(FieldLocation.timestamp)
+        )
+        return [
+            {
+                **(point.payload or {}),
+                "timestamp": point.timestamp.isoformat() if point.timestamp else None,
+            }
+            for point in result.scalars().all()
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -183,14 +208,19 @@ class FieldAnnotationService:
 # ---------------------------------------------------------------------------
 
 
-def _record_location(user_id: uuid.UUID, location: dict[str, float]) -> None:
-    """Append a location point to the in-memory history."""
-    uid = str(user_id)
-    if uid not in _location_history:
-        _location_history[uid] = []
-    _location_history[uid].append(
-        {
-            **location,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+def _record_location(
+    db: AsyncSession, user_id: uuid.UUID, location: dict[str, float]
+) -> None:
+    """Stage a location point; the caller commits with the rest of its work."""
+    db.add(
+        FieldLocation(
+            id=uuid.uuid4(),
+            user_id=None,  # set by callers that have verified the user
+            user_ref=str(user_id),
+            latitude=location.get("lat", location.get("latitude")),
+            longitude=location.get("lon", location.get("longitude")),
+            accuracy_m=location.get("accuracy_m", location.get("accuracy")),
+            payload=dict(location),
+            timestamp=datetime.now(timezone.utc),
+        )
     )

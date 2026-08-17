@@ -5,9 +5,26 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Optional
+from uuid import UUID, uuid4
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.integration import EventLogEntry
 
 logger = logging.getLogger(__name__)
+
+
+def _as_uuid(value: Any) -> Optional[UUID]:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 # Well-known event types
 EVENT_TYPES = [
@@ -88,6 +105,7 @@ class EventBus:
         workspace_id: str,
         event_type: str,
         payload: dict[str, Any],
+        db: "AsyncSession | None" = None,
     ) -> None:
         """Central event emission point.
 
@@ -100,13 +118,28 @@ class EventBus:
         channel = f"workspace:{workspace_id}"
         await self.publish(channel, event_type, payload)
 
-        # Fire outbound webhooks (best-effort)
-        try:
-            await WebhookManager.trigger_webhooks(None, workspace_id, event_type, payload)
-        except Exception:  # noqa: BLE001
-            logger.exception("Webhook trigger failed for %s", event_type)
+        # Fire outbound webhooks (best-effort) and record the event. Both need
+        # a session; without one the bus still publishes, but nothing durable
+        # is written, so callers that care pass db.
+        if db is not None:
+            try:
+                await WebhookManager.trigger_webhooks(
+                    db, workspace_id, event_type, payload
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("Webhook trigger failed for %s", event_type)
 
-        # Append to in-memory log
+            db.add(
+                EventLogEntry(
+                    id=uuid4(),
+                    workspace_id=_as_uuid(workspace_id),
+                    event_type=event_type,
+                    payload=payload,
+                )
+            )
+            await db.commit()
+
+        # Process-local mirror so recent_events() works without a session.
         self._event_log.append(
             {
                 "workspace_id": workspace_id,
@@ -115,11 +148,40 @@ class EventBus:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
+        del self._event_log[:-500]
 
     # ------------------------------------------------------------------
     # Log access
     # ------------------------------------------------------------------
 
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Return the most recent events from the in-memory log."""
+        """Return recent events seen by *this* process.
+
+        Only what this worker published. For the workspace-wide view every
+        worker agrees on, use :meth:`recent_events_stored`.
+        """
         return list(reversed(self._event_log[-limit:]))
+
+    @staticmethod
+    async def recent_events_stored(
+        db: "AsyncSession",
+        workspace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return recent events from the durable log, newest first."""
+        query = select(EventLogEntry).order_by(EventLogEntry.timestamp.desc())
+        if workspace_id is not None:
+            query = query.where(EventLogEntry.workspace_id == _as_uuid(workspace_id))
+
+        result = await db.execute(query.limit(limit))
+        return [
+            {
+                "workspace_id": (
+                    str(e.workspace_id) if e.workspace_id else None
+                ),
+                "event_type": e.event_type,
+                "payload": e.payload,
+                "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+            }
+            for e in result.scalars().all()
+        ]

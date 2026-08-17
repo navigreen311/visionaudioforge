@@ -32,6 +32,15 @@ from app.models.plugin import (
     Plugin,
     PluginReview,
 )
+from app.models.integration import (
+    EventLogEntry,
+    FieldLocation,
+    PushDevice,
+    PushPreference,
+    SyncConflict,
+    Webhook,
+    WebhookDelivery,
+)
 from app.models.evidence import (
     AssetIntegrity,
     CustodyAction,
@@ -106,4 +115,11 @@ __all__ = [
     "ModelAdapter",
     "Plugin",
     "PluginReview",
+    "EventLogEntry",
+    "FieldLocation",
+    "PushDevice",
+    "PushPreference",
+    "SyncConflict",
+    "Webhook",
+    "WebhookDelivery",
 ]

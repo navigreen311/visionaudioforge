@@ -7,8 +7,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
 
 from app.services.integrations.email import EmailIntegration
 from app.services.integrations.event_bus import EventBus
@@ -314,11 +317,14 @@ async def email_send(body: EmailSendBody) -> dict[str, Any]:
 # ── Webhooks ─────────────────────────────────────────────────────────
 
 
-@router.post("/webhooks")
-async def register_webhook(body: WebhookRegisterBody) -> dict[str, Any]:
+@router.post("/webhooks", status_code=201)
+async def register_webhook(
+    body: WebhookRegisterBody,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Register a new outbound webhook."""
     return await WebhookManager.register_webhook(
-        db=None,
+        db=db,
         workspace_id=body.workspace_id,
         name=body.name,
         url=body.url,
@@ -331,24 +337,41 @@ async def register_webhook(body: WebhookRegisterBody) -> dict[str, Any]:
 @router.get("/webhooks")
 async def list_webhooks(
     workspace_id: str = Query(..., description="Workspace ID"),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """List webhooks for a workspace."""
-    return await WebhookManager.list_webhooks(db=None, workspace_id=workspace_id)
+    return await WebhookManager.list_webhooks(db=db, workspace_id=workspace_id)
+
+
+@router.get("/webhooks/{webhook_id}/deliveries")
+async def webhook_deliveries(
+    webhook_id: str,
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Recent delivery attempts for a webhook, newest first."""
+    return await WebhookManager.delivery_log(db, webhook_id, limit=limit)
 
 
 @router.delete("/webhooks/{webhook_id}")
-async def delete_webhook(webhook_id: str) -> dict[str, Any]:
+async def delete_webhook(
+    webhook_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Delete a webhook."""
-    deleted = await WebhookManager.delete_webhook(db=None, webhook_id=webhook_id)
+    deleted = await WebhookManager.delete_webhook(db=db, webhook_id=webhook_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Webhook not found")
     return {"deleted": True}
 
 
 @router.post("/webhooks/{webhook_id}/test")
-async def test_webhook(webhook_id: str) -> dict[str, Any]:
+async def test_webhook(
+    webhook_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Send a test payload to a registered webhook."""
-    return await WebhookManager.test_webhook(webhook_id)
+    return await WebhookManager.test_webhook(db, webhook_id)
 
 
 # ── Storage ──────────────────────────────────────────────────────────
