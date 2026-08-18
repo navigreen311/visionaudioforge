@@ -4,19 +4,69 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.pipeline.nodes import NODE_REGISTRY, get_node
+
+
+def _ports(node_type: str) -> tuple[dict, dict]:
+    """Return (input_schema, output_schema) for a node type."""
+    if node_type in NODE_REGISTRY:
+        node = get_node(node_type)
+        return node.input_schema, node.output_schema
+    return {}, {}
+
 
 def _build_definition(node_specs: list[tuple[str, str, dict[str, Any]]]) -> dict[str, Any]:
-    """Build a valid pipeline definition from a list of (id, type, params) tuples."""
+    """Build a pipeline definition from a list of (id, type, params) tuples.
+
+    Every required input is wired to the nearest earlier node that publishes a
+    port of that name. Edges used to be hard-coded to "output" -> "input" and
+    one per adjacent pair, which was wrong twice over: nodes name their real
+    ports (NormalizeNode takes `image` and returns `image`), and a node can
+    need more than one of them. The audio nodes each need `sr`, which only
+    `input_audio` produces — under the old scheme every template validated as
+    missing required params, and at runtime the value arrived on a port the
+    node never read.
+    """
     nodes = [{"id": nid, "type": ntype, "params": params} for nid, ntype, params in node_specs]
-    edges = [
-        {
-            "from": node_specs[i][0],
-            "to": node_specs[i + 1][0],
-            "from_port": "output",
-            "to_port": "input",
-        }
-        for i in range(len(node_specs) - 1)
-    ]
+    edges: list[dict[str, Any]] = []
+
+    for index, (node_id, node_type, params) in enumerate(node_specs):
+        inputs, _ = _ports(node_type)
+        for port, spec in inputs.items():
+            if not spec.get("required") or port in params:
+                continue
+
+            # Nearest earlier producer of this port wins.
+            source = next(
+                (
+                    node_specs[j]
+                    for j in range(index - 1, -1, -1)
+                    if port in _ports(node_specs[j][1])[1]
+                ),
+                None,
+            )
+            if source is None and index > 0:
+                # Nothing publishes this name; fall back to the immediate
+                # predecessor's first output so the chain still connects.
+                previous = node_specs[index - 1]
+                previous_outputs = list(_ports(previous[1])[1])
+                if previous_outputs:
+                    edges.append({
+                        "from": previous[0],
+                        "to": node_id,
+                        "from_port": previous_outputs[0],
+                        "to_port": port,
+                    })
+                continue
+
+            if source is not None:
+                edges.append({
+                    "from": source[0],
+                    "to": node_id,
+                    "from_port": port,
+                    "to_port": port,
+                })
+
     return {"nodes": nodes, "edges": edges}
 
 
