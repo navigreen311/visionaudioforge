@@ -6,14 +6,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_db
+from app.database import get_async_session
 from app.models.agent import Agent, AgentMemory
+from app.models.conversation import AgentConversation, AgentMessage
 from app.services.agents.conversation import ConversationManager
 from app.services.agents.copilot import CopilotService
 from app.services.agents.memory import AgentMemoryService
@@ -304,92 +307,123 @@ async def patrol_all():
 # Conversations (top-level, mock-safe)
 # ---------------------------------------------------------------------------
 
-# In-memory store so the stub is functional within a single server session.
-_mock_conversations: dict[str, dict[str, Any]] = {
-    "conv-001": {
-        "id": "conv-001",
-        "title": "Vision Pipeline Troubleshooting",
-        "agent_id": "agent-alpha",
-        "created_at": "2026-03-20T10:00:00Z",
-        "messages": [
-            {"role": "user", "content": "Why is the vision pipeline stalling?", "timestamp": "2026-03-20T10:00:00Z"},
-            {"role": "assistant", "content": "Checking pipeline status...", "timestamp": "2026-03-20T10:00:01Z"},
-            {"role": "assistant", "content": "The bottleneck is in the frame decoder. Consider enabling GPU acceleration.", "timestamp": "2026-03-20T10:00:02Z"},
-            {"role": "user", "content": "Got it, enabling now.", "timestamp": "2026-03-20T10:00:10Z"},
-        ],
-    },
-    "conv-002": {
-        "id": "conv-002",
-        "title": "Audio Feature Extraction",
-        "agent_id": "agent-beta",
-        "created_at": "2026-03-19T14:30:00Z",
-        "messages": [
-            {"role": "user", "content": "Extract MFCCs from the latest batch.", "timestamp": "2026-03-19T14:30:00Z"},
-            {"role": "assistant", "content": "Processing 42 audio files...", "timestamp": "2026-03-19T14:30:01Z"},
-            {"role": "assistant", "content": "Done. 42 MFCC matrices saved.", "timestamp": "2026-03-19T14:30:30Z"},
-            {"role": "user", "content": "Perfect, thanks.", "timestamp": "2026-03-19T14:31:00Z"},
-        ],
-    },
-    "conv-003": {
-        "id": "conv-003",
-        "title": "Alert Investigation",
-        "agent_id": "agent-alpha",
-        "created_at": "2026-03-18T08:15:00Z",
-        "messages": [
-            {"role": "user", "content": "What triggered alert #47?", "timestamp": "2026-03-18T08:15:00Z"},
-            {"role": "assistant", "content": "Alert #47 was triggered by anomalous motion in Camera 3.", "timestamp": "2026-03-18T08:15:02Z"},
-            {"role": "user", "content": "Is it a false positive?", "timestamp": "2026-03-18T08:15:30Z"},
-            {"role": "assistant", "content": "Confidence is 62%. Likely a shadow artifact. Recommend reviewing the clip.", "timestamp": "2026-03-18T08:15:32Z"},
-        ],
-    },
-}
-
-
-@router.get("/conversations")
-async def list_conversations():
-    """Return all mock conversations (summary only, no messages)."""
-    return [
-        {
-            "id": c["id"],
-            "title": c["title"],
-            "agent_id": c.get("agent_id"),
-            "created_at": c["created_at"],
-            "message_count": len(c.get("messages", [])),
-        }
-        for c in _mock_conversations.values()
-    ]
-
-
-@router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
-    """Return a single conversation with all messages."""
-    conv = _mock_conversations.get(conversation_id)
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    return conv
-
-
-@router.post("/conversations", status_code=201)
-async def create_conversation(body: CreateConversationRequest):
-    """Save a new conversation and return it."""
-    conv_id = f"conv-{uuid.uuid4().hex[:8]}"
-    now = datetime.now(timezone.utc).isoformat()
-    conv = {
-        "id": conv_id,
-        "title": body.title,
-        "agent_id": body.agent_id or "agent-default",
-        "created_at": now,
+async def _conversation_payload(conv) -> dict[str, Any]:
+    """Render a conversation with its messages in the shape the console expects."""
+    return {
+        "id": str(conv.id),
+        "title": conv.title,
+        "agent_id": conv.agent_id,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "messages": [
             {
                 "role": m.role,
                 "content": m.content,
-                "timestamp": m.timestamp or now,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
             }
-            for m in body.messages
+            for m in conv.messages
         ],
     }
-    _mock_conversations[conv_id] = conv
-    return conv
+
+
+@router.get("/conversations")
+async def list_conversations(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Conversation summaries, newest first.
+
+    Returns only real conversations. This used to be seeded with three invented
+    threads, so a fresh install showed troubleshooting sessions nobody had run.
+    """
+    stmt = select(AgentConversation).options(
+        selectinload(AgentConversation.messages)
+    )
+    if workspace_id:
+        stmt = stmt.where(AgentConversation.workspace_id == uuid.UUID(str(workspace_id)))
+
+    rows = (
+        await db.execute(stmt.order_by(AgentConversation.created_at.desc()))
+    ).scalars().all()
+
+    return [
+        {
+            "id": str(c.id),
+            "title": c.title,
+            "agent_id": c.agent_id,
+            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "message_count": len(c.messages),
+        }
+        for c in rows
+    ]
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(
+    conversation_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Return a single conversation with all messages."""
+    try:
+        conv_id = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    conv = (
+        await db.execute(
+            select(AgentConversation)
+            .options(selectinload(AgentConversation.messages))
+            .where(AgentConversation.id == conv_id)
+        )
+    ).scalar_one_or_none()
+
+    if conv is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return await _conversation_payload(conv)
+
+
+@router.post("/conversations", status_code=201)
+async def create_conversation(
+    body: CreateConversationRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Save a new conversation and return it."""
+    conv = AgentConversation(
+        workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+        title=body.title,
+        agent_id=body.agent_id or "agent-default",
+    )
+    db.add(conv)
+    await db.flush()
+
+    for message in body.messages:
+        timestamp = None
+        if message.timestamp:
+            try:
+                timestamp = datetime.fromisoformat(
+                    message.timestamp.replace("Z", "+00:00")
+                )
+            except ValueError:
+                timestamp = None
+        db.add(
+            AgentMessage(
+                conversation_id=conv.id,
+                role=message.role,
+                content=message.content,
+                **({"timestamp": timestamp} if timestamp else {}),
+            )
+        )
+
+    await db.commit()
+
+    conv = (
+        await db.execute(
+            select(AgentConversation)
+            .options(selectinload(AgentConversation.messages))
+            .where(AgentConversation.id == conv.id)
+        )
+    ).scalar_one()
+    return await _conversation_payload(conv)
 
 
 # ---------------------------------------------------------------------------

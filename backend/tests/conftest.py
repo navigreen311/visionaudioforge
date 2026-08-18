@@ -53,6 +53,36 @@ def anyio_backend():
     return "asyncio"
 
 
+def _use_pool_free_engine() -> None:
+    """Rebuild the application engine without a connection pool, for tests.
+
+    asyncpg connections bind to the event loop that opened them, and the test
+    suite creates a fresh loop per test — and, with the synchronous TestClient,
+    per request. A pooled connection therefore outlives its loop and the next
+    caller gets "attached to a different loop" or "Event loop is closed".
+    NullPool opens and closes a connection per checkout, so nothing is ever
+    reused across loops. Only worth doing in tests; production wants the pool.
+    """
+    try:
+        import app.database as database
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        from app.config import settings
+
+        database.engine = create_async_engine(
+            settings.DATABASE_URL, poolclass=NullPool
+        )
+        database.async_session_factory = async_sessionmaker(
+            database.engine, expire_on_commit=False
+        )
+    except Exception:
+        pass
+
+
+_use_pool_free_engine()
+
+
 @pytest.fixture
 async def test_app():
     """Provide an async HTTP client bound to the FastAPI app."""
@@ -110,10 +140,57 @@ async def auth_headers(test_app) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+#: The workspace id DB-backed tests assume exists. Rows in most tables carry a
+#: workspace foreign key, so this has to be a real row, not just a constant.
+CANONICAL_TEST_WORKSPACE = "00000000-0000-0000-0000-000000000001"
+
+
 @pytest.fixture
 def test_workspace_id() -> str:
-    """Return a test workspace UUID.
+    """Return a test workspace UUID."""
+    return CANONICAL_TEST_WORKSPACE
 
-    When workspace creation is implemented, this will use the API.
+
+def _ensure_canonical_workspace_sync() -> None:
+    """Ensure the canonical test workspace row exists.
+
+    Endpoints that write workspace-scoped rows take their session from the app,
+    not from the test helpers, so without this row every such request fails on
+    a foreign key violation rather than exercising the endpoint.
+
+    Done on a raw asyncpg connection in its own short-lived loop deliberately:
+    the app's async engine binds its pool to whichever event loop first uses
+    it, so seeding through it at import time would leave connections attached
+    to a loop the tests never run in.
     """
-    return "00000000-0000-0000-0000-000000000001"
+    try:
+        import asyncio
+
+        import asyncpg
+
+        from app.config import settings
+
+        dsn = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+
+        async def _seed() -> None:
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "INSERT INTO workspaces (id, name, slug, created_at, updated_at) "
+                    "VALUES ($1::uuid, $2, $3, now(), now()) "
+                    "ON CONFLICT (id) DO NOTHING",
+                    CANONICAL_TEST_WORKSPACE,
+                    "test-workspace",
+                    "test-workspace",
+                )
+            finally:
+                await conn.close()
+
+        asyncio.run(_seed())
+    except Exception:
+        # No database, or an unmigrated schema — DB-backed tests fail or skip
+        # on their own terms rather than being masked here.
+        pass
+
+
+_ensure_canonical_workspace_sync()

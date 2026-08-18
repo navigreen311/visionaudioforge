@@ -10,10 +10,22 @@ import wave
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Body, File, Form, HTTPException, Path, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+)
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
+from app.database import get_async_session
 from app.schemas.safety import (
     ContentSafetyResult,
     RedactRequest,
@@ -323,7 +335,13 @@ async def legal_hold(body: LegalHoldRequest):
 
 
 @router.get("/provenance/{asset_id}")
-async def get_provenance(asset_id: str = Path(...)):
+async def get_provenance(
+    asset_id: str = Path(...),
+    workspace_id: str | None = Query(
+        None, description="Scope the chain to one workspace"
+    ),
+    db: AsyncSession = Depends(get_async_session),
+):
     """Get the provenance chain for an asset."""
-    chain = _provenance.get_provenance_chain(None, asset_id)
+    chain = await _provenance.get_provenance_chain(db, asset_id, workspace_id)
     return {"asset_id": asset_id, "chain": chain}

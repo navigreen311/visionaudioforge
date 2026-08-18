@@ -7,6 +7,12 @@ from httpx import ASGITransport, AsyncClient
 from app.services.simulation.scenario_generator import ScenarioGenerator
 from app.services.simulation.stress_tester import StressTester, StressTestConfig
 from app.services.simulation.runner import SimulationRunner
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -169,8 +175,27 @@ async def test_pipeline_benchmark(tester: StressTester):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+async def sim_db():
+    """A real session and workspace.
+
+    Simulation runs are rows now — replay, comparison and the report all read
+    them back by id, so a MagicMock session no longer stands in.
+    """
+    await requires_postgres()
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    async with factory() as session:
+        workspace_id = str(await seed_workspace(session, "simulation"))
+    try:
+        async with factory() as session:
+            yield session, workspace_id
+    finally:
+        await engine.dispose()
+
+
 @pytest.mark.anyio
-async def test_simulation_runner_injects_events(runner: SimulationRunner):
+async def test_simulation_runner_injects_events(runner: SimulationRunner, sim_db):
     """Runner injects all events and records timeline."""
     scenario = {
         "type": "intrusion",
@@ -181,8 +206,8 @@ async def test_simulation_runner_injects_events(runner: SimulationRunner):
         ],
         "description": "test scenario",
     }
-    db = MagicMock()
-    result = await runner.run_simulation(db, "ws-1", scenario)
+    db, ws = sim_db
+    result = await runner.run_simulation(db, ws, scenario)
     assert result["events_injected"] == 3
     assert result["alerts_triggered"] == 1
     assert len(result["timeline"]) == 3
@@ -190,7 +215,7 @@ async def test_simulation_runner_injects_events(runner: SimulationRunner):
 
 
 @pytest.mark.anyio
-async def test_simulation_report(runner: SimulationRunner):
+async def test_simulation_report(runner: SimulationRunner, sim_db):
     """Report includes scenario details, alerts, and recommendations."""
     scenario = {
         "type": "fire_smoke",
@@ -200,8 +225,8 @@ async def test_simulation_report(runner: SimulationRunner):
         ],
         "description": "fire test",
     }
-    db = MagicMock()
-    sim_result = await runner.run_simulation(db, "ws-1", scenario)
+    db, ws = sim_db
+    sim_result = await runner.run_simulation(db, ws, scenario)
     report = await runner.get_simulation_report(db, sim_result["simulation_id"])
 
     assert report["simulation_id"] == sim_result["simulation_id"]
@@ -213,14 +238,14 @@ async def test_simulation_report(runner: SimulationRunner):
 
 
 @pytest.mark.anyio
-async def test_compare_simulations(runner: SimulationRunner):
+async def test_compare_simulations(runner: SimulationRunner, sim_db):
     """Comparing two simulations returns metric-by-metric comparison."""
-    db = MagicMock()
-    s1 = await runner.run_simulation(db, "ws-1", {
+    db, ws = sim_db
+    s1 = await runner.run_simulation(db, ws, {
         "type": "test",
         "events": [{"type": "alert_triggered", "severity": "low", "rule": "x"}],
     })
-    s2 = await runner.run_simulation(db, "ws-1", {
+    s2 = await runner.run_simulation(db, ws, {
         "type": "test",
         "events": [
             {"type": "motion_detected", "confidence": 0.7},
@@ -236,10 +261,10 @@ async def test_compare_simulations(runner: SimulationRunner):
 
 
 @pytest.mark.anyio
-async def test_replay_simulation(runner: SimulationRunner):
+async def test_replay_simulation(runner: SimulationRunner, sim_db):
     """Replaying a simulation produces a new run with same scenario."""
-    db = MagicMock()
-    original = await runner.run_simulation(db, "ws-1", {
+    db, ws = sim_db
+    original = await runner.run_simulation(db, ws, {
         "type": "test",
         "events": [{"type": "motion_detected", "confidence": 0.5}],
     })
@@ -249,11 +274,34 @@ async def test_replay_simulation(runner: SimulationRunner):
 
 
 @pytest.mark.anyio
-async def test_replay_not_found(runner: SimulationRunner):
+async def test_replay_not_found(runner: SimulationRunner, sim_db):
     """Replaying a nonexistent simulation raises ValueError."""
-    db = MagicMock()
+    db, _ws = sim_db
     with pytest.raises(ValueError, match="not found"):
-        await runner.replay_simulation(db, "nonexistent-id")
+        await runner.replay_simulation(
+            db, "00000000-0000-0000-0000-0000000000ff"
+        )
+
+
+@pytest.mark.anyio
+async def test_simulation_runs_survive_a_restart(runner: SimulationRunner, sim_db):
+    """A completed run must still be readable after the process goes away."""
+    db, ws = sim_db
+    original = await runner.run_simulation(db, ws, {
+        "type": "test",
+        "events": [{"type": "alert_triggered", "severity": "high", "rule": "x"}],
+    })
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            report = await runner.get_simulation_report(
+                session, original["simulation_id"]
+            )
+        assert report["simulation_id"] == original["simulation_id"]
+    finally:
+        await restarted_engine.dispose()
 
 
 # ---------------------------------------------------------------------------

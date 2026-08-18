@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class AudioClient:
-    """Wraps the /api/v1/audio endpoints."""
+    """Wraps the /api/audio endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -24,7 +24,7 @@ class AudioClient:
         ops = operations or ["all"]
         files = {"file": ("audio", Path(audio_path).read_bytes())}
         data: dict[str, Any] = {"operations": ",".join(ops)}
-        resp = await self._client._request("POST", "/api/v1/audio/analyze", files=files, data=data)
+        resp = await self._client._request("POST", "/api/audio/analyze", files=files, data=data)
         return AudioAnalysis.model_validate(resp)
 
     async def augment(self, audio_path: str, config: dict[str, Any]) -> bytes:
@@ -41,7 +41,7 @@ class AudioClient:
         elif self._client.api_key:
             headers["X-API-Key"] = self._client.api_key
         response = await self._client._http.post(
-            "/api/v1/audio/augment", files=files, data=data, headers=headers
+            "/api/audio/augment", files=files, data=data, headers=headers
         )
         response.raise_for_status()
         return response.content
@@ -49,17 +49,17 @@ class AudioClient:
     async def transcribe(self, audio_path: str) -> Transcript:
         """Transcribe speech from an audio file."""
         files = {"file": ("audio", Path(audio_path).read_bytes())}
-        resp = await self._client._request("POST", "/api/v1/audio/transcribe", files=files)
+        resp = await self._client._request("POST", "/api/audio/transcribe", files=files)
         return Transcript.model_validate(resp)
 
     async def diarize(self, audio_path: str) -> DiarizationResult:
         """Perform speaker diarization on an audio file."""
         files = {"file": ("audio", Path(audio_path).read_bytes())}
-        resp = await self._client._request("POST", "/api/v1/audio/diarize", files=files)
+        resp = await self._client._request("POST", "/api/audio/diarize", files=files)
         return DiarizationResult.model_validate(resp)
 
     async def classify(self, audio_path: str) -> Classification:
         """Classify the content of an audio file."""
         files = {"file": ("audio", Path(audio_path).read_bytes())}
-        resp = await self._client._request("POST", "/api/v1/audio/classify", files=files)
+        resp = await self._client._request("POST", "/api/audio/classify", files=files)
         return Classification.model_validate(resp)

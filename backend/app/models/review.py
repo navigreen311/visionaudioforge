@@ -43,14 +43,23 @@ class ReviewTask(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "review_tasks"
 
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
-    asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id"), nullable=False)
+    title = Column(String(300), nullable=True)
+    description = Column(Text, nullable=True)
+    # Nullable: a task can cover a batch of assets, or none at all. Requiring a
+    # single asset is why the /api/reviewops routes never adopted this table
+    # and kept their queue in a module-level dict instead.
+    asset_id = Column(UUID(as_uuid=True), ForeignKey("assets.id"), nullable=True)
+    asset_ids = Column(JSON, nullable=True)
     review_type = Column(Enum(ReviewType), nullable=False)
     priority = Column(Enum(ReviewPriority), nullable=False, default=ReviewPriority.normal)
     status = Column(Enum(ReviewTaskStatus), nullable=False, default=ReviewTaskStatus.pending)
     required_reviews = Column(Integer, nullable=False, default=1)
     sla_hours = Column(Float, nullable=False, default=24.0)
-    sla_deadline = Column(DateTime(timezone=True), nullable=False)
+    sla_deadline = Column(DateTime(timezone=True), nullable=True)
     assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    # Kept as text as well, so an assignment still names who holds the task
+    # when the reviewer is an opaque id rather than a user row.
+    assigned_to_label = Column(String(200), nullable=True)
     assigned_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships

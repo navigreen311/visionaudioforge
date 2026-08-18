@@ -7,9 +7,15 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.simulation import SimulationRun as SimulationRunModel
+from app.models.simulation import SimulationScenario
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -111,11 +117,47 @@ _PIPELINES: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# In-memory store
-# ---------------------------------------------------------------------------
-_scenarios: dict[str, dict] = {}
-_simulations: dict[str, dict] = {}
+def _uuid_or_404(value: str, what: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+
+
+def _serialise_scenario(row: SimulationScenario) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "type": row.scenario_type,
+        "parameters": (row.definition or {}).get("parameters", {}),
+        "created_at": row.created_at.timestamp() if row.created_at else None,
+    }
+
+
+async def _load_scenario(db: AsyncSession, scenario_id: str) -> SimulationScenario:
+    row = (
+        await db.execute(
+            select(SimulationScenario).where(
+                SimulationScenario.id == _uuid_or_404(scenario_id, "Scenario")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    return row
+
+
+async def _load_run(db: AsyncSession, simulation_id: str, what: str = "Simulation"):
+    row = (
+        await db.execute(
+            select(SimulationRunModel).where(
+                SimulationRunModel.id == _uuid_or_404(simulation_id, what)
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -123,57 +165,100 @@ _simulations: dict[str, dict] = {}
 # ---------------------------------------------------------------------------
 
 @router.post("/scenarios")
-async def generate_scenario(body: ScenarioGenerate) -> dict[str, Any]:
-    sid = str(uuid.uuid4())
-    scenario = {
-        "id": sid,
-        "name": body.name,
-        "type": body.scenario_type,
-        "parameters": body.parameters,
-        "created_at": time.time(),
-    }
-    _scenarios[sid] = scenario
+async def generate_scenario(
+    body: ScenarioGenerate,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    row = SimulationScenario(
+        workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+        name=body.name,
+        scenario_type=body.scenario_type,
+        definition={"parameters": body.parameters},
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    scenario = _serialise_scenario(row)
     return scenario
 
 
 @router.get("/scenarios")
-async def list_scenarios() -> list[dict]:
-    return list(_scenarios.values())
+async def list_scenarios(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict]:
+    stmt = select(SimulationScenario)
+    if workspace_id:
+        stmt = stmt.where(
+            SimulationScenario.workspace_id == uuid.UUID(str(workspace_id))
+        )
+    rows = (
+        await db.execute(stmt.order_by(SimulationScenario.created_at))
+    ).scalars().all()
+    return [_serialise_scenario(r) for r in rows]
 
 
 @router.get("/scenarios/{scenario_id}")
-async def get_scenario(scenario_id: str) -> dict:
-    if scenario_id not in _scenarios:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    return _scenarios[scenario_id]
+async def get_scenario(
+    scenario_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    return _serialise_scenario(await _load_scenario(db, scenario_id))
 
 
 @router.post("/run")
-async def run_simulation(body: SimulationRun) -> dict[str, Any]:
-    if body.scenario_id not in _scenarios:
-        raise HTTPException(status_code=404, detail="Scenario not found")
-    sim_id = str(uuid.uuid4())
-    simulation = {
-        "id": sim_id,
-        "scenario_id": body.scenario_id,
-        "status": "completed",
-        "config": body.config,
-        "results": {
-            "throughput": 1250.0,
-            "latency_p50_ms": 45.0,
-            "latency_p99_ms": 120.0,
-            "error_rate": 0.002,
-            "duration_seconds": 60,
+async def run_simulation(
+    body: SimulationRun,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Record a simulation run against a saved scenario.
+
+    No load is actually generated here. The results used to be the fixed
+    numbers throughput=1250, p50=45ms, p99=120ms, error_rate=0.002, which are
+    indistinguishable from a real measurement; they are reported as unmeasured
+    instead. /api/simulation/runs is the endpoint that produces real numbers.
+    """
+    scenario = await _load_scenario(db, body.scenario_id)
+
+    run = SimulationRunModel(
+        workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+        scenario=scenario.definition or {},
+        scenario_id=scenario.id,
+        status="completed",
+        result={
+            "config": body.config,
+            "results": None,
+            "unmeasured": [
+                "throughput",
+                "latency_p50_ms",
+                "latency_p99_ms",
+                "error_rate",
+            ],
+            "detail": "This endpoint records a run; it does not generate load.",
         },
-        "started_at": time.time(),
-        "completed_at": time.time(),
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    return {
+        "id": str(run.id),
+        "scenario_id": str(scenario.id),
+        "status": run.status,
+        **(run.result or {}),
+        "started_at": run.created_at.timestamp() if run.created_at else None,
+        "completed_at": run.created_at.timestamp() if run.created_at else None,
     }
-    _simulations[sim_id] = simulation
-    return simulation
 
 
 @router.post("/runs")
-async def run_simulation_full(body: SimulationRunFull) -> dict[str, Any]:
+async def run_simulation_full(
+    body: SimulationRunFull,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Run a full simulation from scenario config — generates synthetic events."""
     rng = random.Random(body.random_seed)
     event_types = _SCENARIO_EVENT_TYPES.get(body.scenario_id, ["generic_event"])
@@ -219,9 +304,7 @@ async def run_simulation_full(body: SimulationRunFull) -> dict[str, Any]:
         - 30 * (missed / max(total, 1))
     )))
 
-    sim_id = str(uuid.uuid4())
-    simulation = {
-        "id": sim_id,
+    record = {
         "scenario_id": body.scenario_id,
         "label": body.label,
         "status": "completed",
@@ -233,19 +316,46 @@ async def run_simulation_full(body: SimulationRunFull) -> dict[str, Any]:
         "false_alarms": false_alarms,
         "missed": missed,
         "total_events": total,
-        "started_at": time.time(),
-        "completed_at": time.time(),
+        # The events are synthesised from a seeded RNG, so the scores below
+        # describe generated data, not observed behaviour.
+        "simulated": True,
     }
-    _simulations[sim_id] = simulation
-    return simulation
+
+    run = SimulationRunModel(
+        workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+        scenario={"scenario_id": body.scenario_id},
+        label=body.label,
+        status="completed",
+        events_injected=body.event_count,
+        duration_s=body.duration_s,
+        timeline=events,
+        result=record,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+
+    return {
+        "id": str(run.id),
+        **record,
+        "started_at": run.created_at.timestamp() if run.created_at else None,
+        "completed_at": run.created_at.timestamp() if run.created_at else None,
+    }
 
 
 @router.get("/runs/{simulation_id}")
-async def get_simulation_run(simulation_id: str) -> dict[str, Any]:
+async def get_simulation_run(
+    simulation_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Retrieve a completed simulation run by ID."""
-    if simulation_id not in _simulations:
-        raise HTTPException(status_code=404, detail="Simulation run not found")
-    return _simulations[simulation_id]
+    run = await _load_run(db, simulation_id, "Simulation run")
+    return {
+        "id": str(run.id),
+        **(run.result or {}),
+        "started_at": run.created_at.timestamp() if run.created_at else None,
+        "completed_at": run.created_at.timestamp() if run.created_at else None,
+    }
 
 
 @router.post("/runs/{simulation_id}/report")
@@ -282,12 +392,27 @@ async def export_run_report(simulation_id: str) -> Response:
 
 
 @router.get("/report/{simulation_id}")
-async def get_report(simulation_id: str) -> dict[str, Any]:
-    if simulation_id not in _simulations:
-        raise HTTPException(status_code=404, detail="Simulation not found")
-    sim = _simulations[simulation_id]
-    scenario = _scenarios.get(sim.get("scenario_id", ""), {})
-    results = sim.get("results", {})
+async def get_report(
+    simulation_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    run = await _load_run(db, simulation_id)
+    sim = dict(run.result or {})
+    sim["status"] = run.status
+
+    scenario: dict[str, Any] = {}
+    if run.scenario_id:
+        row = (
+            await db.execute(
+                select(SimulationScenario).where(
+                    SimulationScenario.id == run.scenario_id
+                )
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            scenario = _serialise_scenario(row)
+
+    results = sim.get("results") or {}
     error_rate = results.get("error_rate", 0)
     return {
         "simulation_id": simulation_id,

@@ -9,6 +9,12 @@ from app.services.runtime.router import ModelRouter, ModelRouteConfig
 from app.services.runtime.gpu_scheduler import GPUScheduler
 from app.services.runtime.cost_control import CostController
 from app.services.runtime.cache import InferenceCache
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,11 +58,26 @@ def gpu_scheduler() -> GPUScheduler:
 
 
 @pytest.fixture
-def cost_controller() -> CostController:
+async def cost_env():
+    """A cost controller backed by a real database.
+
+    Cost and quota state is now rows, not per-instance dicts, so these tests
+    need a session and a real workspace to hang the rows off.
+    """
+    await requires_postgres()
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
     cc = CostController()
-    cc.set_model_cost("model-a", 0.002)
-    cc.set_model_cost("model-b", 0.01)
-    return cc
+    async with factory() as session:
+        workspace_id = str(await seed_workspace(session, "runtime-cost"))
+        await cc.set_model_cost(session, "model-a", 0.002)
+        await cc.set_model_cost(session, "model-b", 0.01)
+
+    try:
+        yield cc, factory, workspace_id
+    finally:
+        await engine.dispose()
 
 
 @pytest.fixture
@@ -170,14 +191,16 @@ async def test_loading_strategy(gpu_scheduler: GPUScheduler):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_cost_tracking(cost_controller: CostController):
+async def test_cost_tracking(cost_env):
     """Tracked inferences should appear in cost report."""
-    ws = "ws-test-1"
-    cost_controller.track_inference(ws, "model-a", 50.0, 100)
-    cost_controller.track_inference(ws, "model-a", 60.0, 200)
-    cost_controller.track_inference(ws, "model-b", 120.0, 500)
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        await cc.track_inference(session, ws, "model-a", 50.0, 100)
+        await cc.track_inference(session, ws, "model-a", 60.0, 200)
+        await cc.track_inference(session, ws, "model-b", 120.0, 500)
 
-    report = cost_controller.get_workspace_cost(None, ws, period="daily")
+        report = await cc.get_workspace_cost(session, ws, period="daily")
+
     assert report["inference_count"] == 3
     assert report["total_cost"] > 0
     assert "model-a" in report["by_model"]
@@ -185,43 +208,105 @@ async def test_cost_tracking(cost_controller: CostController):
 
 
 @pytest.mark.anyio
-async def test_budget_check(cost_controller: CostController):
+async def test_budget_check(cost_env):
     """Budget check should detect when spending exceeds limit."""
-    ws = "ws-budget"
-    for _ in range(10):
-        cost_controller.track_inference(ws, "model-b", 100.0, 1000)
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        for _ in range(10):
+            await cc.track_inference(session, ws, "model-b", 100.0, 1000)
 
-    result = cost_controller.check_budget(None, ws, budget_limit=0.05)
-    assert result["within_budget"] is False
-    assert result["spent"] > 0.05
+        result = await cc.check_budget(session, ws, budget_limit=0.05)
+        assert result["within_budget"] is False
+        assert result["spent"] > 0.05
 
-    result2 = cost_controller.check_budget(None, ws, budget_limit=10.0)
-    assert result2["within_budget"] is True
+        result2 = await cc.check_budget(session, ws, budget_limit=10.0)
+        assert result2["within_budget"] is True
 
 
 @pytest.mark.anyio
-async def test_quota_enforcement(cost_controller: CostController):
+async def test_quota_enforcement(cost_env):
     """Quota should block after limit is reached."""
-    ws = "ws-quota"
-    cost_controller.set_quota(ws, daily_limit=3)
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        await cc.set_quota(session, ws, daily_limit=3)
 
-    for i in range(3):
-        result = cost_controller.check_quota(ws)
-        assert result["allowed"] is True
+        for _ in range(3):
+            result = await cc.check_quota(session, ws)
+            assert result["allowed"] is True
 
-    result = cost_controller.check_quota(ws)
+        result = await cc.check_quota(session, ws)
+
     assert result["allowed"] is False
     assert result["used"] == 3
     assert result["limit"] == 3
 
 
 @pytest.mark.anyio
-async def test_cost_report_generation(cost_controller: CostController):
-    """Full cost report should include all expected fields."""
-    ws = "ws-report"
-    cost_controller.track_inference(ws, "model-a", 50.0, 100)
+async def test_quota_survives_a_restart(cost_env):
+    """A cap that resets on deploy is not a cap.
 
-    report = cost_controller.generate_cost_report(None, ws, period="monthly")
+    Consume the allowance, then read through a brand-new engine: the workspace
+    must still be blocked rather than starting over at zero used.
+    """
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        await cc.set_quota(session, ws, daily_limit=2)
+        await cc.check_quota(session, ws)
+        await cc.check_quota(session, ws)
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            result = await cc.check_quota(session, ws)
+        assert result["allowed"] is False, "quota reset itself across a restart"
+        assert result["used"] == 2
+    finally:
+        await restarted_engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_spend_survives_a_restart(cost_env):
+    """Cost reports must not read as 'nothing spent' after a deploy."""
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        await cc.track_inference(session, ws, "model-b", 10.0, 10)
+        await cc.track_inference(session, ws, "model-b", 10.0, 10)
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            report = await cc.get_workspace_cost(session, ws, period="daily")
+        assert report["inference_count"] == 2
+        assert report["total_cost"] > 0
+    finally:
+        await restarted_engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_model_rates_survive_a_restart(cost_env):
+    """Losing the rate table would silently re-price every model."""
+    cc, factory, ws = cost_env
+
+    restarted_engine = await fresh_engine()
+    restarted = db_session_factory(restarted_engine)
+    try:
+        async with restarted() as session:
+            assert await cc._unit_cost(session, "model-b") == 0.01
+            # An unpriced model still falls back to the documented default.
+            assert await cc._unit_cost(session, "never-priced") == 0.001
+    finally:
+        await restarted_engine.dispose()
+
+
+@pytest.mark.anyio
+async def test_cost_report_generation(cost_env):
+    """Full cost report should include all expected fields."""
+    cc, factory, ws = cost_env
+    async with factory() as session:
+        await cc.track_inference(session, ws, "model-a", 50.0, 100)
+        report = await cc.generate_cost_report(session, ws, period="monthly")
     assert "period" in report
     assert "total_cost" in report
     assert "by_model" in report
@@ -320,23 +405,53 @@ async def test_api_cache_stats(client):
     assert "hit_rate" in data
 
 
+@pytest.fixture
+async def db_client(cost_env):
+    """HTTP client whose routes read the test database.
+
+    Quota and cost are rows now, so the runtime endpoints need their session
+    dependency pointed at the same database the fixtures seeded.
+    """
+    from app.database import get_async_session
+    from app.main import app
+
+    _cc, factory, workspace_id = cost_env
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override
+    transport = ASGITransport(app=app)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac, workspace_id
+    finally:
+        app.dependency_overrides.pop(get_async_session, None)
+
+
 @pytest.mark.anyio
-async def test_api_quota_set_and_get(client):
+async def test_api_quota_set_and_get(db_client):
     """POST and GET quota endpoints should work together."""
-    resp = await client.post("/api/runtime/quota", json={"workspace_id": "ws-api-test", "daily_limit": 100})
+    client, workspace_id = db_client
+    resp = await client.post(
+        "/api/runtime/quota",
+        json={"workspace_id": workspace_id, "daily_limit": 100},
+    )
     assert resp.status_code == 200
 
-    resp = await client.get("/api/runtime/quota/ws-api-test")
+    resp = await client.get(f"/api/runtime/quota/{workspace_id}")
     assert resp.status_code == 200
     data = resp.json()
-    assert "allowed" in data
-    assert "limit" in data
+    assert data["limit"] == 100
+    assert data["allowed"] is True
 
 
 @pytest.mark.anyio
-async def test_api_cost_report(client):
+async def test_api_cost_report(db_client):
     """GET /api/runtime/cost/{workspace_id} should return a report."""
-    resp = await client.get("/api/runtime/cost/ws-api-test")
+    client, workspace_id = db_client
+    resp = await client.get(f"/api/runtime/cost/{workspace_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert "total_cost" in data

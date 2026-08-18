@@ -1,12 +1,23 @@
-"""Semantic Memory routes — store, recall, decay, promote memories."""
+"""Semantic Memory routes — store, recall, decay, promote memories.
+
+Memories are rows in ``semantic_memories``. They used to be a module-level
+dict: user-authored knowledge that the platform promised to remember and then
+lost on every restart, with nothing to indicate anything had been forgotten.
+"""
 
 from __future__ import annotations
 
-import time
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.semantic_memory import SemanticMemory
 
 router = APIRouter(prefix="/api/semantic-memory", tags=["semantic-memory"])
 
@@ -27,83 +38,164 @@ class MemoryRecallRequest(BaseModel):
     query: str
     limit: int = 10
     category: str | None = None
+    workspace_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# In-memory store
+# Helpers
 # ---------------------------------------------------------------------------
-_memories: dict[str, dict] = {}
-_mem_counter = 0
+
+def _serialise(memory: SemanticMemory) -> dict[str, Any]:
+    return {
+        "id": str(memory.id),
+        "content": memory.content,
+        "category": memory.category,
+        "importance": memory.importance,
+        "metadata": memory.metadata_ or {},
+        "created_at": memory.created_at.timestamp() if memory.created_at else None,
+        "access_count": memory.access_count,
+        "workspace_id": str(memory.workspace_id) if memory.workspace_id else None,
+    }
 
 
-def _next_id() -> str:
-    global _mem_counter
-    _mem_counter += 1
-    return f"mem-{_mem_counter:06d}"
+def _require_workspace(workspace_id: str | None) -> uuid.UUID:
+    """Memories are workspace-scoped; refuse to store one without a workspace."""
+    if not workspace_id:
+        raise HTTPException(
+            status_code=422,
+            detail="workspace_id is required — memories are workspace-scoped",
+        )
+    try:
+        return uuid.UUID(str(workspace_id))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="workspace_id must be a UUID")
+
+
+def _scoped(stmt, workspace_id: str | None):
+    """Constrain a query to one workspace when one was supplied."""
+    if workspace_id:
+        return stmt.where(SemanticMemory.workspace_id == uuid.UUID(str(workspace_id)))
+    return stmt
 
 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/store")
-async def store_memory(body: MemoryStore) -> dict[str, Any]:
+@router.post("/store", status_code=201)
+async def store_memory(
+    body: MemoryStore,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Store a new semantic memory."""
-    mid = _next_id()
-    memory = {
-        "id": mid,
-        "content": body.content,
-        "category": body.category,
-        "importance": body.importance,
-        "metadata": body.metadata,
-        "created_at": time.time(),
-        "access_count": 0,
-    }
-    _memories[mid] = memory
-    return memory
+    memory = SemanticMemory(
+        workspace_id=_require_workspace(body.workspace_id),
+        content=body.content,
+        category=body.category,
+        importance=body.importance,
+        importance_score=body.importance,
+        metadata_=body.metadata or {},
+    )
+    db.add(memory)
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise(memory)
 
 
 @router.post("/recall")
-async def recall_memory(body: MemoryRecallRequest) -> dict[str, Any]:
-    """Recall memories matching a query."""
-    results = []
-    for mem in _memories.values():
-        if body.category and mem["category"] != body.category:
-            continue
-        # Simple keyword match (production uses embeddings)
-        if body.query.lower() in mem["content"].lower():
-            mem["access_count"] += 1
-            results.append(mem)
-    results.sort(key=lambda m: m["importance"], reverse=True)
-    return {"query": body.query, "results": results[: body.limit], "total": len(results)}
+async def recall_memory(
+    body: MemoryRecallRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Recall memories matching a query.
+
+    Matching is a case-insensitive substring search; real semantic recall needs
+    the embedding pipeline, so `method` names what actually ran rather than
+    letting the endpoint imply vector similarity.
+    """
+    stmt = select(SemanticMemory).where(SemanticMemory.content.ilike(f"%{body.query}%"))
+    if body.category:
+        stmt = stmt.where(SemanticMemory.category == body.category)
+    stmt = _scoped(stmt, body.workspace_id)
+
+    rows = (
+        await db.execute(stmt.order_by(SemanticMemory.importance.desc()))
+    ).scalars().all()
+
+    # Recall is an access: record it so decay and promotion have real usage to
+    # work from rather than a counter that resets with the process.
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        row.access_count = (row.access_count or 0) + 1
+        row.last_accessed = now
+    await db.commit()
+
+    return {
+        "query": body.query,
+        "results": [_serialise(r) for r in rows[: body.limit]],
+        "total": len(rows),
+        "method": "substring_match",
+    }
 
 
 @router.post("/decay")
 async def decay_memories(
     threshold: float = Query(0.1, ge=0.0, le=1.0),
     factor: float = Query(0.9, ge=0.0, le=1.0),
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
-    """Apply time-based decay to all memories below a threshold."""
-    decayed = 0
-    for mem in _memories.values():
-        if mem["importance"] < threshold:
-            continue
-        mem["importance"] *= factor
-        decayed += 1
-    return {"decayed_count": decayed, "factor": factor}
+    """Apply decay to memories at or above a threshold."""
+    stmt = _scoped(
+        select(SemanticMemory).where(SemanticMemory.importance >= threshold),
+        workspace_id,
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    for row in rows:
+        row.importance = row.importance * factor
+        row.importance_score = row.importance
+    await db.commit()
+
+    return {"decayed_count": len(rows), "factor": factor}
 
 
 @router.post("/promote/{memory_id}")
-async def promote_memory(memory_id: str, boost: float = Query(0.1, ge=0.0, le=0.5)) -> dict[str, Any]:
+async def promote_memory(
+    memory_id: str,
+    boost: float = Query(0.1, ge=0.0, le=0.5),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Promote a memory by boosting its importance."""
-    if memory_id not in _memories:
+    try:
+        mid = uuid.UUID(memory_id)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Memory not found")
-    mem = _memories[memory_id]
-    mem["importance"] = min(1.0, mem["importance"] + boost)
-    return mem
+
+    memory = (
+        await db.execute(select(SemanticMemory).where(SemanticMemory.id == mid))
+    ).scalar_one_or_none()
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    memory.importance = min(1.0, memory.importance + boost)
+    memory.importance_score = memory.importance
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise(memory)
 
 
 @router.get("/memories")
-async def list_memories(limit: int = Query(50, ge=1, le=500)) -> list[dict]:
-    """List all stored memories."""
-    return sorted(_memories.values(), key=lambda m: m["importance"], reverse=True)[:limit]
+async def list_memories(
+    limit: int = Query(50, ge=1, le=500),
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict]:
+    """List stored memories, most important first."""
+    stmt = _scoped(select(SemanticMemory), workspace_id)
+    rows = (
+        await db.execute(
+            stmt.order_by(SemanticMemory.importance.desc()).limit(limit)
+        )
+    ).scalars().all()
+    return [_serialise(r) for r in rows]

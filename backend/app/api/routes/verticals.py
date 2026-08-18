@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
 
 router = APIRouter(prefix="/api/verticals", tags=["verticals"])
 
@@ -108,10 +114,25 @@ VERTICAL_PACKS: dict[str, dict[str, Any]] = {
     },
 }
 
-# In-memory stores
-_installed: dict[str, dict[str, Any]] = {}
-_install_jobs: dict[str, dict[str, Any]] = {}
-_job_counter = 0
+def _scoped(stmt, workspace_id, model):
+    """Constrain a query to one workspace when one was supplied."""
+    if workspace_id:
+        return stmt.where(model.workspace_id == uuid.UUID(str(workspace_id)))
+    return stmt.where(model.workspace_id.is_(None))
+
+
+def _serialise_install(row: InstalledVerticalPack) -> dict[str, Any]:
+    """Render an installed pack: stored toggles over the pack's static metadata."""
+    pack = VERTICAL_PACKS.get(row.pack_id, {})
+    return {
+        **pack,
+        "pack_id": row.pack_id,
+        "installed_version": row.installed_version,
+        "enabled": row.enabled,
+        "enabled_modules": row.enabled_modules or {},
+        "enabled_pipelines": row.enabled_pipelines or {},
+        "enabled_alerts": row.enabled_alerts or {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -132,28 +153,51 @@ class ComponentToggleRequest(BaseModel):
 # Endpoints — Browsing packs
 # ---------------------------------------------------------------------------
 
+async def _installed_versions(
+    db: AsyncSession, workspace_id: str | None
+) -> dict[str, str | None]:
+    """Map pack_id -> installed_version for one workspace."""
+    rows = (
+        await db.execute(
+            _scoped(select(InstalledVerticalPack), workspace_id, InstalledVerticalPack)
+        )
+    ).scalars().all()
+    return {r.pack_id: r.installed_version for r in rows}
+
+
 @router.get("/packs")
-async def list_packs() -> list[dict[str, Any]]:
-    """List all 7 built-in vertical packs with full metadata."""
+async def list_packs(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, Any]]:
+    """List all built-in vertical packs with full metadata."""
+    installed = await _installed_versions(db, workspace_id)
+
     result = []
     for pack in VERTICAL_PACKS.values():
         entry = dict(pack)
-        # If installed, reflect installed_version
-        if pack["id"] in _installed:
-            entry["installed_version"] = _installed[pack["id"]].get("installed_version")
+        entry["installed"] = pack["id"] in installed
+        if pack["id"] in installed:
+            entry["installed_version"] = installed[pack["id"]]
         result.append(entry)
     return result
 
 
 @router.get("/packs/{pack_id}")
-async def get_pack(pack_id: str) -> dict[str, Any]:
+async def get_pack(
+    pack_id: str,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Get details of a vertical pack."""
     if pack_id not in VERTICAL_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
+
+    installed = await _installed_versions(db, workspace_id)
     pack = dict(VERTICAL_PACKS[pack_id])
-    pack["installed"] = pack_id in _installed
-    if pack_id in _installed:
-        pack["installed_version"] = _installed[pack_id].get("installed_version")
+    pack["installed"] = pack_id in installed
+    if pack_id in installed:
+        pack["installed_version"] = installed[pack_id]
     return pack
 
 
@@ -177,88 +221,163 @@ async def get_pack_resources(pack_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/install")
-async def install_pack(body: InstallRequest) -> dict[str, Any]:
-    """Start installing a vertical pack. Returns a job_id for status tracking."""
-    global _job_counter
-
+async def install_pack(
+    body: InstallRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Install a vertical pack. Returns a job_id for status tracking."""
     if body.pack_id not in VERTICAL_PACKS:
         raise HTTPException(status_code=404, detail="Pack not found")
 
-    _job_counter += 1
-    job_id = f"install_{_job_counter:03d}"
-
     pack = VERTICAL_PACKS[body.pack_id]
+    ws = uuid.UUID(str(workspace_id)) if workspace_id else None
 
-    # Create job with progress steps
-    _install_jobs[job_id] = {
-        "job_id": job_id,
-        "pack_id": body.pack_id,
-        "status": "completed",
-        "steps": [
-            {"name": "download_models", "status": "completed", "progress": 100},
+    existing = (
+        await db.execute(
+            _scoped(
+                select(InstalledVerticalPack).where(
+                    InstalledVerticalPack.pack_id == body.pack_id
+                ),
+                workspace_id,
+                InstalledVerticalPack,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        existing = InstalledVerticalPack(workspace_id=ws, pack_id=body.pack_id)
+        db.add(existing)
+
+    existing.installed_version = pack["version"]
+    existing.enabled = True
+    existing.enabled_modules = {m: True for m in pack["modules"]}
+    existing.enabled_pipelines = {p: True for p in pack["pipelines"]}
+    existing.enabled_alerts = {a: True for a in pack["alerts"]}
+
+    # The install itself is synchronous, so the job is recorded as completed
+    # rather than reporting fabricated intermediate progress.
+    job = VerticalInstallJob(
+        workspace_id=ws,
+        pack_id=body.pack_id,
+        status="completed",
+        steps=[
             {"name": "load_pipelines", "status": "completed", "progress": 100},
             {"name": "configure_alerts", "status": "completed", "progress": 100},
             {"name": "verify_install", "status": "completed", "progress": 100},
         ],
-    }
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
 
-    # Mark as installed immediately (stub behaviour)
-    _installed[body.pack_id] = {
-        **pack,
-        "installed_version": pack["version"],
-        "enabled_modules": {m: True for m in pack["modules"]},
-        "enabled_pipelines": {p: True for p in pack["pipelines"]},
-        "enabled_alerts": {a: True for a in pack["alerts"]},
-    }
-
-    return {"job_id": job_id}
+    return {"job_id": str(job.id)}
 
 
 @router.get("/install/{job_id}/status")
-async def get_install_status(job_id: str) -> dict[str, Any]:
+async def get_install_status(
+    job_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Get progress/status of an installation job."""
-    if job_id not in _install_jobs:
+    try:
+        jid = uuid.UUID(job_id)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Install job not found")
-    return _install_jobs[job_id]
+
+    job = (
+        await db.execute(
+            select(VerticalInstallJob).where(VerticalInstallJob.id == jid)
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Install job not found")
+
+    return {
+        "job_id": str(job.id),
+        "pack_id": job.pack_id,
+        "status": job.status,
+        "steps": job.steps or [],
+    }
 
 
 @router.get("/installed")
-async def list_installed() -> list[dict[str, Any]]:
+async def list_installed(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, Any]]:
     """List all currently installed vertical packs."""
-    return list(_installed.values())
+    rows = (
+        await db.execute(
+            _scoped(select(InstalledVerticalPack), workspace_id, InstalledVerticalPack)
+        )
+    ).scalars().all()
+    return [_serialise_install(r) for r in rows]
 
 
 @router.patch("/install/{pack_id}")
-async def update_install(pack_id: str, body: ComponentToggleRequest) -> dict[str, Any]:
+async def update_install(
+    pack_id: str,
+    body: ComponentToggleRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Update component toggles (modules/pipelines/alerts) on an installed pack."""
-    if pack_id not in _installed:
+    row = (
+        await db.execute(
+            _scoped(
+                select(InstalledVerticalPack).where(
+                    InstalledVerticalPack.pack_id == pack_id
+                ),
+                workspace_id,
+                InstalledVerticalPack,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Installed pack not found")
 
-    entry = _installed[pack_id]
+    # Reassign rather than mutate: SQLAlchemy does not track in-place edits to
+    # a JSON column, so mutating the dict would not be written back.
+    for field, updates in (
+        ("enabled_modules", body.modules),
+        ("enabled_pipelines", body.pipelines),
+        ("enabled_alerts", body.alerts),
+    ):
+        if updates is None:
+            continue
+        current = dict(getattr(row, field) or {})
+        for key, value in updates.items():
+            if key in current:
+                current[key] = value
+        setattr(row, field, current)
 
-    if body.modules is not None:
-        for key, enabled in body.modules.items():
-            if key in entry.get("enabled_modules", {}):
-                entry["enabled_modules"][key] = enabled
-
-    if body.pipelines is not None:
-        for key, enabled in body.pipelines.items():
-            if key in entry.get("enabled_pipelines", {}):
-                entry["enabled_pipelines"][key] = enabled
-
-    if body.alerts is not None:
-        for key, enabled in body.alerts.items():
-            if key in entry.get("enabled_alerts", {}):
-                entry["enabled_alerts"][key] = enabled
-
-    return {"pack_id": pack_id, "status": "updated", **entry}
+    await db.commit()
+    await db.refresh(row)
+    return {"pack_id": pack_id, "status": "updated", **_serialise_install(row)}
 
 
 @router.delete("/install/{pack_id}")
-async def uninstall_pack(pack_id: str) -> dict[str, Any]:
+async def uninstall_pack(
+    pack_id: str,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Uninstall a vertical pack."""
-    if pack_id not in _installed:
+    row = (
+        await db.execute(
+            _scoped(
+                select(InstalledVerticalPack).where(
+                    InstalledVerticalPack.pack_id == pack_id
+                ),
+                workspace_id,
+                InstalledVerticalPack,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Installed pack not found")
 
-    del _installed[pack_id]
+    await db.delete(row)
+    await db.commit()
     return {"pack_id": pack_id, "status": "uninstalled", "success": True}

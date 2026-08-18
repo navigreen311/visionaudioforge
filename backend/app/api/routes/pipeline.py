@@ -441,10 +441,16 @@ async def get_template_by_name(name: str) -> dict:
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/schedule")
-async def schedule_pipeline(body: ScheduleRequest) -> dict:
+async def schedule_pipeline(
+    body: ScheduleRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
     """Create a cron schedule for a pipeline."""
     try:
-        result = await scheduler.schedule(body.pipeline_id, body.cron)
+        result = await scheduler.schedule(
+            db, body.pipeline_id, body.cron, workspace_id=workspace_id
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return result
@@ -455,9 +461,12 @@ async def schedule_pipeline(body: ScheduleRequest) -> dict:
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/schedules")
-async def get_schedules(workspace_id: str | None = Query(None)) -> list[dict]:
+async def get_schedules(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     """Return all active pipeline schedules."""
-    return await scheduler.list_schedules(workspace_id)
+    return await scheduler.list_schedules(db, workspace_id)
 
 
 # --------------------------------------------------------------------------
@@ -488,7 +497,13 @@ async def update_pipeline_schedule(
         raise HTTPException(status_code=404, detail="Pipeline not found")
 
     try:
-        schedule_result = await scheduler.schedule(str(pipeline_id), body.cron)
+        schedule_result = await scheduler.schedule(
+            db,
+            str(pipeline_id),
+            body.cron,
+            enabled=body.enabled,
+            workspace_id=str(pipeline.workspace_id) if pipeline.workspace_id else None,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
