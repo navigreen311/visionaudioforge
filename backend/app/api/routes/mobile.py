@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_async_session
 from app.models.field_note import FieldNote
 from app.models.integration import PushDevice
+from app.services.mobile.offline_sync import OfflineSyncService
 
 router = APIRouter(prefix="/api/mobile", tags=["mobile"])
 
@@ -219,3 +221,64 @@ async def get_field_note(
     if note is None:
         raise HTTPException(status_code=404, detail="Field note not found")
     return _serialise_note(note)
+
+
+# ---------------------------------------------------------------------------
+# Offline sync
+#
+# OfflineSyncService has always been able to build sync packages, replay the
+# actions a device queued while offline, and track the conflicts that arise
+# when someone else changed the same row first — but none of it was reachable
+# over HTTP, so a mobile client had no way to sync.
+# ---------------------------------------------------------------------------
+
+
+class OfflineActionsRequest(BaseModel):
+    """A batch of actions a device performed while it had no connection."""
+
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@router.post("/sync")
+async def sync_offline_actions(
+    body: OfflineActionsRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Replay actions queued offline, reporting per-action outcome."""
+    return await OfflineSyncService.process_offline_actions(db, body.actions)
+
+
+@router.get("/sync/package")
+async def sync_package(
+    workspace_id: uuid.UUID = Query(...),
+    since: datetime | None = Query(
+        None, description="Only include data changed after this time"
+    ),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Build an incremental sync package for a device."""
+    return await OfflineSyncService.create_sync_package(
+        db, workspace_id, last_sync_at=since
+    )
+
+
+@router.get("/sync/conflicts")
+async def sync_conflicts(
+    workspace_id: uuid.UUID | None = Query(None),
+    unresolved_only: bool = Query(True),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, Any]]:
+    """List sync conflicts — unresolved ones are waiting on a human decision."""
+    return await OfflineSyncService.list_conflicts(
+        db, workspace_id=workspace_id, unresolved_only=unresolved_only
+    )
+
+
+@router.post("/sync/conflicts/{conflict_id}/resolve")
+async def resolve_sync_conflict(
+    conflict_id: str,
+    resolution: str = Query(..., pattern="^(accept_server|force_local|dismiss)$"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Resolve one sync conflict."""
+    return await OfflineSyncService.resolve_sync_conflict(db, conflict_id, resolution)

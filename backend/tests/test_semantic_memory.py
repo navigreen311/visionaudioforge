@@ -582,67 +582,70 @@ async def test_export_import_roundtrip():
 
 
 @pytest.mark.asyncio
-async def test_api_store():
-    """POST /api/memory/store creates a memory."""
-    from unittest.mock import patch
+async def test_api_store_and_recall():
+    """POST /semantic-memory/store persists a memory that /recall finds.
 
-    from fastapi import FastAPI
+    This replaces two tests that patched `routes.semantic_memory.memory_service`
+    and posted to `/api/memory/*`. Neither exists: the endpoints live under
+    `/api/semantic-memory` and read and write the database directly, so the
+    tests passed a mock to a module attribute that had been gone for some time.
+    Driving the real endpoints against a real database is what actually
+    establishes that storing a memory makes it recallable.
+    """
     from httpx import ASGITransport, AsyncClient
 
-    from app.api.routes.semantic_memory import router
+    from app.database import get_async_session
+    from app.main import app
+    from tests.db_utils import (
+        db_session_factory,
+        fresh_engine,
+        requires_postgres,
+        seed_workspace,
+    )
 
-    app = FastAPI()
-    app.include_router(router)
+    await requires_postgres()
 
-    fake_mem = _fake_memory(content="API store test")
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    async with factory() as session:
+        workspace_id = await seed_workspace(session, "semantic-memory")
 
-    with patch(
-        "app.api.routes.semantic_memory.memory_service.store",
-        new_callable=AsyncMock,
-        return_value=fake_mem,
-    ):
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override
+    marker = f"gate-{uuid.uuid4().hex[:8]}"
+
+    try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.post(
-                "/api/memory/store",
-                json={"content": "API store test", "category": "fact"},
+            stored = await client.post(
+                "/api/semantic-memory/store",
+                json={
+                    "content": f"The camera saw motion near {marker}",
+                    "category": "security",
+                    "importance": 0.7,
+                    "workspace_id": str(workspace_id),
+                },
             )
+            assert stored.status_code == 201, stored.text
+            assert marker in stored.json()["content"]
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["content"] == "API store test"
-
-
-@pytest.mark.asyncio
-async def test_api_recall():
-    """POST /api/memory/recall returns matching memories."""
-    from unittest.mock import patch
-
-    from fastapi import FastAPI
-    from httpx import ASGITransport, AsyncClient
-
-    from app.api.routes.semantic_memory import router
-
-    app = FastAPI()
-    app.include_router(router)
-
-    fake_mems = [_fake_memory(content="Recalled memory")]
-
-    with patch(
-        "app.api.routes.semantic_memory.memory_service.recall",
-        new_callable=AsyncMock,
-        return_value=fake_mems,
-    ):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            resp = await client.post(
-                "/api/memory/recall",
-                json={"query": "memory"},
+            recalled = await client.post(
+                "/api/semantic-memory/recall",
+                json={
+                    "query": marker,
+                    "category": "security",
+                    "workspace_id": str(workspace_id),
+                },
             )
+    finally:
+        app.dependency_overrides.pop(get_async_session, None)
+        await engine.dispose()
 
-    assert resp.status_code == 200
-    data = resp.json()
-    assert len(data) == 1
-    assert data[0]["content"] == "Recalled memory"
+    assert recalled.status_code == 200, recalled.text
+    body = recalled.json()
+    assert body["total"] == 1
+    assert marker in body["results"][0]["content"]

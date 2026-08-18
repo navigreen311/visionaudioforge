@@ -474,17 +474,17 @@ async def test_governance_lifecycle(test_app):
     """Full governance lifecycle: API key, permissions, billing, feature flags."""
     # Create API key (governance prefix, requires auth deps)
     r_key = await test_app.post(
-        "/governance/api-keys",
+        "/api/governance/api-keys",
         json={"name": "e2e-test-key", "scopes": ["read", "write"], "expires_in_days": 30},
     )
     assert r_key.status_code != 404, "governance/api-keys create returned 404"
 
     # List API keys
-    r_list = await test_app.get("/governance/api-keys")
+    r_list = await test_app.get("/api/governance/api-keys")
     assert r_list.status_code != 404, "governance/api-keys list returned 404"
 
     # Check permissions for a role
-    r_perms = await test_app.get("/governance/permissions/admin")
+    r_perms = await test_app.get("/api/governance/permissions/admin")
     assert r_perms.status_code != 404, "governance/permissions returned 404"
 
     if r_perms.status_code == 200:
@@ -493,15 +493,15 @@ async def test_governance_lifecycle(test_app):
         assert "permissions" in data, "Permissions response should have permissions"
 
     # Check billing usage
-    r_billing = await test_app.get("/governance/billing/usage")
+    r_billing = await test_app.get("/api/governance/billing/usage")
     assert r_billing.status_code != 404, "governance/billing/usage returned 404"
 
     # Check billing dashboard
-    r_dashboard = await test_app.get("/governance/billing/dashboard")
+    r_dashboard = await test_app.get("/api/governance/billing/dashboard")
     assert r_dashboard.status_code != 404, "governance/billing/dashboard returned 404"
 
     # Check feature flags
-    r_features = await test_app.get("/governance/features")
+    r_features = await test_app.get("/api/governance/features")
     assert r_features.status_code != 404, "governance/features returned 404"
 
 
