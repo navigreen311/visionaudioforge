@@ -74,6 +74,25 @@ class EmbeddingService:
             self._use_fallback = True
 
     # ------------------------------------------------------------------
+    # Model output handling
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _as_tensor(features):
+        """Return the embedding tensor from a `get_*_features` call.
+
+        transformers 4.x returned a bare tensor; 5.x returns a
+        `BaseModelOutputWithPooling` whose `pooler_output` carries the
+        projected embedding. Reading `.squeeze()` off the 5.x object raised
+        AttributeError, which took every text and image search query down.
+        """
+        for attr in ("pooler_output", "text_embeds", "image_embeds", "audio_embeds"):
+            value = getattr(features, attr, None)
+            if value is not None:
+                return value
+        return features
+
+    # ------------------------------------------------------------------
     # Normalisation helper
     # ------------------------------------------------------------------
 
@@ -120,7 +139,7 @@ class EmbeddingService:
         inputs = self._processor(images=pil_image, return_tensors="pt")
         with torch.no_grad():
             features = self._model.get_image_features(**inputs)
-        vec = features.squeeze().cpu().numpy().astype(np.float32)
+        vec = self._as_tensor(features).squeeze().cpu().numpy().astype(np.float32)
         return self._normalize(vec)
 
     def embed_text(self, text: str) -> np.ndarray:
@@ -135,7 +154,7 @@ class EmbeddingService:
         inputs = self._processor(text=[text], return_tensors="pt", padding=True, truncation=True)
         with torch.no_grad():
             features = self._model.get_text_features(**inputs)
-        vec = features.squeeze().cpu().numpy().astype(np.float32)
+        vec = self._as_tensor(features).squeeze().cpu().numpy().astype(np.float32)
         return self._normalize(vec)
 
     def embed_audio(self, audio: np.ndarray, sr: int) -> np.ndarray:
@@ -164,7 +183,7 @@ class EmbeddingService:
             )
             with torch.no_grad():
                 features = self._clap_model.get_audio_features(**inputs)
-            vec = features.squeeze().cpu().numpy().astype(np.float32)
+            vec = self._as_tensor(features).squeeze().cpu().numpy().astype(np.float32)
             # CLAP output may not be 512-dim; pad/truncate to 512
             if vec.shape[0] < _EMBEDDING_DIM:
                 vec = np.pad(vec, (0, _EMBEDDING_DIM - vec.shape[0]))
@@ -232,7 +251,7 @@ class EmbeddingService:
         inputs = self._processor(images=pil_images, return_tensors="pt")
         with torch.no_grad():
             features = self._model.get_image_features(**inputs)
-        vecs = features.cpu().numpy().astype(np.float32)
+        vecs = self._as_tensor(features).cpu().numpy().astype(np.float32)
         return self._normalize(vecs)
 
     def embed_batch_texts(self, texts: list[str]) -> np.ndarray:
@@ -247,5 +266,5 @@ class EmbeddingService:
         inputs = self._processor(text=texts, return_tensors="pt", padding=True, truncation=True)
         with torch.no_grad():
             features = self._model.get_text_features(**inputs)
-        vecs = features.cpu().numpy().astype(np.float32)
+        vecs = self._as_tensor(features).cpu().numpy().astype(np.float32)
         return self._normalize(vecs)

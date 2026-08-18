@@ -55,8 +55,8 @@ def _dataset_to_read(d) -> DatasetRead:
     # Safely read attributes that may or may not exist on the ORM object
     modality = getattr(d, "modality", None) or getattr(d, "format", "image")
     sample_count = getattr(d, "sample_count", None) or getattr(d, "item_count", 0) or 0
-    size_bytes = getattr(d, "size_bytes", 0) or 0
-    description = getattr(d, "description", None) or ""
+    size_bytes = stats_raw.get("total_size_bytes", 0) or 0
+    description = stats_raw.get("description", "") or ""
     version = getattr(d, "version", "1")
 
     return DatasetRead(
