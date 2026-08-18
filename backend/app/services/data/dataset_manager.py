@@ -81,9 +81,13 @@ class DatasetService:
         # Soft-delete flag lives in the Dataset.stats JSON column — the model has
         # no `metadata_` column, so referencing one raised AttributeError while
         # the statement was being built.
+        # `IS NOT TRUE`, not `!= TRUE`. `stats` starts out `{}`, so
+        # `stats['archived']` is SQL NULL, and `NULL != TRUE` is NULL — not
+        # true — which silently excluded every freshly created dataset from its
+        # own workspace's list. `IS NOT TRUE` is true for NULL and for false.
         base = select(Dataset).where(
             Dataset.workspace_id == workspace_id,
-            Dataset.stats["archived"].as_boolean() != True,  # noqa: E712
+            Dataset.stats["archived"].as_boolean().is_not(True),
         )
         total_q = select(func.count()).select_from(base.subquery())
         total = (await db.execute(total_q)).scalar() or 0

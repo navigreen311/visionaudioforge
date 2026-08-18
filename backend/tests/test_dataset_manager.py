@@ -18,6 +18,15 @@ from httpx import ASGITransport, AsyncClient
 _FAKE_WORKSPACE = uuid.uuid4()
 
 
+def _token_for(workspace_id: uuid.UUID) -> str:
+    """A real signed token for *workspace_id* — see test_auth_enforcement.py."""
+    from app.core.security import create_access_token
+
+    return create_access_token(
+        {"sub": str(uuid.uuid4()), "workspace_id": str(workspace_id)}
+    )
+
+
 class FakeAsset:
     """Minimal stand-in for the Asset model."""
 
@@ -266,8 +275,16 @@ async def test_export_returns_json():
 
 
 @pytest.mark.asyncio
+@pytest.mark.auth_enforced
 async def test_api_create_dataset():
-    """POST /api/datasets should return 201."""
+    """POST /api/datasets should return 201.
+
+    Runs with the auth boundary on, and sends a token minted for the same
+    workspace the body names. The route now derives the tenant from the session
+    (a dataset with no owner is not a dataset), and TenantGuardMiddleware refuses
+    a body that names a different one — so an anonymous POST, which is what this
+    test used to send, is correctly rejected.
+    """
     from app.main import app
 
     transport = ASGITransport(app=app)
@@ -290,6 +307,7 @@ async def test_api_create_dataset():
                     "modality": "image",
                     "workspace_id": str(_FAKE_WORKSPACE),
                 },
+                headers={"Authorization": f"Bearer {_token_for(_FAKE_WORKSPACE)}"},
             )
     assert resp.status_code == 201
     body = resp.json()

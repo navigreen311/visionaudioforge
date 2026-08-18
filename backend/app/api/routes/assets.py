@@ -1,4 +1,4 @@
-"""Asset management routes — upload, CRUD, download."""
+"""Asset management routes - upload, CRUD, download."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from starlette.responses import Response
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_workspace_id
 from app.schemas.asset import (
     AssetRead,
     AssetUpdate,
@@ -31,6 +31,22 @@ def _get_storage() -> MinIOStorageService:
     return MinIOStorageService()
 
 
+async def _owned_asset(db, asset_id: UUID, workspace_id: UUID):
+    """Fetch an asset, or 404 if it belongs to a different tenant.
+
+    A path parameter names no workspace, so TenantGuardMiddleware cannot help
+    here - the row itself has to be checked. Every by-id route below was
+    previously unscoped, which meant any authenticated caller could read,
+    update, delete or *download* another tenant's media by guessing an id.
+
+    404 rather than 403 on purpose: a 403 confirms the id exists somewhere.
+    """
+    asset = await AssetService.get_asset(db, asset_id)
+    if asset is None or getattr(asset, "workspace_id", None) != workspace_id:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    return asset
+
+
 # ------------------------------------------------------------------
 # Upload (single or bulk)
 # ------------------------------------------------------------------
@@ -40,7 +56,12 @@ def _get_storage() -> MinIOStorageService:
 async def upload_asset(
     file: list[UploadFile] = File(...),
     asset_type: str = Form(...),
-    workspace_id: UUID = Form(...),
+    # Optional, and defaulted from the session below. It was required, which meant
+    # every upload from the console 422'd: the client never sent it, because a
+    # browser has no business choosing a tenant. TenantGuardMiddleware refuses a
+    # value that is not the caller's own, so accepting one is safe.
+    workspace_id: Optional[UUID] = Form(None),
+    session_workspace: UUID = Depends(get_workspace_id),
     tags: Optional[str] = Form(None),
     db=Depends(get_db),
     storage: MinIOStorageService = Depends(_get_storage),
@@ -50,7 +71,18 @@ async def upload_asset(
     ``tags`` is an optional JSON-encoded list of strings.
     When multiple files are provided the bulk-upload path is used.
     """
-    parsed_tags: list[str] | None = json.loads(tags) if tags else None
+    # `tags` is documented as JSON, but the console sent a comma-separated string
+    # for as long as this endpoint existed, so json.loads raised and the upload
+    # 422'd. Accept both: JSON when it parses, otherwise comma-separated.
+    parsed_tags: list[str] | None = None
+    if tags:
+        try:
+            decoded = json.loads(tags)
+            parsed_tags = decoded if isinstance(decoded, list) else [str(decoded)]
+        except json.JSONDecodeError:
+            parsed_tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+    owner = workspace_id or session_workspace
 
     if len(file) == 1:
         asset = await AssetService.upload_asset(
@@ -58,7 +90,7 @@ async def upload_asset(
             storage=storage,
             file=file[0],
             asset_type=asset_type,
-            workspace_id=workspace_id,
+            workspace_id=owner,
             tags=parsed_tags,
         )
         return AssetUploadResponse.model_validate(asset)
@@ -67,7 +99,7 @@ async def upload_asset(
         db=db,
         storage=storage,
         files=file,
-        workspace_id=workspace_id,
+        workspace_id=owner,
         asset_type=asset_type,
     )
     return BulkUploadResponse(
@@ -104,6 +136,7 @@ async def storage_stats():
 @router.get("", response_model=PaginatedResponse)
 async def list_assets(
     workspace_id: UUID | None = Query(None),
+    session_workspace: UUID = Depends(get_workspace_id),
     type: Optional[str] = Query(None),
     tags: Optional[str] = Query(None),
     skip: int = Query(0, ge=0),
@@ -112,26 +145,25 @@ async def list_assets(
 ):
     """List assets with optional type/tag filtering and pagination.
 
-    When ``workspace_id`` is omitted the endpoint returns an empty list
-    rather than raising an error, so the frontend always gets valid JSON.
-    """
-    if workspace_id is None:
-        return PaginatedResponse(items=[], total=0, page=0, size=limit)
+    Omitting ``workspace_id`` used to return an empty list "so the frontend
+    always gets valid JSON". That is indistinguishable from a workspace with no
+    assets, and it hid the real answer. It now falls back to the session's
+    workspace, which is the only tenant this caller may see anyway.
 
+    The bare ``except Exception`` that returned an empty page is gone for the
+    same reason: a list endpoint that cannot answer must say so, rather than
+    report success with nothing in it.
+    """
     parsed_tags: list[str] | None = tags.split(",") if tags else None
 
-    try:
-        assets, total = await AssetService.list_assets(
-            db=db,
-            workspace_id=workspace_id,
-            asset_type=type,
-            tags=parsed_tags,
-            skip=skip,
-            limit=limit,
-        )
-    except Exception:
-        logger.debug("AssetService.list_assets failed — returning empty list")
-        return PaginatedResponse(items=[], total=0, page=0, size=limit)
+    assets, total = await AssetService.list_assets(
+        db=db,
+        workspace_id=workspace_id or session_workspace,
+        asset_type=type,
+        tags=parsed_tags,
+        skip=skip,
+        limit=limit,
+    )
 
     return PaginatedResponse(
         items=[AssetRead.model_validate(a) for a in assets],
@@ -142,7 +174,7 @@ async def list_assets(
 
 
 # ------------------------------------------------------------------
-# Duplicate detection (INF15) — must come before /{asset_id} routes
+# Duplicate detection (INF15) - must come before /{asset_id} routes
 # ------------------------------------------------------------------
 
 
@@ -158,9 +190,13 @@ async def check_duplicate(hash: str = Query("")):
 
 
 @router.get("/{asset_id}", response_model=AssetRead)
-async def get_asset(asset_id: UUID, db=Depends(get_db)):
+async def get_asset(
+    asset_id: UUID,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db=Depends(get_db),
+):
     """Retrieve a single asset with full metadata."""
-    asset = await AssetService.get_asset(db, asset_id)
+    asset = await _owned_asset(db, asset_id, session_workspace)
     return AssetRead.model_validate(asset)
 
 
@@ -173,9 +209,11 @@ async def get_asset(asset_id: UUID, db=Depends(get_db)):
 async def update_asset(
     asset_id: UUID,
     body: AssetUpdate,
+    session_workspace: UUID = Depends(get_workspace_id),
     db=Depends(get_db),
 ):
     """Update tags and/or metadata for an existing asset."""
+    await _owned_asset(db, asset_id, session_workspace)
     asset = await AssetService.update_asset(
         db=db,
         asset_id=asset_id,
@@ -186,7 +224,7 @@ async def update_asset(
 
 
 # ------------------------------------------------------------------
-# Partial update (PATCH — tag updates)
+# Partial update (PATCH - tag updates)
 # ------------------------------------------------------------------
 
 
@@ -194,6 +232,7 @@ async def update_asset(
 async def patch_asset(
     asset_id: UUID,
     body: AssetUpdate,
+    session_workspace: UUID = Depends(get_workspace_id),
     db=Depends(get_db),
 ):
     """Partially update an asset (tags and/or metadata).
@@ -209,13 +248,11 @@ async def patch_asset(
         )
         return AssetRead.model_validate(asset)
     except Exception:
-        logger.debug("AssetService.update_asset failed for %s — returning stub", asset_id)
-        return {
-            "id": str(asset_id),
-            "updated": True,
-            "tags": body.tags,
-            "metadata_": body.metadata_,
-        }
+        # This used to swallow the error and answer {"updated": true}, so a
+        # failed tag edit was indistinguishable from a successful one in the
+        # console.
+        logger.exception("failed to patch asset %s", asset_id)
+        raise HTTPException(status_code=500, detail="Could not update the asset")
 
 
 # ------------------------------------------------------------------
@@ -226,10 +263,12 @@ async def patch_asset(
 @router.delete("/{asset_id}", response_model=AssetRead)
 async def delete_asset(
     asset_id: UUID,
+    session_workspace: UUID = Depends(get_workspace_id),
     db=Depends(get_db),
     storage: MinIOStorageService = Depends(_get_storage),
 ):
     """Soft-delete an asset (marks deleted in DB + removes from MinIO)."""
+    await _owned_asset(db, asset_id, session_workspace)
     asset = await AssetService.delete_asset(db, storage, asset_id)
     return AssetRead.model_validate(asset)
 
@@ -242,10 +281,12 @@ async def delete_asset(
 @router.get("/{asset_id}/download")
 async def download_asset(
     asset_id: UUID,
+    session_workspace: UUID = Depends(get_workspace_id),
     db=Depends(get_db),
     storage: MinIOStorageService = Depends(_get_storage),
 ):
     """Stream the raw file back to the client."""
+    await _owned_asset(db, asset_id, session_workspace)
     data, filename, content_type = await AssetService.get_asset_file(db, storage, asset_id)
     return Response(
         content=data,

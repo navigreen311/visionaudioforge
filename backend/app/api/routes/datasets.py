@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_workspace_id
 from app.schemas.common import PaginatedResponse
 from app.schemas.dataset import (
     DatasetCreate,
@@ -86,17 +86,14 @@ def _dataset_to_read(d) -> DatasetRead:
 async def create_dataset(
     body: DatasetCreate,
     workspace_id: uuid.UUID | None = Query(None),
+    session_workspace: uuid.UUID = Depends(get_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> DatasetRead:
-    # The workspace may come from the body or the query. Datasets are
-    # workspace-scoped, so neither is a 422 rather than a foreign-key error
-    # from the database.
-    resolved = body.workspace_id or workspace_id
-    if resolved is None:
-        raise HTTPException(
-            status_code=422,
-            detail="workspace_id is required, in the body or as a query parameter",
-        )
+    # The caller may still name a workspace in the body or the query, but it can
+    # only ever be their own: TenantGuardMiddleware rejects a mismatch with 403
+    # before the request reaches here. When they name none, the session's
+    # workspace is the answer — never a default, and never someone else's.
+    resolved = body.workspace_id or workspace_id or session_workspace
 
     dataset = await DatasetService.create_dataset(
         db, body.name, body.modality, resolved
@@ -109,18 +106,22 @@ async def create_dataset(
 # ------------------------------------------------------------------
 @router.get("")
 async def list_datasets(
-    workspace_id: uuid.UUID = Query(...),
+    workspace_id: uuid.UUID | None = Query(None),
+    session_workspace: uuid.UUID = Depends(get_workspace_id),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse:
-    try:
-        items, total = await DatasetService.list_datasets(db, workspace_id, skip, limit)
-        read_items = [_dataset_to_read(d) for d in items]
-    except Exception:
-        # Fallback to empty list when DB is unavailable or model mismatch
-        read_items = []
-        total = 0
+    # There used to be a bare `except Exception` here that turned any failure
+    # into an empty list. It hid a real defect for months: the archived filter
+    # used `!= TRUE`, which is NULL for a fresh row, so a newly created dataset
+    # never appeared in its own list — and the endpoint reported 200 with `[]`
+    # rather than an error anyone could see. A list endpoint that cannot answer
+    # must say so.
+    items, total = await DatasetService.list_datasets(
+        db, workspace_id or session_workspace, skip, limit
+    )
+    read_items = [_dataset_to_read(d) for d in items]
     page = (skip // limit) + 1
     total_pages = max(1, (total + limit - 1) // limit)
     return PaginatedResponse(
@@ -139,10 +140,16 @@ async def list_datasets(
 @router.get("/{dataset_id}")
 async def get_dataset(
     dataset_id: uuid.UUID,
+    session_workspace: uuid.UUID = Depends(get_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> DatasetRead:
     dataset = await DatasetService.get_dataset(db, dataset_id)
     if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    # A path parameter names no workspace, so TenantGuardMiddleware cannot help
+    # here — the row itself has to be checked. 404 rather than 403 on purpose: a
+    # 403 would confirm that this id exists in some other tenant.
+    if dataset.workspace_id != session_workspace:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return _dataset_to_read(dataset)
 
