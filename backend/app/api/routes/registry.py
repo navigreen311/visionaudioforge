@@ -4,6 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from app.core.deps import get_optional_workspace_id
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
@@ -54,12 +55,22 @@ async def register_model(
 
 @router.get("/models")
 async def list_models(
-    workspace_id: UUID = Query(...),
+    # Optional so the endpoint answers unscoped callers the way the other
+    # list endpoints do. An unresolvable workspace yields an empty page,
+    # never an unscoped read across tenants.
+    workspace_id: UUID | None = Query(None),
+    caller_workspace: UUID | None = Depends(get_optional_workspace_id),
     status: str | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ):
+    workspace_id = workspace_id or caller_workspace
+    if workspace_id is None:
+        return PaginatedResponse(
+            items=[], total=0, page=1, size=limit, page_size=limit, total_pages=1
+        )
+
     try:
         items, total = await svc.list_models(db, workspace_id, model_status=status, skip=skip, limit=limit)
         validated_items = [ModelRead.model_validate(i) for i in items]

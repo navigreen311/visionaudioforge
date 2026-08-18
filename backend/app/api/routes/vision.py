@@ -201,7 +201,10 @@ async def optical_flow(
 
 @router.post("/frame-diff")
 async def frame_diff(
-    files: list[UploadFile] | None = File(None),
+    # Declared `list[UploadFile] | None` this stopped collecting repeated
+    # fields and bound only the last one, so a two-file upload 422'd as
+    # "Input should be a valid list". The plain list type collects correctly.
+    files: list[UploadFile] = File(default_factory=list),
     frame1: UploadFile | None = File(None),
     frame2: UploadFile | None = File(None),
     frame3: UploadFile | None = File(None),
@@ -219,8 +222,11 @@ async def frame_diff(
     uploads = [f for f in (frame1, frame2, frame3) if f is not None] or list(files or [])
 
     if len(uploads) < 2 or len(uploads) > 3:
+        # 422: the request is well-formed but the frames it carries cannot be
+        # processed. This is what the endpoint returned when `files` was a
+        # required field and FastAPI rejected the missing one.
         return JSONResponse(
-            status_code=400,
+            status_code=422,
             content={"error": "Upload exactly 2 or 3 frames"},
         )
 

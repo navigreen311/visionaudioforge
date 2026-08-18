@@ -17,6 +17,7 @@ from app.schemas.alert import (
     AlertRuleUpdate,
     AlertStats,
 )
+from app.core.deps import get_optional_workspace_id
 from app.services.alerts.actions import AlertActionExecutor
 from app.services.alerts.alert_service import AlertService, UnknownActorError
 from app.services.alerts.auto_clip import AutoClipService
@@ -243,7 +244,11 @@ async def delete_alert_rule(
 
 @router.get("", response_model=dict)
 async def list_alerts(
-    workspace_id: UUID = Query(..., description="Workspace ID"),
+    # Optional so the endpoint answers unscoped callers the way the other
+    # list endpoints do. An unresolvable workspace yields an empty page,
+    # never an unscoped read across tenants.
+    workspace_id: UUID | None = Query(None, description="Workspace ID"),
+    caller_workspace: UUID | None = Depends(get_optional_workspace_id),
     status: Optional[str] = Query(None, description="Filter by status"),
     severity: Optional[str] = Query(None, description="Filter by severity"),
     skip: int = Query(0, ge=0),
@@ -251,6 +256,11 @@ async def list_alerts(
     db: AsyncSession = Depends(get_async_session),
 ):
     """List alerts for a workspace with optional filters and pagination."""
+    workspace_id = workspace_id or caller_workspace
+    if workspace_id is None:
+        return {"items": [], "total": 0, "page": 1, "size": limit, "page_size": limit,
+                "total_pages": 1}
+
     alerts, total = await AlertService.list_alerts(
         db, workspace_id, status=status, severity=severity, skip=skip, limit=limit,
     )

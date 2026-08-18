@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_optional_workspace_id
 from app.schemas.common import PaginatedResponse
 from app.models.experiment import Experiment
 from app.services.models.experiments import ExperimentService
@@ -133,13 +133,23 @@ class ExperimentRead(BaseModel):
 
 @router.get("")
 async def list_experiments(
-    workspace_id: uuid.UUID = Query(...),
+    # Optional so the endpoint answers unscoped callers the way the other
+    # list endpoints do. An unresolvable workspace yields an empty page,
+    # never an unscoped read across tenants.
+    workspace_id: uuid.UUID | None = Query(None),
+    caller_workspace: uuid.UUID | None = Depends(get_optional_workspace_id),
     model_id: uuid.UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse:
     """List experiments for a workspace with optional model filter."""
+    workspace_id = workspace_id or caller_workspace
+    if workspace_id is None:
+        return PaginatedResponse(
+            items=[], total=0, page=1, size=limit, page_size=limit, total_pages=1
+        )
+
     try:
         experiments, total = await ExperimentService.list_experiments(
             db, workspace_id, model_id=model_id, skip=skip, limit=limit

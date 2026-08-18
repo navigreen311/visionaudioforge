@@ -87,7 +87,7 @@ async def safety_scan(
     """Scan an uploaded file or text for safety / privacy concerns."""
     if scan_type == "image":
         if file is None:
-            raise HTTPException(status_code=400, detail="File required for image scan")
+            raise HTTPException(status_code=422, detail="File required for image scan")
         data = await file.read()
         image = _decode_image(data)
         result = await _scanner.scan_image(image)
@@ -96,7 +96,7 @@ async def safety_scan(
         if text is None and file is not None:
             text = (await file.read()).decode("utf-8", errors="replace")
         if not text:
-            raise HTTPException(status_code=400, detail="Text required for text scan")
+            raise HTTPException(status_code=422, detail="Text required for text scan")
         pii = _scanner.detect_text_pii(text)
         risk = min(len(pii) * 0.15, 1.0)
         recs = []

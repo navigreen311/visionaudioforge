@@ -20,7 +20,7 @@ from app.core.deps import get_db
 from app.models.alert import Alert, AlertStatus
 from app.models.asset import Asset
 from app.models.command_center import CommandStream, Incident, StreamStatus
-from app.models.model_registry import ModelRecord
+from app.models.model_registry import ModelRecord, ModelStatus
 from app.models.pipeline import Pipeline, PipelineRun
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -58,8 +58,11 @@ _RANGE_LENGTHS: dict[str, int] = {
     "30d": 30,
 }
 
-# Registry states that mean "serving traffic".
-_PRODUCTION_STATUSES = ("production", "deployed", "serving")
+# Registry states that mean "serving traffic". `deployed` and `serving` used to
+# be listed here too, but neither is a member of the modelstatus enum — against
+# a String column they simply matched nothing, and once the column was declared
+# as the enum it actually is, naming them made the query fail outright.
+_PRODUCTION_STATUSES = (ModelStatus.production,)
 
 # Alert states that still need a human.
 _OPEN_ALERT_STATUSES = (AlertStatus.new, AlertStatus.acknowledged)

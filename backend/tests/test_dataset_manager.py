@@ -33,16 +33,20 @@ class FakeAsset:
 
 
 class FakeDataset:
-    """Minimal stand-in for the Dataset model."""
+    """Minimal stand-in for the Dataset model.
+
+    Mirrors the columns `datasets` actually has. It used to carry
+    format/item_count/size_bytes/metadata_, none of which exist on the table,
+    so it agreed with a service that could not talk to the database.
+    """
 
     def __init__(self, **kw):
         self.id = kw.get("id", uuid.uuid4())
         self.name = kw.get("name", "test-ds")
-        self.description = kw.get("description", "")
-        self.format = kw.get("format", "image")
-        self.item_count = kw.get("item_count", 0)
-        self.size_bytes = kw.get("size_bytes", 0)
-        self.metadata_ = kw.get("metadata_", {"modality": "image", "version": 1})
+        self.modality = kw.get("modality", "image")
+        self.version = kw.get("version", "1.0")
+        self.stats = kw.get("stats", {"description": "", "total_size_bytes": 0})
+        self.sample_count = kw.get("sample_count", 0)
         self.workspace_id = kw.get("workspace_id", _FAKE_WORKSPACE)
         self.created_at = kw.get("created_at", None)
         self.updated_at = kw.get("updated_at", None)
@@ -123,18 +127,18 @@ async def test_create_dataset():
     ds_id = uuid.uuid4()
 
     with patch("app.services.data.dataset_manager.Dataset") as MockDS:
-        fake_ds = FakeDataset(id=ds_id, name="cats", format="image")
+        fake_ds = FakeDataset(id=ds_id, name="cats", modality="image")
         MockDS.return_value = fake_ds
         result = await DatasetService.create_dataset(db, "cats", "image", _FAKE_WORKSPACE)
 
     assert result.name == "cats"
-    assert result.format == "image"
+    assert result.modality == "image"
 
 
 @pytest.mark.asyncio
 async def test_upload_samples_increments_count():
     ds_id = uuid.uuid4()
-    fake_ds = FakeDataset(id=ds_id, item_count=0)
+    fake_ds = FakeDataset(id=ds_id, sample_count=0)
     db = FakeDB()
     db._store[ds_id] = fake_ds
 
@@ -147,7 +151,7 @@ async def test_upload_samples_increments_count():
 
     assert result["uploaded"] == 2
     assert result["failed"] == 0
-    assert fake_ds.item_count == 2
+    assert fake_ds.sample_count == 2
 
 
 @pytest.mark.asyncio
@@ -166,7 +170,7 @@ async def test_list_datasets_paginated():
 @pytest.mark.asyncio
 async def test_compute_stats():
     ds_id = uuid.uuid4()
-    fake_ds = FakeDataset(id=ds_id, item_count=0, metadata_={"modality": "image"})
+    fake_ds = FakeDataset(id=ds_id, sample_count=0, stats={"modality": "image"})
     db = FakeDB()
     db._store[ds_id] = fake_ds
     db._assets = [
@@ -273,7 +277,7 @@ async def test_api_create_dataset():
 
             fake_ds = FakeDataset(
                 name="api-test",
-                format="image",
+                modality="image",
                 created_at=dt.datetime.now(dt.timezone.utc),
                 updated_at=dt.datetime.now(dt.timezone.utc),
             )
