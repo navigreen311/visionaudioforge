@@ -64,6 +64,7 @@ from app.models.settings import (
 )
 from app.models.scheduling import PipelineSchedule
 from app.models.conversation import AgentConversation, AgentMessage
+from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
 from app.models.runtime import (
     InferenceCostEvent,
     ModelCostRate,
@@ -141,6 +142,8 @@ __all__ = [
     "PipelineSchedule",
     "AgentConversation",
     "AgentMessage",
+    "InstalledVerticalPack",
+    "VerticalInstallJob",
     "InferenceCostEvent",
     "ModelCostRate",
     "WorkspaceQuota",

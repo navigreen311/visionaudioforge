@@ -17,8 +17,13 @@ logger = logging.getLogger(__name__)
 # Alias of the package-level registry. Kept so the two cannot drift apart.
 AVAILABLE_PACKS: dict[str, type[VerticalPack]] = VERTICAL_PACKS
 
-# In-memory store of installed packs (slug → instance).
-# In a real deployment this would be backed by a database.
+# Live VerticalPack instances this process has loaded, keyed by slug.
+#
+# Deliberately in memory: these are instantiated Python objects, not state. The
+# durable fact — that a workspace has a pack installed, and which of its
+# components are enabled — is a row in `installed_vertical_packs`, written by
+# the /api/verticals routes. This dict is the process-local object cache built
+# from that, so losing it on restart costs nothing but a re-instantiation.
 _installed_packs: dict[str, VerticalPack] = {}
 
 
