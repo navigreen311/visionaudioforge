@@ -129,12 +129,15 @@ class TestExperimentEpochModel:
         assert ExperimentEpoch.__tablename__ == "experiment_epochs"
 
     def test_fields_exist(self):
+        # The implemented and migrated schema names these epoch_number and
+        # created_at. This asserted "epoch"/"timestamp" from an earlier design
+        # that was never built — epoch_number is used in eight places in app/.
         columns = {c.name for c in ExperimentEpoch.__table__.columns}
         assert "id" in columns
         assert "experiment_id" in columns
-        assert "epoch" in columns
+        assert "epoch_number" in columns
         assert "metrics" in columns
-        assert "timestamp" in columns
+        assert "created_at" in columns
 
 
 class TestDatasetModel:

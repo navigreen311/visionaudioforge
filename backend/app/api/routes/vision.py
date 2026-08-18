@@ -352,6 +352,9 @@ async def detect(
     return {
         "detections": detections,
         "count": len(detections),
+        # Both names for the annotated image: "visualization" matches the other
+        # vision endpoints, "image_b64" is what earlier callers read.
+        "visualization": image_b64,
         "image_b64": image_b64,
         "processing_time_ms": round(elapsed_ms, 2),
     }
@@ -408,7 +411,9 @@ async def ocr(
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
     return {
+        # The service calls this full_text and callers read both names.
         "text": result["full_text"],
+        "full_text": result["full_text"],
         "words": words,
         "language": detected_language,
         "confidence": overall_confidence,

@@ -2,8 +2,9 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
@@ -27,17 +28,27 @@ async def register_model(
     body: ModelCreate,
     db: AsyncSession = Depends(get_db),
 ):
-    record = await svc.register_model(
-        db,
-        name=body.name,
-        version=body.version,
-        backbone=body.backbone,
-        metrics=body.metrics,
-        workspace_id=body.workspace_id,
-        tags=body.tags,
-        description=body.description,
-        status=body.status,
-    )
+    try:
+        record = await svc.register_model(
+            db,
+            name=body.name,
+            version=body.version,
+            backbone=body.backbone,
+            metrics=body.metrics,
+            workspace_id=body.workspace_id,
+            tags=body.tags,
+            description=body.description,
+            status=body.status,
+        )
+    except IntegrityError:
+        # Almost always a workspace_id that does not exist. Say so, rather
+        # than letting a database constraint surface as an unhandled 500.
+        await db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=f"workspace_id {body.workspace_id} does not exist",
+        )
+
     return record
 
 
