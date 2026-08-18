@@ -45,6 +45,17 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest pytest-asyncio pytest-cov httpx
 
+      # The README's badges and stats table are generated from the mounted app,
+      # not hand-edited. They drifted three times in a week when they were: 327+,
+      # then 563, while the real figure was 597. Mount a router without
+      # regenerating and this step fails with the numbers to paste.
+      - name: README stats are current
+        run: python scripts/readme-stats.py --check
+        env:
+          JWT_SECRET_KEY: test-secret-key
+          SECRET_KEY: test-secret-key
+          APP_ENV: test
+
       # The Postgres service container starts empty. Without this the schema
       # never exists and every DB-backed test dies on `relation "..." does not
       # exist` — which is what hid ~139 failures behind a green-looking config.
