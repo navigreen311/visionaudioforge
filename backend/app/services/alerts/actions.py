@@ -363,3 +363,18 @@ async def send_discord(
     result = await _retry_async(_do_send)
     logger.info("Discord notification sent (status %s)", result["status_code"])
     return result
+
+
+# ---------------------------------------------------------------------------
+# The senders above are module-level functions so they can be called on their
+# own. Attaching them to the executor as well gives callers a single surface to
+# reach them through, instead of importing from two places for one subsystem.
+# They are bound here rather than in the class body because the class is
+# defined first.
+# ---------------------------------------------------------------------------
+
+AlertActionExecutor.send_webhook = staticmethod(send_webhook)
+AlertActionExecutor.send_email = staticmethod(send_email)
+AlertActionExecutor.send_slack = staticmethod(send_slack)
+AlertActionExecutor.send_discord = staticmethod(send_discord)
+AlertActionExecutor.send_sms = staticmethod(send_sms_stub)

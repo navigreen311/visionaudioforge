@@ -15,7 +15,8 @@ class PipelineCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     definition: dict[str, Any] = Field(..., description="Pipeline graph definition (nodes + edges)")
-    workspace_id: uuid.UUID
+    # As with datasets, the workspace may arrive as a query parameter.
+    workspace_id: uuid.UUID | None = None
 
 
 class PipelineValidate(BaseModel):
@@ -28,7 +29,11 @@ class PipelineRead(BaseModel):
     id: uuid.UUID
     name: str
     description: str | None = None
+    version: str = "1.0"
     definition: dict[str, Any]
+    # The pipelines table carries a status; omitting it here hid the
+    # draft/active distinction from every caller.
+    status: str = "draft"
     workspace_id: uuid.UUID
     created_at: datetime
     updated_at: datetime
@@ -38,13 +43,20 @@ class PipelineRead(BaseModel):
 
 
 class PipelineRunRead(BaseModel):
+    """Mirrors the pipeline_runs table.
+
+    That table carries started_at/finished_at and a `results` blob, and does
+    not use the timestamp mixin — so created_at/updated_at were fields the
+    model could never populate.
+    """
+
     id: uuid.UUID
     pipeline_id: uuid.UUID
     status: str
-    result: dict[str, Any] | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    results: dict[str, Any] | None = None
     error: str | None = None
-    created_at: datetime
-    updated_at: datetime
 
     class Config:
         from_attributes = True

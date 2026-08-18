@@ -210,6 +210,12 @@ async def create_pipeline(
     if not validation["valid"]:
         raise HTTPException(status_code=422, detail=validation["errors"])
 
+    if body.workspace_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="workspace_id is required — pipelines are workspace-scoped",
+        )
+
     pipeline = Pipeline(
         name=body.name,
         description=body.description,
@@ -268,6 +274,12 @@ async def save_pipeline(
     db: AsyncSession = Depends(get_db),
 ) -> Pipeline:
     """Save a pipeline (create new). Acts as an alias for create with relaxed validation."""
+    if body.workspace_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="workspace_id is required — pipelines are workspace-scoped",
+        )
+
     pipeline = Pipeline(
         name=body.name,
         description=body.description,

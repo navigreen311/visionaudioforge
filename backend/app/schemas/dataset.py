@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field
 class DatasetCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     modality: str = Field(..., pattern="^(image|video|audio|multimodal)$")
-    workspace_id: uuid.UUID
+    # Optional in the body: most endpoints here take workspace_id as a query
+    # parameter. The route requires one from either source and rejects a
+    # request that supplies neither.
+    workspace_id: uuid.UUID | None = None
 
 
 class DatasetSplitInfo(BaseModel):
@@ -29,11 +32,11 @@ class DatasetRead(BaseModel):
     sample_count: int = 0
     size_bytes: int = 0
     version: int = 1
-    split: DatasetSplitInfo = DatasetSplitInfo()
-    class_counts: dict[str, int] = {}
+    # These two were each declared twice; the second, weaker declaration won
+    # and rejected the DatasetSplitInfo the route actually builds.
+    split: DatasetSplitInfo = Field(default_factory=DatasetSplitInfo)
+    class_counts: dict[str, int] = Field(default_factory=dict)
     stats: dict[str, Any] | None = None
-    class_counts: dict[str, int] | None = None
-    split: dict[str, int] | None = None
     created_at: datetime
     updated_at: datetime
 
