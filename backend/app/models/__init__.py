@@ -48,6 +48,10 @@ from app.models.evidence import (
     EvidenceBundle,
     EvidenceBundleItem,
 )
+from app.models.provenance import (
+    ProvenanceAction,
+    ProvenanceEvent,
+)
 from app.models.edge_fleet import (
     EdgeDevice,
     DeviceMetric,
@@ -109,6 +113,8 @@ __all__ = [
     "CustodyEvent",
     "EvidenceBundle",
     "EvidenceBundleItem",
+    "ProvenanceAction",
+    "ProvenanceEvent",
     "BYOMModel",
     "CustomNode",
     "InstalledPlugin",

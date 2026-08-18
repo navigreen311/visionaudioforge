@@ -6,10 +6,18 @@ from __future__ import annotations
 import io
 import struct
 import wave
+from uuid import uuid4
 
 import numpy as np
 import pytest
 from httpx import ASGITransport, AsyncClient
+
+from tests.db_utils import (
+    db_session_factory,
+    fresh_engine,
+    requires_postgres,
+    seed_workspace,
+)
 
 from app.services.safety.plate_blur import PlateBlurService
 from app.services.safety.voice_anon import VoiceAnonymizer
@@ -181,14 +189,119 @@ class TestPolicyEngine:
 # ---------------------------------------------------------------------------
 
 class TestProvenance:
-    def test_provenance_chain(self):
-        tracker = ProvenanceTracker()
-        tracker.record_provenance(None, "asset-1", "created", "user-1")
-        tracker.record_provenance(None, "asset-1", "transformed", "user-1", {"op": "resize"})
-        chain = tracker.get_provenance_chain(None, "asset-1")
-        assert len(chain) >= 2
-        assert chain[0]["action"] == "created"
-        assert chain[1]["action"] == "transformed"
+    @pytest.mark.anyio
+    async def test_provenance_chain(self):
+        await requires_postgres()
+        engine = await fresh_engine()
+        factory = db_session_factory(engine)
+        asset_id = f"asset-{uuid4().hex[:8]}"
+
+        try:
+            async with factory() as session:
+                workspace_id = str(await seed_workspace(session, "provenance-chain"))
+                tracker = ProvenanceTracker()
+                await tracker.record_provenance(
+                    session, asset_id, "created", "user-1", workspace_id=workspace_id
+                )
+                await tracker.record_provenance(
+                    session,
+                    asset_id,
+                    "transformed",
+                    "user-1",
+                    {"op": "resize"},
+                    workspace_id=workspace_id,
+                )
+                chain = await tracker.get_provenance_chain(session, asset_id)
+
+            assert len(chain) == 2
+            assert chain[0]["action"] == "created"
+            assert chain[1]["action"] == "transformed"
+            assert chain[1]["details"] == {"op": "resize"}
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_rejects_an_unknown_action(self):
+        await requires_postgres()
+        engine = await fresh_engine()
+        factory = db_session_factory(engine)
+        try:
+            async with factory() as session:
+                with pytest.raises(ValueError, match="Invalid action"):
+                    await ProvenanceTracker.record_provenance(
+                        session, "asset-x", "teleported", "user-1"
+                    )
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_chain_is_scoped_to_its_workspace(self):
+        """One workspace must not see another's provenance."""
+        await requires_postgres()
+        engine = await fresh_engine()
+        factory = db_session_factory(engine)
+        asset_id = f"shared-{uuid4().hex[:8]}"
+
+        try:
+            async with factory() as session:
+                ours = str(await seed_workspace(session, "prov-ours"))
+                theirs = str(await seed_workspace(session, "prov-theirs"))
+                await ProvenanceTracker.record_provenance(
+                    session, asset_id, "created", "u1", workspace_id=ours
+                )
+                await ProvenanceTracker.record_provenance(
+                    session, asset_id, "exported", "u2", workspace_id=theirs
+                )
+
+                mine = await ProvenanceTracker.get_provenance_chain(
+                    session, asset_id, workspace_id=ours
+                )
+
+            assert [e["action"] for e in mine] == ["created"]
+        finally:
+            await engine.dispose()
+
+    @pytest.mark.anyio
+    async def test_provenance_survives_a_restart(self):
+        """Write through one engine, read through a brand-new one.
+
+        A chain that vanishes on restart is worse than no chain: it reads as
+        "nothing ever touched this asset" rather than as missing data.
+        """
+        await requires_postgres()
+        engine = await fresh_engine()
+        factory = db_session_factory(engine)
+        asset_id = f"durable-{uuid4().hex[:8]}"
+
+        try:
+            async with factory() as session:
+                workspace_id = str(await seed_workspace(session, "prov-restart"))
+                await ProvenanceTracker.record_provenance(
+                    session,
+                    asset_id,
+                    "created",
+                    "user-1",
+                    {"source": "upload"},
+                    workspace_id=workspace_id,
+                )
+                await ProvenanceTracker.record_provenance(
+                    session, asset_id, "ai_generated", "user-2", workspace_id=workspace_id
+                )
+        finally:
+            await engine.dispose()
+
+        # Simulate the process going away and coming back.
+        restarted_engine = await fresh_engine()
+        restarted = db_session_factory(restarted_engine)
+        try:
+            async with restarted() as session:
+                chain = await ProvenanceTracker.get_provenance_chain(session, asset_id)
+
+            assert [e["action"] for e in chain] == ["created", "ai_generated"]
+            assert chain[0]["details"] == {"source": "upload"}
+            assert chain[0]["timestamp"] is not None
+        finally:
+            await restarted_engine.dispose()
 
     def test_lsb_watermark_roundtrip(self):
         img = np.random.randint(0, 256, (100, 100, 3), dtype=np.uint8)
@@ -324,15 +437,44 @@ async def test_api_legal_hold(api_client):
 
 
 @pytest.mark.anyio
-async def test_api_provenance(api_client):
-    """GET /api/safety/provenance/{asset_id} returns chain."""
-    # First record something
-    ProvenanceTracker.record_provenance(None, "test-asset-api", "created", "u1")
-    resp = await api_client.get("/api/safety/provenance/test-asset-api")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["asset_id"] == "test-asset-api"
-    assert len(body["chain"]) >= 1
+async def test_api_provenance():
+    """GET /api/safety/provenance/{asset_id} returns the recorded chain.
+
+    The route takes its session from get_async_session, so that dependency is
+    pointed at the test database — otherwise the endpoint reads the app's
+    configured database and never sees the row this test wrote.
+    """
+    await requires_postgres()
+    asset_id = f"test-asset-api-{uuid4().hex[:8]}"
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+
+    from app.database import get_async_session
+    from app.main import app
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override
+    try:
+        async with factory() as session:
+            await ProvenanceTracker.record_provenance(
+                session, asset_id, "created", "u1"
+            )
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            resp = await ac.get(f"/api/safety/provenance/{asset_id}")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["asset_id"] == asset_id
+        assert [e["action"] for e in body["chain"]] == ["created"]
+    finally:
+        app.dependency_overrides.pop(get_async_session, None)
+        await engine.dispose()
 
 
 @pytest.mark.anyio
