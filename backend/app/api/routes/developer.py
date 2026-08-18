@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.plugin import CustomNode
 
 router = APIRouter(prefix="/api/developer", tags=["developer"])
 
@@ -21,10 +27,15 @@ class NodeTemplateCreate(BaseModel):
     default_config: dict[str, Any] | None = None
 
 
-# ---------------------------------------------------------------------------
-# In-memory store
-# ---------------------------------------------------------------------------
-_templates: list[dict] = []
+def _serialise_template(node: CustomNode) -> dict[str, Any]:
+    """Render a stored custom node in the node-template shape."""
+    return {
+        "id": str(node.id),
+        "name": node.name,
+        "node_type": node.category,
+        "description": node.description,
+        "default_config": node.node_metadata or {},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -78,24 +89,42 @@ service ModelRegistryService {
     return {"content": proto, "content_type": "text/x-protobuf"}
 
 
-@router.post("/node-templates")
-async def create_node_template(body: NodeTemplateCreate) -> dict[str, Any]:
-    """Create a pipeline node template."""
-    template = {
-        "id": f"tmpl-{len(_templates) + 1:04d}",
-        "name": body.name,
-        "node_type": body.node_type,
-        "description": body.description,
-        "default_config": body.default_config or {},
-    }
-    _templates.append(template)
-    return template
+@router.post("/node-templates", status_code=201)
+async def create_node_template(
+    body: NodeTemplateCreate,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Create a pipeline node template.
+
+    Stored as a custom_nodes row: a pipeline referencing a template whose
+    definition disappeared on restart cannot run.
+    """
+    node = CustomNode(
+        workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+        name=body.name,
+        category=body.node_type,
+        description=body.description,
+        node_metadata=body.default_config or {},
+        status="template",
+    )
+    db.add(node)
+    await db.commit()
+    await db.refresh(node)
+    return _serialise_template(node)
 
 
 @router.get("/node-templates")
-async def list_node_templates() -> list[dict]:
+async def list_node_templates(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict]:
     """List all node templates."""
-    return _templates
+    stmt = select(CustomNode).where(CustomNode.status == "template")
+    if workspace_id:
+        stmt = stmt.where(CustomNode.workspace_id == uuid.UUID(str(workspace_id)))
+    rows = (await db.execute(stmt.order_by(CustomNode.created_at))).scalars().all()
+    return [_serialise_template(n) for n in rows]
 
 
 @router.get("/sdks")
@@ -120,12 +149,22 @@ async def list_sdks() -> list[dict]:
 
 
 @router.get("/health")
-async def developer_health() -> dict[str, Any]:
+async def developer_health(
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Developer tools health check."""
+    templates_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(CustomNode)
+            .where(CustomNode.status == "template")
+        )
+    ).scalar() or 0
+
     return {
         "api_version": "1.0.0",
         "openapi_available": True,
         "grpc_available": True,
         "sdks_available": ["python", "javascript"],
-        "templates_count": len(_templates),
+        "templates_count": templates_count,
     }

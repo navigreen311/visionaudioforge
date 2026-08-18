@@ -9,9 +9,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
+from app.database import get_async_session
+from app.models.settings import WorkspaceIntegration
 
 from app.services.integrations.email import EmailIntegration
 from app.services.integrations.event_bus import EventBus
@@ -25,8 +28,22 @@ router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 # Shared event bus instance (in-memory for now; inject Redis URL via env)
 _event_bus = EventBus()
 
-# In-memory store for settings-panel integration configs (replace with DB later)
-_integration_configs: dict[str, dict[str, Any]] = {}
+async def _load_configs(
+    db: AsyncSession, workspace_id: str | None
+) -> list[WorkspaceIntegration]:
+    """All integration rows for one workspace."""
+    stmt = select(WorkspaceIntegration)
+    stmt = (
+        stmt.where(WorkspaceIntegration.workspace_id == uuid.UUID(str(workspace_id)))
+        if workspace_id
+        else stmt.where(WorkspaceIntegration.workspace_id.is_(None))
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+# Integration configs are rows in workspace_integrations. They used to be a
+# module-level dict, so a configured Slack webhook or S3 bucket reverted to
+# "not connected" on every deploy while the operator believed it was wired up.
 
 
 # ── Enums ──────────────────────────────────────────────────────────
@@ -131,12 +148,22 @@ class StorageTestBody(BaseModel):
 
 
 @router.get("")
-async def list_integrations() -> list[IntegrationRecord]:
+async def list_integrations(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[IntegrationRecord]:
     """Return all configured integrations with their connection status."""
+    stored = {r.type: r for r in await _load_configs(db, workspace_id)}
+
     records: list[IntegrationRecord] = []
     for itype in IntegrationTypeEnum:
-        cfg = _integration_configs.get(itype.value)
-        if cfg:
+        row = stored.get(itype.value)
+        if row:
+            cfg = {
+                "id": str(row.id),
+                "config": row.config or {},
+                "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+            }
             records.append(
                 IntegrationRecord(
                     id=cfg.get("id", itype.value),
@@ -160,22 +187,34 @@ async def list_integrations() -> list[IntegrationRecord]:
 
 
 @router.post("")
-async def save_integration(body: IntegrationSaveBody) -> IntegrationRecord:
+async def save_integration(
+    body: IntegrationSaveBody,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> IntegrationRecord:
     """Create or update an integration configuration."""
-    now = datetime.now(timezone.utc).isoformat()
-    existing = _integration_configs.get(body.type.value)
-    record_id = existing["id"] if existing else str(uuid.uuid4())
-    _integration_configs[body.type.value] = {
-        "id": record_id,
-        "config": body.config,
-        "updated_at": now,
-    }
+    rows = await _load_configs(db, workspace_id)
+    row = next((r for r in rows if r.type == body.type.value), None)
+
+    if row is None:
+        row = WorkspaceIntegration(
+            workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+            name=body.type.value,
+            type=body.type.value,
+        )
+        db.add(row)
+
+    row.config = body.config
+    row.enabled = True
+    await db.commit()
+    await db.refresh(row)
+
     return IntegrationRecord(
-        id=record_id,
+        id=str(row.id),
         type=body.type,
         status=ConnectionStatusEnum.connected,
         config=_mask_secrets(body.config),
-        updated_at=now,
+        updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
 
 
