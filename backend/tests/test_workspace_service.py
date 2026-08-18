@@ -304,11 +304,14 @@ async def test_remove_member_not_found():
 
 
 @pytest.mark.anyio
+@pytest.mark.auth_enforced
 async def test_admin_only_endpoints(test_app, auth_headers):
     """Admin-only endpoints reject non-admin tokens with 401/403.
 
-    Since auth stubs return 501 and auth_headers uses a placeholder,
-    these endpoints should reject the request (not return 501 stubs).
+    Marked auth_enforced because the suite runs with settings.AUTH_REQUIRED
+    off: without the marker the middleware admits every request and these
+    endpoints answered 200, so the test asserted nothing about authorization —
+    the one thing it exists to check.
     """
     ws_id = "00000000-0000-0000-0000-000000000001"
 

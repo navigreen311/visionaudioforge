@@ -43,7 +43,7 @@ class SpeechToTextService:
         """Transcribe an audio array.
 
         Returns dict with keys:
-            transcript, text, segments, words, language, speakers, duration_sec.
+            transcript, text, segments, words, language, speakers, duration_s.
         """
         duration_s = len(audio) / sr
 
@@ -55,7 +55,7 @@ class SpeechToTextService:
                 "words": [],
                 "language": "unknown",
                 "speakers": [],
-                "duration_sec": round(duration_s, 3),
+                "duration_s": round(duration_s, 3),
             }
 
         whisper_model = self._ensure_model(model)
@@ -105,7 +105,7 @@ class SpeechToTextService:
             "words": words,
             "language": detected_language,
             "speakers": [],
-            "duration_sec": round(duration_s, 3),
+            "duration_s": round(duration_s, 3),
         }
 
     async def transcribe_file(self, file_bytes: bytes) -> dict:

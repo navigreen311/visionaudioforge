@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_current_user, get_db, require_role
@@ -25,6 +25,22 @@ router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 # ---------------------------------------------------------------------------
 # Workspace CRUD
 # ---------------------------------------------------------------------------
+
+
+def _require_membership(workspace_id: UUID, current_user: User) -> None:
+    """Refuse access to a workspace the caller does not belong to.
+
+    `require_role("admin")` checks the role string only, and registration makes
+    every self-registered user an admin of the workspace it creates for them.
+    Those two facts together meant any registered user could read, rename, and
+    add members to *any other tenant's* workspace: the role matched, and
+    nothing compared the path's workspace to the caller's own.
+    """
+    if current_user.workspace_id != workspace_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not a member of this workspace",
+        )
 
 
 @router.get("", response_model=list[WorkspaceRead])
@@ -67,6 +83,8 @@ async def get_workspace(
     db: AsyncSession = Depends(get_db),
 ):
     """Get workspace details including stats."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     workspace = await svc.get_workspace(workspace_id)
     stats = await svc.get_workspace_stats(workspace_id)
@@ -88,6 +106,8 @@ async def update_workspace(
     db: AsyncSession = Depends(get_db),
 ):
     """Update workspace name or settings (admin only)."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     workspace = await svc.update_workspace(
         workspace_id=workspace_id,
@@ -111,6 +131,8 @@ async def list_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List all members of the workspace."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     members = await svc.list_workspace_members(workspace_id)
     return members
@@ -124,6 +146,8 @@ async def invite_member(
     db: AsyncSession = Depends(get_db),
 ):
     """Invite a member to the workspace (admin only)."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     user = await svc.invite_member(
         workspace_id=workspace_id,
@@ -144,6 +168,8 @@ async def update_member_role(
     db: AsyncSession = Depends(get_db),
 ):
     """Change a member's role (admin only)."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     user = await svc.update_member_role(
         workspace_id=workspace_id,
@@ -163,6 +189,8 @@ async def remove_member(
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a member from the workspace (admin only)."""
+    _require_membership(workspace_id, current_user)
+
     svc = WorkspaceService(db)
     await svc.remove_member(workspace_id=workspace_id, user_id=user_id)
     await db.commit()

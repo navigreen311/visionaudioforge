@@ -90,6 +90,10 @@ class SearchResponse(BaseModel):
     results: list[SearchResultItem]
     total_results: int
     processing_time_ms: float
+    # Which modality was actually searched. The route already branches on it,
+    # and a caller sending several query fields could not otherwise tell which
+    # one was used.
+    query_type: str = "text"
 
 
 class IndexResponse(BaseModel):
@@ -102,6 +106,10 @@ class StatsResponse(BaseModel):
     total_vectors: int
     dimension: int
     index_type: str
+    # An IVF index has to be trained before it can be searched. get_stats()
+    # has always reported this; the response model dropped it, so callers had
+    # no way to tell a cold index from an empty one.
+    is_trained: bool = False
 
 
 class FuseRequest(BaseModel):
@@ -146,7 +154,10 @@ async def search_query(body: SearchQueryRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     # Image search via base64 payload
+    query_type = "text"
+
     if body.query_image_b64:
+        query_type = "image"
         try:
             import base64 as b64mod
             image_data = b64mod.b64decode(body.query_image_b64)
@@ -156,6 +167,7 @@ async def search_query(body: SearchQueryRequest):
             raise HTTPException(status_code=500, detail=f"Image search failed: {exc}") from exc
     # Audio search via base64 payload
     elif body.query_audio_b64:
+        query_type = "audio"
         try:
             import base64 as b64mod
             audio_data = b64mod.b64decode(body.query_audio_b64)
@@ -196,6 +208,7 @@ async def search_query(body: SearchQueryRequest):
     ]
 
     return SearchResponse(
+        query_type=query_type,
         results=results,
         total_results=len(results),
         processing_time_ms=round(elapsed_ms, 2),
@@ -289,6 +302,7 @@ async def search_stats():
         total_vectors=stats["total_vectors"],
         dimension=stats["dimension"],
         index_type=stats["index_type"],
+        is_trained=stats.get("is_trained", False),
     )
 
 
