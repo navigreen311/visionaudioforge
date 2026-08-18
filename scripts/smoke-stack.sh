@@ -23,6 +23,11 @@ TEARDOWN=0
 CORE_ONLY=0
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-900}"
 
+# Must match the defaults in docker-compose.yml. Overridable for the same
+# reason they are there: parallel worktrees and other stacks share the host.
+API_PORT="${API_PORT:-8000}"
+HTTP_PORT="${HTTP_PORT:-80}"
+
 for arg in "$@"; do
     case "$arg" in
         --down) TEARDOWN=1 ;;
@@ -145,9 +150,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step "API direct on :8000"
+step "API direct on :${API_PORT}"
 # ---------------------------------------------------------------------------
-health="$(curl -fsS http://localhost:8000/api/health 2>/dev/null || echo '{}')"
+health="$(curl -fsS http://localhost:${API_PORT}/api/health 2>/dev/null || echo '{}')"
 echo "      $health"
 
 json_says() { printf '%s' "$health" | grep -qiE "$1"; }
@@ -166,11 +171,11 @@ done
 # ---------------------------------------------------------------------------
 step "Auth boundary is intact (WS-A middleware)"
 # ---------------------------------------------------------------------------
-code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/assets || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${API_PORT}/api/assets || echo 000)"
 if [ "$code" = "401" ]; then ok "unauthenticated /api/assets -> 401"
 else bad "unauthenticated /api/assets -> $code (expected 401)"; fi
 
-code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/health || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${API_PORT}/api/health || echo 000)"
 if [ "$code" = "200" ]; then ok "/api/health is on the public allowlist -> 200"
 else bad "/api/health -> $code — health probes are being challenged"; fi
 
@@ -203,30 +208,30 @@ fi
 
 # ---------------------------------------------------------------------------
 if [ "$CORE_ONLY" -eq 0 ]; then
-step "Through nginx on :80"
+step "Through nginx on :${HTTP_PORT}"
 # ---------------------------------------------------------------------------
-code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost/api/health || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${HTTP_PORT}/api/health || echo 000)"
 if [ "$code" = "200" ]; then ok "nginx proxies /api/health -> 200"
 else bad "nginx /api/health -> $code"; fi
 
-code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost/login || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${HTTP_PORT}/login || echo 000)"
 if [ "$code" = "200" ]; then ok "nginx serves the console (/login -> 200)"
 else bad "nginx /login -> $code"; fi
 
-if curl -fsS http://localhost/login 2>/dev/null | grep -qi "<!DOCTYPE html"; then
+if curl -fsS http://localhost:${HTTP_PORT}/login 2>/dev/null | grep -qi "<!DOCTYPE html"; then
     ok "console returns HTML through nginx"
 else
     bad "console did not return HTML through nginx"
 fi
 
-csp="$(curl -sSI http://localhost/login 2>/dev/null | tr -d '\r' | grep -i '^content-security-policy:' || true)"
+csp="$(curl -sSI http://localhost:${HTTP_PORT}/login 2>/dev/null | tr -d '\r' | grep -i '^content-security-policy:' || true)"
 if printf '%s' "$csp" | grep -q "script-src"; then
     ok "CSP allows Next.js inline bootstrap (script-src present)"
 else
     bad "CSP has no script-src — the console will render blank"
 fi
 
-code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost/api/assets || echo 000)"
+code="$(curl -s -o /dev/null -w '%{http_code}' http://localhost:${HTTP_PORT}/api/assets || echo 000)"
 if [ "$code" = "401" ]; then ok "auth boundary survives the proxy (/api/assets -> 401)"
 else bad "through nginx /api/assets -> $code (expected 401)"; fi
 
@@ -237,7 +242,7 @@ else bad "through nginx /api/assets -> $code (expected 401)"; fi
 ws_status="$(curl -s -o /dev/null -w '%{http_code}' \
     -H "Connection: Upgrade" -H "Upgrade: websocket" \
     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: $(head -c 16 /dev/zero | base64)" \
-    "http://localhost/ws/agents/stream" || echo 000)"
+    "http://localhost:${HTTP_PORT}/ws/agents/stream" || echo 000)"
 case "$ws_status" in
     101|403|1008) ok "nginx forwarded the WebSocket upgrade (status $ws_status)" ;;
     502|504)      bad "nginx failed to reach the API for /ws (status $ws_status)" ;;
