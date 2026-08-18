@@ -27,7 +27,15 @@ import app.models  # noqa: F401
 
 
 def database_url() -> str:
-    """Return the URL tests should connect to."""
+    """Return the URL tests should connect to.
+
+    The database name falls back to POSTGRES_DB before the historical
+    `vaf_ws_b_test`. CI creates only POSTGRES_DB and never sets
+    POSTGRES_TEST_DB, so every test guarded by `requires_postgres` — 67 of
+    them, including the whole restart-survival suite — found nothing to
+    connect to and skipped. Skips are green, so this looked like a passing
+    build for as long as it had been true.
+    """
     if url := os.getenv("TEST_DATABASE_URL"):
         return url
 
@@ -35,7 +43,11 @@ def database_url() -> str:
     port = os.getenv("POSTGRES_PORT", "5432")
     user = os.getenv("POSTGRES_USER", "vaf")
     password = os.getenv("POSTGRES_PASSWORD", "test")
-    name = os.getenv("POSTGRES_TEST_DB", "vaf_ws_b_test")
+    name = (
+        os.getenv("POSTGRES_TEST_DB")
+        or os.getenv("POSTGRES_DB")
+        or "vaf_ws_b_test"
+    )
     return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
 
 
