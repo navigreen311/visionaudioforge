@@ -37,19 +37,43 @@ _pending: set[asyncio.Task[None]] = set()
 async def _write_audit_log(
     user_id: str | None,
     action: str,
-    resource_type: str,
+    resource: str,
     ip_address: str | None,
+    workspace_id: str | None,
 ) -> None:
-    """Persist an audit log entry in a separate DB session (background)."""
+    """Persist an audit log entry in a separate DB session (background).
+
+    The column names here are not cosmetic. This previously passed
+    ``resource_type`` and ``ip_address`` as constructor arguments; audit_logs
+    has ``resource`` and no ip_address column, so every single write raised
+    TypeError and was swallowed by the caller's except. The audit trail the
+    README advertises had never recorded a row.
+
+    ``workspace_id`` is NOT NULL, so a request that cannot be attributed to a
+    workspace is skipped rather than raising on every request — and that skip
+    is logged, because an audit trail quietly dropping entries is the failure
+    mode this function exists to avoid.
+    """
     from app.database import async_session_factory
     from app.models.audit_log import AuditLog
+
+    if not workspace_id:
+        logger.debug(
+            "Audit entry skipped for %s %s: no workspace on the request",
+            action,
+            resource,
+        )
+        return
 
     async with async_session_factory() as session:
         log = AuditLog(
             user_id=UUID(user_id) if user_id else None,
             action=action,
-            resource_type=resource_type,
-            ip_address=ip_address,
+            resource=resource,
+            workspace_id=UUID(workspace_id),
+            # ip_address is not a column; keep it in the payload so the record
+            # still says where the request came from.
+            payload={"ip_address": ip_address} if ip_address else {},
         )
         session.add(log)
         await session.commit()
@@ -94,13 +118,15 @@ class AuditMiddleware:
             # this one, so the identity is only on the scope by now.
             state = scope.get("state") or {}
             user_id = state.get("user_id")
+            workspace_id = state.get("workspace_id")
             client = scope.get("client")
 
             _spawn(
                 _write_audit_log(
                     user_id=str(user_id) if user_id else None,
                     action=scope.get("method", ""),
-                    resource_type=scope.get("path", ""),
+                    resource=scope.get("path", ""),
                     ip_address=client[0] if client else None,
+                    workspace_id=str(workspace_id) if workspace_id else None,
                 )
             )

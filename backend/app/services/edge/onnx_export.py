@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import time
 import tempfile
@@ -74,18 +75,24 @@ class ONNXExporter:
         input_names = ["input"]
         output_names = ["output"]
 
-        torch.onnx.export(
-            model,
-            dummy_input,
-            output_path,
-            opset_version=opset_version,
-            input_names=input_names,
-            output_names=output_names,
-            dynamic_axes={
+        export_kwargs = {
+            "opset_version": opset_version,
+            "input_names": input_names,
+            "output_names": output_names,
+            "dynamic_axes": {
                 "input": {0: "batch_size"},
                 "output": {0: "batch_size"},
             },
-        )
+        }
+
+        # torch 2.9 switched torch.onnx.export to the dynamo exporter by
+        # default, which needs the separate onnxscript package. Ask for the
+        # legacy tracer explicitly where the argument exists, so export works
+        # on both the pinned torch and newer ones without a new dependency.
+        if "dynamo" in inspect.signature(torch.onnx.export).parameters:
+            export_kwargs["dynamo"] = False
+
+        torch.onnx.export(model, dummy_input, output_path, **export_kwargs)
 
         # Validate if onnx is available
         if HAS_ONNX:
