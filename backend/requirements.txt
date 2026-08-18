@@ -1,21 +1,53 @@
+# Pinned versions are the ones the backend suite is verified against.
+#
+# Two classes of problem were found in the previous set and are called out
+# where they occur below: pins carrying published vulnerabilities (112
+# advisories across 11 packages, per pip-audit), and pairs that resolve
+# cleanly but cannot work together at runtime — pip cannot see the second
+# kind, so only running the code finds them.
+
 # Web framework
-fastapi==0.109.2
-uvicorn[standard]==0.27.1
-pydantic[email]==2.6.1
-pydantic-settings==2.1.0
-python-multipart==0.0.9
+# starlette 0.36.3 (which fastapi 0.109 pins) carries nine advisories,
+# including denial of service via multipart parsing, so fastapi and pydantic
+# move together.
+#
+# fastapi is held at 0.136 rather than the latest: from 0.139 an included
+# router is wrapped in a private `_IncludedRouter` and no longer flattened
+# into `app.routes`. Routing still works, but every caller that *enumerates*
+# routes sees an almost empty table — which is app/services/plugins/
+# api_docs.py, and the auth-enforcement sweep that walks the routing table to
+# prove no endpoint serves anonymous callers. That sweep would have passed
+# while testing nothing. 0.136 keeps the flat table.
+#
+# starlette is pinned directly because 0.136 asks only for `>=0.46.0`, and the
+# published fixes run to the 1.x line.
+fastapi==0.136.0
+starlette==1.6.0
+uvicorn[standard]==0.52.3
+pydantic[email]==2.13.4
+pydantic-settings==2.15.0
+python-multipart==0.0.32
 
 # Database
 sqlalchemy[asyncio]==2.0.27
-asyncpg==0.29.0
+asyncpg==0.31.0
 alembic==1.13.1
 
 # Cache & queue
-redis==5.0.1
-celery[redis]==5.3.6
+redis==6.4.0
+celery[redis]==5.6.3
 
 # Auth
-python-jose[cryptography]==3.3.0
+# 3.3.0 carried CVE-2024-33663 (algorithm confusion: an OpenSSH ECDSA public
+# key can be used to sign a token that verifies) and CVE-2024-33664 (a JWE
+# decompression bomb). Both fixed in 3.4.0. Tokens are the whole of our
+# authentication, so this is not a pin to leave sitting.
+python-jose[cryptography]==3.5.0
+# python-jose pulls `ecdsa` unconditionally, and ecdsa 0.19.2 — the newest
+# release — carries PYSEC-2026-1325, a timing side-channel with no fixed
+# version available. It is reachable only through the ES* algorithms; we sign
+# with HS256 (see JWT_ALGORITHM), which never enters that code. Left in place
+# knowingly: this is the one advisory the set still reports.
 # bcrypt directly, no passlib. passlib 1.7.4 probes bcrypt.__about__.__version__
 # (removed in bcrypt 4.1) and its wrap-bug detection feeds an over-length
 # password to the backend, which bcrypt 5 rejects with ValueError — so
@@ -24,58 +56,73 @@ python-jose[cryptography]==3.3.0
 bcrypt==5.0.0
 
 # Vision
-opencv-python-headless==4.9.0.80
-numpy==1.26.4
-Pillow==10.2.0
-scikit-image==0.22.0
-scipy==1.12.0
+# Both opencv distributions are pinned, at the same version, on purpose.
+# ultralytics requires `opencv-python>=4.7.0` with no upper bound, so a plain
+# install puts *two* providers of the `cv2` module in site-packages and the
+# import resolves to whichever landed last. That is not hypothetical: the same
+# requirements file produced cv2 4.11, 4.14 and 5.0 in three environments
+# here. OpenCV 5 removed `cv2.CascadeClassifier`, which app/services/safety/
+# scanner.py builds at import time, so drawing the 5.0 straw takes the whole
+# application down at startup. Pinning both keeps the two copies identical and
+# the outcome the same whichever wins.
+opencv-python-headless==4.14.0.94
+opencv-python==4.14.0.94
+numpy==2.4.6
+Pillow==12.3.0
+scikit-image==0.26.0
+scipy==1.17.1
 
 # ML / Deep Learning
-torch==2.2.0
-torchvision==0.17.0
-ultralytics==8.1.9
+torch==2.13.0
+torchvision==0.28.0
+ultralytics==8.4.118
 
 # Audio
-librosa==0.10.1
+# 0.10.1's librosa.display.waveshow reads `axes._get_lines.prop_cycler`, a
+# matplotlib internal removed in 3.8 — so 0.10.1 and any matplotlib from 3.8
+# on could not both be installed and used, which is exactly what this file
+# pinned. pip cannot catch it: librosa declares `matplotlib>=3.3.0` with no
+# upper bound, so the set resolved cleanly and failed at runtime.
+librosa==0.11.0
 pydub==0.25.1
-soundfile==0.12.1
+soundfile==0.14.0
 
 # ML — Clustering & Analysis
-scikit-learn==1.4.0
+scikit-learn==1.9.0
 
 # Search & NLP
-faiss-cpu==1.7.4
-sentence-transformers==2.3.1
-transformers==4.37.2
+faiss-cpu==1.15.0
+sentence-transformers==5.7.0
+transformers==5.15.0
 
 # AI
-anthropic==0.18.1
+anthropic==0.122.0
 
 # Edge Export
-onnx==1.15.0
-onnxruntime==1.17.0
+onnx==1.22.0
+onnxruntime==1.28.0
 
 # gRPC
-grpcio==1.62.0
-grpcio-tools==1.62.0
+grpcio==1.83.0
+grpcio-tools==1.83.0
 
 # Scheduling
-croniter==2.0.1
+croniter==6.2.4
 
 # Storage
-boto3==1.34.34
-minio==7.2.3
+boto3==1.43.72
+minio==7.2.20
 
 # Observability
-prometheus_client==0.20.0
-python-json-logger==2.0.7
+prometheus_client==0.26.0
+python-json-logger==4.2.0
 
 # Utilities
-matplotlib==3.8.3
+matplotlib==3.11.1
 
 # Testing
 anyio==4.2.0
 httpx==0.26.0
-pytest==8.0.0
-pytest-asyncio==0.23.5
-pytest-cov==4.1.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
