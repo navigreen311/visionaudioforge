@@ -182,7 +182,8 @@ else bad "/api/health -> $code — health probes are being challenged"; fi
 # ---------------------------------------------------------------------------
 step "Copilot degrades without ANTHROPIC_API_KEY"
 # ---------------------------------------------------------------------------
-if docker compose logs api 2>&1 | grep -qi "mock mode"; then
+apilog="$(docker compose logs api 2>&1 || true)"
+if printf '%s' "$apilog" | grep -qi "mock mode"; then
     ok "copilot logged its documented mock-mode fallback"
 else
     echo "      (no mock-mode line found; API is healthy regardless)"
@@ -193,17 +194,62 @@ check "api container is running with no ANTHROPIC_API_KEY set" \
 # ---------------------------------------------------------------------------
 step "Celery worker is attached to the broker"
 # ---------------------------------------------------------------------------
-if docker compose exec -T celery_worker celery -A app.celery_app inspect ping 2>&1 | grep -q "pong"; then
-    ok "worker answered inspect ping"
-else
-    bad "worker did not answer inspect ping"
-fi
+# `inspect` broadcasts over the broker's control queue and waits 1 second by
+# default. That races a worker that has only just gone healthy — --wait returns
+# the moment the healthcheck first passes — so give it a real timeout and a
+# couple of attempts. A pong is itself proof of a broker round-trip.
+celery_inspect() {
+    docker compose exec -T celery_worker         celery -A app.celery_app inspect "$1" --timeout 15 2>&1 || true
+}
 
-if docker compose exec -T celery_worker celery -A app.celery_app inspect registered 2>&1 \
-     | grep -q "run_pipeline_task"; then
-    ok "worker registered run_pipeline_task"
+pinged=""
+for _ in 1 2 3; do
+    # Captured into a variable rather than piped: `cmd | grep -q` under
+    # `set -o pipefail` fails the pipeline when grep exits at the first match
+    # and the upstream command takes SIGPIPE.
+    out="$(celery_inspect ping)"
+    case "$out" in *pong*) pinged=yes; break ;; esac
+    sleep 5
+done
+if [ -n "$pinged" ]; then ok "worker answered inspect ping (broker round-trip)"
+else bad "worker did not answer inspect ping"; fi
+
+reg="$(celery_inspect registered)"
+case "$reg" in
+    *run_pipeline_task*) ok "worker registered run_pipeline_task" ;;
+    *)                   bad "worker did not register run_pipeline_task" ;;
+esac
+
+# Registration is not consumption. Dispatch a real task and confirm the worker
+# takes it off the queue. Execution is expected to fail on dummy arguments —
+# what is being proven is that the worker picked it up, so only receipt counts.
+task_id="$(docker compose exec -T api python -c "
+from app.celery_app import celery_app
+r = celery_app.send_task('run_pipeline_task', args=['smoke-test-pipeline', {}])
+print(r.id)
+" 2>/dev/null | tr -d '[:space:]')"
+
+if [ -n "$task_id" ]; then
+    received=""
+    for _ in 1 2 3 4 5 6; do
+        wlog="$(docker compose logs celery_worker 2>&1 || true)"
+        case "$wlog" in *"$task_id"*) received=yes; break ;; esac
+        sleep 5
+    done
+    # Receipt alone is not enough: a worker with an empty registry also logs
+    # the id, right before rejecting the message as unregistered. Require the
+    # absence of that rejection too.
+    rejected=""
+    case "$wlog" in *"Received unregistered task of type 'run_pipeline_task'"*) rejected=yes ;; esac
+    if [ -n "$received" ] && [ -z "$rejected" ]; then
+        ok "worker accepted dispatched task $task_id"
+    elif [ -n "$rejected" ]; then
+        bad "worker received $task_id but rejected it as an unregistered task"
+    else
+        bad "worker never received task $task_id"
+    fi
 else
-    bad "worker did not register run_pipeline_task"
+    bad "could not dispatch a task from the api container"
 fi
 
 # ---------------------------------------------------------------------------
