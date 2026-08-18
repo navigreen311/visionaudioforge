@@ -15,7 +15,6 @@ cp .env.example .env
 # Edit .env with production values (strong passwords, real API keys)
 
 # 2. Deploy
-chmod +x scripts/deploy-prod.sh
 ./scripts/deploy-prod.sh
 ```
 
