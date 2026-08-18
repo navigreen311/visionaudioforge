@@ -105,7 +105,11 @@ async def _daily_history(
     start = datetime.now(timezone.utc) - timedelta(days=days - 1)
     start = start.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    day = func.date(model.created_at)
+    # date() on a timestamptz converts using the *server's* timezone, while the
+    # bucket list below is built from UTC dates. On a database whose timezone
+    # is not UTC the two disagree and today's rows land in a bucket that is not
+    # in the range at all, so the history read as all zeros.
+    day = func.date(func.timezone("UTC", model.created_at))
     query = select(day, func.count()).where(model.created_at >= start)
     for condition in conditions:
         query = query.where(condition)

@@ -256,7 +256,9 @@ async def cancel_experiment(
     return {"id": str(experiment.id), "status": experiment.status}
 
 
+# Both spellings are in use by callers; one handler serves them.
 @router.post("/{experiment_id}/epochs", status_code=status.HTTP_201_CREATED)
+@router.post("/{experiment_id}/log", status_code=status.HTTP_201_CREATED)
 async def log_epoch(
     experiment_id: uuid.UUID,
     body: EpochLog,
@@ -283,12 +285,20 @@ async def get_best_checkpoint(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get the best checkpoint for an experiment by a given metric."""
+    if await db.get(Experiment, experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
     result = await ExperimentService.get_best_checkpoint(
         db, experiment_id, metric=metric, mode=mode
     )
     if not result:
-        raise HTTPException(status_code=404, detail="No epochs found")
-    return result
+        # 404 here used to mean three different things: no such experiment, no
+        # epochs logged, and epochs logged but none carrying this metric. Only
+        # the first is a missing resource — the others are a real answer to the
+        # question asked.
+        return {"found": False, "metric": metric, "mode": mode, "best": None}
+
+    return {"found": True, "metric": metric, "mode": mode, **result}
 
 
 @router.post("/compare")

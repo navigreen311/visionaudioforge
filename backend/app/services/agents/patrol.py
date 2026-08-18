@@ -9,6 +9,12 @@ from typing import TypedDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# A 2s budget is not enough on a dual-stack host: "localhost" resolves to ::1
+# first, and when the server listens on IPv4 only the whole budget is spent on
+# the IPv6 attempt before IPv4 is tried. The check then reports a Redis that is
+# up as down — a health check that cries wolf is worse than none.
+REDIS_CONNECT_TIMEOUT_S = 5
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +70,7 @@ class PatrolAgent:
 
             from app.config import settings
 
-            r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+            r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=REDIS_CONNECT_TIMEOUT_S)
             await r.ping()
             await r.aclose()
         except Exception as exc:
@@ -201,7 +207,7 @@ class PatrolAgent:
 
             from app.config import settings
 
-            r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+            r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=REDIS_CONNECT_TIMEOUT_S)
             queue_len = await r.llen("celery")
             await r.aclose()
 

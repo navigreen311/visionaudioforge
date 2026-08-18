@@ -10,6 +10,12 @@ from app.config import settings
 from app import database
 from app.schemas.common import HealthResponse, ServiceHealth
 
+# A 2s budget is not enough on a dual-stack host: "localhost" resolves to ::1
+# first, and when the server listens on IPv4 only the whole budget is spent on
+# the IPv6 attempt before IPv4 is tried. The check then reports a Redis that is
+# up as down — a health check that cries wolf is worse than none.
+REDIS_CONNECT_TIMEOUT_S = 5
+
 router = APIRouter(tags=["health"])
 
 _start_time = time.monotonic()
@@ -33,7 +39,7 @@ async def _check_redis() -> ServiceHealth:
         import redis.asyncio as aioredis
 
         t0 = time.monotonic()
-        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=REDIS_CONNECT_TIMEOUT_S)
         await r.ping()
         await r.aclose()
         latency = (time.monotonic() - t0) * 1000

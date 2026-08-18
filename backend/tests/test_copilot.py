@@ -47,7 +47,10 @@ def memory_service():
 @pytest.mark.anyio
 async def test_build_system_prompt_includes_tools(copilot):
     """System prompt should list available tool names."""
-    prompt = copilot._build_system_prompt(
+    # _build_system_prompt is a coroutine; without the await this asserted
+    # "name in <coroutine>", which raises TypeError rather than checking
+    # anything about the prompt.
+    prompt = await copilot._build_system_prompt(
         workspace_id="ws-1",
         agent_id="agent-1",
         skill_pack="general",
