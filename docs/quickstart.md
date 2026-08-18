@@ -12,7 +12,7 @@ Get the platform running and make your first API calls in under 5 minutes.
 ## 1. Start the Platform
 
 ```bash
-git clone <repo-url> && cd visonaudioforge
+git clone https://github.com/navigreen311/visionaudioforge.git && cd visionaudioforge
 docker compose up -d --wait
 ```
 
