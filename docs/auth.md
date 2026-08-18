@@ -159,10 +159,53 @@ covers tokens issued before this change, for the remainder of their expiry.
 
 ### Enforcing the filter
 
-Making the correct workspace *available* is WS-A's job and is done. Actually
-applying `WHERE workspace_id = :workspace_id` inside each handler and service
-is WS-B's. `tests/test_auth_enforcement.py` proves the plumbing carries the
-right value; it does not prove every query uses it.
+Making the correct workspace *available* was the first half. The second half —
+every handler actually using it — was not done, and the gap was worse than
+"unproven": **no route file used `get_workspace_id` at all.** Every one took
+`workspace_id` from the query string or the body and passed it to the query
+verbatim, so a token for one tenant could read and write another's rows by
+naming them:
+
+```
+GET  /api/datasets?workspace_id=<B>           -> 200, B's datasets
+GET  /api/assets/<B's id>/download            -> 200, B's media file
+POST /api/registry/register {workspace_id: B} -> 201, a model inside B
+```
+
+Two mechanisms now close it:
+
+1. **`TenantGuardMiddleware`** (`app/middleware/tenant_guard.py`) — one place
+   covering all ~597 endpoints. A request may omit `workspace_id` or pass its
+   own; naming a different one is `403`. It inspects the query string and the
+   top level of a JSON body, and it runs innermost so the identity exists by the
+   time it looks.
+
+2. **Row checks on by-id routes** — a path parameter names no workspace, so the
+   middleware has nothing to compare and the row itself has to be checked.
+   `datasets` and `assets` do this (`_owned_asset`), returning `404` rather than
+   `403` so a miss does not confirm the id exists in another tenant.
+
+**Routes not yet row-checked.** Mechanism 1 protects every route against a
+*named* foreign workspace. Mechanism 2 has been applied to datasets and assets.
+Any other by-id route (`/api/registry/models/{id}`, `/api/experiments/{id}`,
+`/api/pipelines/{id}`, …) is still reachable across tenants by id alone. Adding
+a route there means adding the `_owned_asset`-style check with it.
+
+### What the tests do and do not prove
+
+`conftest.py` runs the suite with `AUTH_REQUIRED` **off** unless a test opts in
+with `@pytest.mark.auth_enforced`. That is deliberate — the suite predates the
+boundary — but it means the ~1600 passing tests prove *function*, not
+*authorization*. Two suites carry that weight instead:
+
+| File | Proves | Marked |
+|------|--------|--------|
+| `tests/test_auth_enforcement.py` | every registered route challenges an anonymous caller; the allowlist is genuinely open; the workspace comes from the token | yes, per test |
+| `tests/test_tenant_isolation.py` | two real tenants, created through registration, cannot see or mutate each other's datasets, models or assets **through the real routes** | yes, file-wide |
+
+`test_tenant_isolation.py` is the one to extend when a new workspace-scoped
+resource appears. It drives the HTTP surface rather than a probe route, which is
+what turned "unproven" into "broken" the first time it ran.
 
 ---
 

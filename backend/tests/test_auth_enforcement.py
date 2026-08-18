@@ -266,12 +266,19 @@ async def test_workspace_id_comes_from_the_token(client, workspace_probe):
 
 
 async def test_token_for_workspace_a_cannot_read_workspace_b(client, workspace_probe):
-    """A token minted for A must never resolve to B.
+    """A token minted for A must never act on B.
 
-    This is the isolation invariant in its smallest form: whatever the caller
-    sends, the workspace the server acts on is the one inside the signed token.
-    The request below asks for B in the query string and in a header — both are
-    caller-controlled, and both must be ignored.
+    This assertion changed deliberately. It used to require that a foreign
+    ``workspace_id`` be *ignored* — 200, resolved to A. Ignoring was safe for
+    this probe, whose handler reads only the dependency, but it was not safe for
+    the real routes: they take ``workspace_id`` from the query or body and use it
+    verbatim, so "ignored" was never what happened there. See
+    ``tests/test_tenant_isolation.py``, which found that a token for A could read
+    and write B's rows.
+
+    ``TenantGuardMiddleware`` now refuses the request outright with 403. Refusing
+    beats ignoring: a caller that names the wrong tenant has a bug, and silently
+    serving them their own data hides it.
     """
     token_a = token_for(WORKSPACE_A)
 
@@ -284,10 +291,21 @@ async def test_token_for_workspace_a_cannot_read_workspace_b(client, workspace_p
         },
     )
 
-    assert response.status_code == 200
-    resolved = response.json()["workspace_id"]
-    assert resolved == str(WORKSPACE_A)
-    assert resolved != str(WORKSPACE_B), "tenant isolation breached: caller chose the tenant"
+    assert response.status_code == 403, (
+        "naming another tenant's workspace must be refused, not served"
+    )
+    # The denial echoes what was asked for, so a developer can see which
+    # workspace their client sent without reading server logs.
+    assert response.json()["requested_workspace"] == str(WORKSPACE_B)
+
+    # Naming your *own* workspace is fine, and the probe still resolves it.
+    same = await client.get(
+        workspace_probe,
+        params={"workspace_id": str(WORKSPACE_A)},
+        headers=auth(token_a),
+    )
+    assert same.status_code == 200
+    assert same.json()["workspace_id"] == str(WORKSPACE_A)
 
     # ...and the B token still resolves to B, so the check above is not simply
     # a constant being returned.

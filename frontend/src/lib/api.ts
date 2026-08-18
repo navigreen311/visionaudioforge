@@ -2,8 +2,24 @@ import axios from "axios";
 
 import { clearSession, readAccessToken, readWorkspaceId } from "@/lib/session";
 
+/**
+ * Where the API lives.
+ *
+ * `docker-compose.yml` builds the frontend image with an intentionally *empty*
+ * NEXT_PUBLIC_API_URL, documented there as meaning "same origin, which is what
+ * nginx serves". An `||` fallback breaks that contract, because an empty string
+ * is falsy: the containerised console silently fell back to
+ * `http://localhost:8000`, went cross-origin, and every request died on CORS.
+ * The compose smoke test could not see it — curling /api/health never exercises
+ * a browser XHR. Found by the browser e2e suite.
+ *
+ * So: `??`, not `||`. Unset means "a dev server on 8000"; empty means
+ * "same origin"; anything else is taken literally.
+ */
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000",
+  baseURL: API_BASE_URL,
   headers: {
     "Content-Type": "application/json",
   },
@@ -1290,8 +1306,11 @@ export async function uploadAsset(
 ): Promise<Asset> {
   const formData = new FormData();
   formData.append("file", file);
-  formData.append("type", type);
-  if (tags.length > 0) formData.append("tags", tags.join(","));
+  // The field is `asset_type`, and tags are JSON. Sending `type` and a
+  // comma-separated string meant every upload from the console 422'd - asset
+  // upload had never once worked from the UI. Found by the browser e2e suite.
+  formData.append("asset_type", type);
+  if (tags.length > 0) formData.append("tags", JSON.stringify(tags));
   const { data } = await api.post("/api/assets/upload", formData, {
     headers: { "Content-Type": "multipart/form-data" },
     onUploadProgress: (e) => {
@@ -1321,7 +1340,7 @@ export async function deleteAsset(assetId: string): Promise<void> {
 }
 
 export function downloadAssetUrl(assetId: string): string {
-  const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const base = API_BASE_URL;
   return `${base}/api/assets/${assetId}/download`;
 }
 

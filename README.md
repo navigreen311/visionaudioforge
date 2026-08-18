@@ -3,21 +3,22 @@
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 ![Modules](https://img.shields.io/badge/modules-40-green)
-![Endpoints](https://img.shields.io/badge/endpoints-563-orange)
+![Endpoints](https://img.shields.io/badge/endpoints-597-orange)
 
 VisionAudioForge is a 40-module enterprise multimodal AI platform for end-to-end capture, processing, training, deployment, and monitoring of computer vision and audio ML models. Built on FastAPI, Next.js 14, PyTorch, and modern AI/ML tooling, it delivers a complete production pipeline from data ingestion through edge deployment, with built-in SDKs, a visual pipeline builder, AI copilot, 7 industry vertical packs, and observability.
 
 ## Key Stats
 
-Counted from the code rather than estimated. Endpoints come from walking the
-mounted FastAPI router, so re-run the count after adding routes instead of
-bumping the number by hand.
+Generated, not hand-maintained. Run `python scripts/readme-stats.py --write` to
+refresh the badges and this table; CI runs `--check` and fails the build if they
+have drifted. Endpoints come from walking the *mounted* FastAPI router, so a
+decorator on a router nobody mounted is correctly not counted.
 
 | Metric | Value | Counted from |
 |--------|-------|--------------|
 | **Modules** | 40 | rows in the module table below (58 routers are mounted — some modules mount more than one) |
-| **Source Files** | 830 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
-| **API Endpoints** | 563 | method + path operations on the mounted router, across 492 distinct `/api` paths |
+| **Source Files** | 817 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
+| **API Endpoints** | 597 | method + path operations on the mounted router, across 532 distinct `/api` paths |
 | **Vertical Packs** | 7 (Security, Industrial, Retail, Healthcare, Call Centre, Education, Media) | `backend/app/services/verticals/` |
 | **SDKs** | 2 (Python, JavaScript) | `sdk/` |
 | **Frontend Pages** | 28 dashboard views (30 routes including login and register) | `page.tsx` files under `frontend/src/app` |

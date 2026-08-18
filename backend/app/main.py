@@ -13,6 +13,7 @@ from app.middleware.audit import AuditMiddleware
 from app.middleware.auth import AuthenticationMiddleware
 from app.middleware.compression import GZIP_MINIMUM_SIZE, GZipMiddleware
 from app.middleware.request_id import RequestIDMiddleware
+from app.middleware.tenant_guard import TenantGuardMiddleware
 from app.middleware.timing import TimingMiddleware
 from app.ws.capture import CaptureWebSocket
 from app.ws.copilot import copilot_ws_handler
@@ -32,15 +33,18 @@ app = FastAPI(
 # Starlette's `add_middleware` *prepends*, so the LAST call below is the
 # OUTERMOST layer. Reading bottom-up gives the request order:
 #
-#   CORS -> RequestID -> Timing -> GZip -> Audit -> Auth -> routes
+#   CORS -> RequestID -> Timing -> GZip -> Audit -> Auth -> TenantGuard -> routes
 #
 # Rationale for that order:
 #   * CORS outermost so preflights are answered and so error responses (401,
 #     500) still carry the headers a browser needs to read them.
 #   * RequestID next so every response — including denials — is traceable.
 #   * Timing outside GZip, to measure compression as part of the response.
-#   * Auth innermost, so an unauthenticated request is still timed, logged and
-#     stamped with a request ID.
+#   * Auth near-innermost, so an unauthenticated request is still timed, logged
+#     and stamped with a request ID.
+#   * TenantGuard innermost of all, because it compares the workspace the caller
+#     *named* against the one Auth resolved from the token — it cannot run
+#     before the identity exists.
 #
 # All four custom middlewares were previously commented out as "incompatible
 # with uvicorn 0.42 + starlette 0.52 on Windows". The version pin was a red
@@ -49,6 +53,10 @@ app = FastAPI(
 _cors_origins_raw = os.environ.get("CORS_ORIGINS", "http://localhost:3000")
 _cors_origins = [origin.strip() for origin in _cors_origins_raw.split(",") if origin.strip()]
 
+# Innermost first: `add_middleware` prepends, so this ends up closest to the
+# routes and therefore runs *after* AuthenticationMiddleware has resolved the
+# identity it depends on.
+app.add_middleware(TenantGuardMiddleware)
 app.add_middleware(AuthenticationMiddleware)
 app.add_middleware(AuditMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=GZIP_MINIMUM_SIZE)
