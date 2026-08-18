@@ -22,6 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_async_session
 from app.models.graph_edge import GraphEdge
 from app.models.graph_node import GraphNode
+from app.services.knowledge_graph.analytics import GraphAnalytics
+from app.services.knowledge_graph.graph_rag import GraphRAGService
+from app.services.knowledge_graph.graph_service import KnowledgeGraphService
+from app.services.knowledge_graph.query_parser import GraphQueryParser
+from app.services.knowledge_graph.scene_extractor import SceneGraphExtractor
 
 router = APIRouter(prefix="/api/knowledge-graph", tags=["knowledge-graph"])
 
@@ -54,6 +59,31 @@ class SceneExtractRequest(BaseModel):
 class ExtractRequest(BaseModel):
     """Request body for entity extraction from text."""
     text: str
+    workspace_id: str | None = None
+
+
+class RagContextRequest(BaseModel):
+    """Retrieve graph context to hand to a language model."""
+    query: str
+    workspace_id: UUID
+    max_nodes: int = Field(20, ge=1, le=200)
+
+
+class RagQueryRequest(BaseModel):
+    """Answer a question from the graph."""
+    question: str
+    workspace_id: UUID
+
+
+class NlQueryRequest(BaseModel):
+    """Parse and run a natural-language graph query."""
+    query: str
+    workspace_id: UUID
+
+
+class DetectionSceneRequest(BaseModel):
+    """Detector output for one frame, used to build a scene graph."""
+    detections: list[dict[str, Any]] = Field(default_factory=list)
     workspace_id: str | None = None
 
 
@@ -487,3 +517,124 @@ async def scene_extract(body: SceneExtractRequest) -> dict[str, Any]:
         "relations": [],
         "method": "capitalisation_heuristic",
     }
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+#
+# These endpoints, and the RAG ones below, were unreachable until the duplicate
+# GraphNode/GraphEdge model was removed: importing services/knowledge_graph
+# alongside the registered models raised "Table already defined", so the whole
+# service layer could not be mounted. The services were written; nothing could
+# call them.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/analytics/centrality")
+async def graph_centrality(
+    workspace_id: UUID = Query(..., description="Workspace to analyse"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Rank nodes by how connected they are."""
+    scores = await GraphAnalytics.centrality(db, workspace_id)
+    return {"workspace_id": str(workspace_id), "nodes": scores, "total": len(scores)}
+
+
+@router.get("/analytics/communities")
+async def graph_communities(
+    workspace_id: UUID = Query(..., description="Workspace to analyse"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Group nodes into connected communities."""
+    communities = await GraphAnalytics.community_detection(db, workspace_id)
+    return {
+        "workspace_id": str(workspace_id),
+        "communities": communities,
+        "total": len(communities),
+    }
+
+
+@router.get("/analytics/anomalies")
+async def graph_anomalies(
+    workspace_id: UUID = Query(..., description="Workspace to analyse"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Flag nodes whose connectivity stands out from the rest."""
+    anomalies = await GraphAnalytics.anomaly_detection(db, workspace_id)
+    return {
+        "workspace_id": str(workspace_id),
+        "anomalies": anomalies,
+        "total": len(anomalies),
+    }
+
+
+@router.get("/subgraph")
+async def graph_subgraph(
+    node_ids: str = Query(..., description="Comma-separated node ids"),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Return the induced subgraph spanning the given nodes."""
+    ids = [
+        _as_uuid(value.strip(), "node_ids")
+        for value in node_ids.split(",")
+        if value.strip()
+    ]
+    if not ids:
+        raise HTTPException(status_code=422, detail="node_ids must not be empty")
+
+    return await KnowledgeGraphService.get_subgraph(db, ids)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval-augmented querying
+# ---------------------------------------------------------------------------
+
+
+@router.post("/rag/context")
+async def rag_context(
+    body: RagContextRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Retrieve the graph context a language model should be given."""
+    return await GraphRAGService().retrieve_context(
+        db, body.query, str(body.workspace_id), max_nodes=body.max_nodes
+    )
+
+
+@router.post("/rag/query")
+async def rag_query(
+    body: RagQueryRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Answer a question from the graph, citing the nodes used as evidence."""
+    return await GraphRAGService().query_graph_nl(
+        db, body.question, str(body.workspace_id)
+    )
+
+
+@router.post("/nl-query")
+async def nl_query(
+    body: NlQueryRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Parse a natural-language query and run it against the graph."""
+    result = await GraphRAGService().query_graph_nl(
+        db, body.query, str(body.workspace_id)
+    )
+    parsed = GraphQueryParser().parse(body.query)
+    return {"parsed": parsed, **result}
+
+
+# ---------------------------------------------------------------------------
+# Scene extraction from detections
+# ---------------------------------------------------------------------------
+
+
+@router.post("/extract-scene")
+async def extract_scene(body: DetectionSceneRequest) -> dict[str, Any]:
+    """Build a scene graph from a frame's object detections.
+
+    Unlike /scene-extract, which reads a text description, this takes real
+    detector output and derives spatial relations between the boxes.
+    """
+    return SceneGraphExtractor.extract_scene_graph(None, body.detections)
