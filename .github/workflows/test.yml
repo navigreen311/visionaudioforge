@@ -45,6 +45,26 @@ jobs:
           pip install -r backend/requirements.txt
           pip install pytest pytest-asyncio pytest-cov httpx
 
+      # The Postgres service container starts empty. Without this the schema
+      # never exists and every DB-backed test dies on `relation "..." does not
+      # exist` — which is what hid ~139 failures behind a green-looking config.
+      # Running the real migrations here also means CI exercises them.
+      - name: Apply database migrations
+        working-directory: backend
+        run: python -m alembic upgrade head
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "5432"
+          POSTGRES_USER: vaf
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: vaf_test
+          REDIS_HOST: localhost
+          REDIS_PORT: "6379"
+          REDIS_PASSWORD: ""
+          JWT_SECRET_KEY: test-secret-key
+          SECRET_KEY: test-secret-key
+          APP_ENV: test
+
       - name: Run tests with coverage
         working-directory: backend
         run: python -m pytest tests/ -v --cov=app --cov-report=term-missing
