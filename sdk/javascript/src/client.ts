@@ -144,10 +144,16 @@ export class VAFClient {
       ...(opts?.options?.headers ?? {}),
     };
 
-    // Auth header
-    const authToken = this._token ?? this._apiKey;
-    if (authToken) {
-      headers['Authorization'] = `Bearer ${authToken}`;
+    // Auth header.
+    //
+    // An API key is NOT a bearer token. This used to send
+    // `Authorization: Bearer <api-key>`, which the server tries to decode as a
+    // JWT and rejects — API keys are only accepted on X-API-Key
+    // (see backend app/core/deps.py). A held session token takes precedence.
+    if (this._token) {
+      headers['Authorization'] = `Bearer ${this._token}`;
+    } else if (this._apiKey) {
+      headers['X-API-Key'] = this._apiKey;
     }
 
     let requestBody: BodyInit | undefined;
