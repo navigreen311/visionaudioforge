@@ -9,6 +9,7 @@ import uuid
 import pytest
 
 from app.core.deps import get_db
+from tests.conftest import CANONICAL_TEST_WORKSPACE
 from app.main import app
 from tests.db_utils import (
     db_session_factory,
@@ -114,7 +115,15 @@ async def test_semantic_memory_flow(test_app):
     # Store
     r1 = await test_app.post(
         "/api/semantic-memory/store",
-        json={"content": "The north camera detected motion at 2am", "category": "alert", "importance": 0.8},
+        json={
+            "content": "The north camera detected motion at 2am",
+            "category": "alert",
+            "importance": 0.8,
+            # Memories are workspace-scoped rows now, not entries in a global
+            # dict, so a store without a workspace is a 422 rather than a
+            # silent write nobody owns.
+            "workspace_id": CANONICAL_TEST_WORKSPACE,
+        },
     )
     assert r1.status_code != 404, "semantic-memory/store returned 404"
     mem_id = r1.json().get("id", "m1") if r1.status_code in OK else "m1"
@@ -217,7 +226,12 @@ async def test_reviewops_flow(test_app):
     # Create task
     r1 = await test_app.post(
         "/api/reviewops/tasks",
-        json={"title": "Review batch-42 annotations", "description": "Check labeling quality"},
+        json={
+            "title": "Review batch-42 annotations",
+            "description": "Check labeling quality",
+            # Review tasks are workspace-scoped rows now.
+            "workspace_id": CANONICAL_TEST_WORKSPACE,
+        },
     )
     assert r1.status_code != 404, "reviewops/tasks POST returned 404"
     task_id = r1.json().get("id", "t1") if r1.status_code in OK else "t1"
