@@ -63,6 +63,7 @@ from app.models.settings import (
     WorkspaceIntegration,
 )
 from app.models.scheduling import PipelineSchedule
+from app.models.conversation import AgentConversation, AgentMessage
 from app.models.runtime import (
     InferenceCostEvent,
     ModelCostRate,
@@ -138,6 +139,8 @@ __all__ = [
     "AppearancePreference",
     "WorkspaceIntegration",
     "PipelineSchedule",
+    "AgentConversation",
+    "AgentMessage",
     "InferenceCostEvent",
     "ModelCostRate",
     "WorkspaceQuota",
