@@ -8,16 +8,16 @@ without one. The row was never created, so every one of those writes failed on
 Creating it makes the existing fallback resolve. It is a holding area for
 unattributed rows, not a tenant: nothing should be granted access to it.
 
-Revision ID: 021
-Revises: 020
+Revision ID: 022
+Revises: 021
 Create Date: 2026-08-17
 """
 
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '021'
-down_revision = '020'
+revision = '022'
+down_revision = '021'
 branch_labels = None
 depends_on = None
 

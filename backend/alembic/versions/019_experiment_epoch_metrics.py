@@ -8,8 +8,8 @@ a bare 404 "Experiment not found", which hid the cause.
 
 Renames rather than drops, so existing epoch history survives.
 
-Revision ID: 018
-Revises: 017
+Revision ID: 019
+Revises: 018
 Create Date: 2026-08-17
 """
 
@@ -17,8 +17,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '018'
-down_revision = '017'
+revision = '019'
+down_revision = '018'
 branch_labels = None
 depends_on = None
 

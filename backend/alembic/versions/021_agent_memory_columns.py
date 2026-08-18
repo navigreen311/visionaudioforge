@@ -5,8 +5,8 @@ which the model has. Since SQLAlchemy names every mapped column in its SELECT,
 this made *reading* an agent's memory fail with UndefinedColumn, not just
 writing one — agent chat and recall were unusable against a migrated database.
 
-Revision ID: 020
-Revises: 019
+Revision ID: 021
+Revises: 020
 Create Date: 2026-08-17
 """
 
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision = '020'
-down_revision = '019'
+revision = '021'
+down_revision = '020'
 branch_labels = None
 depends_on = None
 

@@ -9,8 +9,8 @@ Three separate mismatches between `experiments` and the model:
 * The `experimentstatus` enum lacks `cancelled`, which `POST
   /experiments/{id}/cancel` writes, so cancelling an experiment could not work.
 
-Revision ID: 019
-Revises: 018
+Revision ID: 020
+Revises: 019
 Create Date: 2026-08-17
 """
 
@@ -18,8 +18,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '019'
-down_revision = '018'
+revision = '020'
+down_revision = '019'
 branch_labels = None
 depends_on = None
 

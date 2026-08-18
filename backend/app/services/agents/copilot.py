@@ -100,8 +100,13 @@ class CopilotService:
             if db is not None:
                 try:
                     await conversation_manager.store_message(db, agent_id, "assistant", mock_response)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # store_message commits. Dropping that in silence loses
+                    # conversation history with no trace — and this is the mock
+                    # branch, which is what runs whenever ANTHROPIC_API_KEY is
+                    # unset, i.e. by default. The real-API path below logs the
+                    # same failure; these two disagreed.
+                    logger.warning("Failed to store assistant message: %s", exc)
 
             yield {"type": "done"}
             return
@@ -211,24 +216,24 @@ class CopilotService:
                 if patrol_section:
                     sections.append("")
                     sections.append(patrol_section)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("patrol context unavailable for system prompt: %s", exc)
 
             try:
                 stats_section = await self._get_workspace_stats(db)
                 if stats_section:
                     sections.append("")
                     sections.append(stats_section)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("workspace stats unavailable for system prompt: %s", exc)
 
             try:
                 memory_summary = await self._get_memory_summary(agent_id, db)
                 if memory_summary:
                     sections.append("")
                     sections.append(memory_summary)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("memory summary unavailable for system prompt: %s", exc)
 
             # Knowledge graph context enrichment
             if user_message:
@@ -239,8 +244,8 @@ class CopilotService:
                     if graph_context:
                         sections.append("")
                         sections.append(graph_context)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("graph context unavailable for system prompt: %s", exc)
 
         return "\n".join(sections)
 

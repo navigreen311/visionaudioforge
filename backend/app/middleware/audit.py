@@ -3,15 +3,32 @@
 The README claims an audit trail for compliance; this is the code that has to
 actually run for that claim to be true.
 
-Three defects kept the previous version from being safe to enable:
+It has never written a row. The middleware was enabled and the write path was
+exercised on every single request, but ``AuditLog`` was constructed with field
+names the model does not have::
+
+    TypeError: 'resource_type' is an invalid keyword argument for AuditLog
+
+The model's columns are ``user_id, action, resource, payload, timestamp,
+workspace_id``. The middleware passed ``resource_type`` and ``ip_address``.
+Correcting those two names is still not enough: ``workspace_id`` is
+``nullable=False`` and was never supplied, so every insert would then have
+failed on a NOT NULL violation instead. Because the write is fire-and-forget
+the failure only ever surfaced as a WARNING in the log, which is why an audit
+trail that recorded nothing looked healthy.
+
+Unauthenticated requests are recorded with a NULL workspace as of migration
+017. Before it, ``workspace_id`` was NOT NULL and every rejected request —
+every failed login — had to be dropped.
+
+Earlier defects, fixed when the middleware was re-enabled:
 
 1. ``asyncio.ensure_future`` with no reference held — the event loop only keeps
    a weak reference to a task, so an audit write could be garbage-collected
    before it ran. Tasks are now held in a module-level set until done.
 2. No exception handling on the orphaned task — a database that is down turned
    into a bare "Task exception was never retrieved" on stderr and, on Windows,
-   a ``RuntimeError: Event loop is closed`` at shutdown. That is the
-   "incompatibility" the disable comment was pointing at.
+   a ``RuntimeError: Event loop is closed`` at shutdown.
 3. It re-decoded the JWT itself. The auth middleware has already done that, so
    the identity is read off the ASGI scope instead.
 """
@@ -33,49 +50,41 @@ logger = get_logger("audit")
 # task mid-await and the audit entry silently disappears.
 _pending: set[asyncio.Task[None]] = set()
 
+# audit_logs.resource is String(200). A path longer than that would fail the
+# insert, which — being fire-and-forget — would again be invisible.
+RESOURCE_MAX_LEN = 200
+
+# Liveness and scrape endpoints are deliberately not audited. Container
+# healthchecks hit /api/health every 10 seconds and Prometheus scrapes
+# /api/metrics on its own schedule; recording them adds thousands of rows a day
+# that carry no security meaning and bury the events that do. Everything else
+# on the public allowlist IS audited — a failed login is the single most
+# important row this table holds.
+AUDIT_EXEMPT_PATHS = frozenset({"/api/health", "/api/metrics"})
+
 
 async def _write_audit_log(
+    *,
     user_id: str | None,
+    workspace_id: str | None,
     action: str,
     resource: str,
-    ip_address: str | None,
-    workspace_id: str | None,
+    payload: dict[str, Any],
 ) -> None:
-    """Persist an audit log entry in a separate DB session (background).
-
-    The column names here are not cosmetic. This previously passed
-    ``resource_type`` and ``ip_address`` as constructor arguments; audit_logs
-    has ``resource`` and no ip_address column, so every single write raised
-    TypeError and was swallowed by the caller's except. The audit trail the
-    README advertises had never recorded a row.
-
-    ``workspace_id`` is NOT NULL, so a request that cannot be attributed to a
-    workspace is skipped rather than raising on every request — and that skip
-    is logged, because an audit trail quietly dropping entries is the failure
-    mode this function exists to avoid.
-    """
+    """Persist an audit log entry in a separate DB session (background)."""
     from app.database import async_session_factory
     from app.models.audit_log import AuditLog
 
-    if not workspace_id:
-        logger.debug(
-            "Audit entry skipped for %s %s: no workspace on the request",
-            action,
-            resource,
-        )
-        return
-
     async with async_session_factory() as session:
-        log = AuditLog(
-            user_id=UUID(user_id) if user_id else None,
-            action=action,
-            resource=resource,
-            workspace_id=UUID(workspace_id),
-            # ip_address is not a column; keep it in the payload so the record
-            # still says where the request came from.
-            payload={"ip_address": ip_address} if ip_address else {},
+        session.add(
+            AuditLog(
+                user_id=UUID(user_id) if user_id else None,
+                workspace_id=UUID(workspace_id) if workspace_id else None,
+                action=action,
+                resource=resource[:RESOURCE_MAX_LEN],
+                payload=payload,
+            )
         )
-        session.add(log)
         await session.commit()
 
 
@@ -100,8 +109,23 @@ def _spawn(coro: Any) -> None:
     task.add_done_callback(_done)
 
 
+def _client_ip(scope: Scope) -> str | None:
+    """Prefer the proxy's X-Forwarded-For over the socket peer.
+
+    Behind nginx every request appears to come from the proxy, so the socket
+    address is the same for all of them and worthless in an audit trail.
+    """
+    for key, value in scope.get("headers") or ():
+        if key.lower() == b"x-forwarded-for":
+            forwarded = value.decode("latin-1").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+    client = scope.get("client")
+    return client[0] if client else None
+
+
 class AuditMiddleware:
-    """Record user_id, HTTP method, path, and client IP for every request."""
+    """Record who did what, to which resource, in which workspace."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -111,22 +135,54 @@ class AuditMiddleware:
             await self.app(scope, receive, send)
             return
 
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            # Read *after* the downstream call: the auth middleware sits inside
-            # this one, so the identity is only on the scope by now.
-            state = scope.get("state") or {}
-            user_id = state.get("user_id")
-            workspace_id = state.get("workspace_id")
-            client = scope.get("client")
+        status_code: int | None = None
 
-            _spawn(
-                _write_audit_log(
-                    user_id=str(user_id) if user_id else None,
-                    action=scope.get("method", ""),
-                    resource=scope.get("path", ""),
-                    ip_address=client[0] if client else None,
-                    workspace_id=str(workspace_id) if workspace_id else None,
-                )
+        async def send_capturing_status(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_capturing_status)
+        finally:
+            self._record(scope, status_code)
+
+    def _record(self, scope: Scope, status_code: int | None) -> None:
+        # Read *after* the downstream call: the auth middleware sits inside this
+        # one, so the identity is only on the scope by now.
+        state = scope.get("state") or {}
+        workspace_id = state.get("workspace_id")
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+
+        if path in AUDIT_EXEMPT_PATHS:
+            return
+
+        # Unauthenticated requests are recorded too, with a NULL workspace.
+        # This is the case that matters most: a failed login is the first thing
+        # anyone asks an audit trail for, and it is precisely the event that has
+        # no tenant yet. audit_logs.workspace_id was NOT NULL until revision
+        # 017, which is why these were previously dropped.
+        user_id = state.get("user_id")
+
+        _spawn(
+            _write_audit_log(
+                user_id=str(user_id) if user_id else None,
+                workspace_id=str(workspace_id) if workspace_id else None,
+                # Dotted verbs match the convention used by the service layer
+                # ("custody.create"), so audit rows from both sources sort and
+                # filter together.
+                action=f"http.{method.lower()}" if method else "http.request",
+                resource=path,
+                payload={
+                    "method": method,
+                    "path": path,
+                    "status_code": status_code,
+                    "ip": _client_ip(scope),
+                    "request_id": state.get("request_id"),
+                    "auth_method": state.get("auth_method"),
+                },
             )
+        )
