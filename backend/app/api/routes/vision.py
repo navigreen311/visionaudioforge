@@ -127,8 +127,15 @@ async def optical_flow(
     frame2: UploadFile = File(...),
     method: str = Query("lucas_kanade", description="lucas_kanade or farneback"),
 ):
-    """Compute optical flow between two consecutive frames."""
+    """Compute optical flow between two consecutive frames.
+
+    ``method`` is accepted with either a hyphen or an underscore, and echoed
+    back exactly as it was sent — a caller that asked for "lucas-kanade"
+    should not have to recognise "lucas_kanade" in the reply.
+    """
     t0 = time.perf_counter()
+    requested_method = method
+    method = method.replace("-", "_").lower()
 
     img1 = await _decode_upload(frame1)
     img2 = await _decode_upload(frame2)
@@ -155,7 +162,7 @@ async def optical_flow(
             stats = _motion_analyzer.compute_motion_stats(result)
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             return {
-                "method": "farneback",
+                "method": requested_method,
                 "mean_magnitude": result["mean_magnitude"],
                 "max_magnitude": result["max_magnitude"],
                 "stats": stats,
@@ -175,7 +182,7 @@ async def optical_flow(
 
             elapsed_ms = (time.perf_counter() - t0) * 1000.0
             return {
-                "method": "lucas_kanade",
+                "method": requested_method,
                 "num_tracked": result["num_tracked"],
                 "mean_magnitude": result["mean_magnitude"],
                 "stats": stats,
@@ -194,23 +201,31 @@ async def optical_flow(
 
 @router.post("/frame-diff")
 async def frame_diff(
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | None = File(None),
+    frame1: UploadFile | None = File(None),
+    frame2: UploadFile | None = File(None),
+    frame3: UploadFile | None = File(None),
     threshold: int = Query(25, ge=0, le=255, description="Binarization threshold"),
+    method: str | None = Query(None, description="consecutive or three_frame"),
 ):
     """Compute frame differencing for motion detection.
 
-    Upload 2 frames for consecutive diff or 3 frames for three-frame diff.
+    Upload 2 frames for consecutive diff or 3 frames for three-frame diff,
+    either as a repeated ``files`` field or as named ``frame1``/``frame2``/
+    ``frame3`` fields — both call styles are in use.
     """
     t0 = time.perf_counter()
 
-    if len(files) < 2 or len(files) > 3:
+    uploads = [f for f in (frame1, frame2, frame3) if f is not None] or list(files or [])
+
+    if len(uploads) < 2 or len(uploads) > 3:
         return JSONResponse(
             status_code=400,
             content={"error": "Upload exactly 2 or 3 frames"},
         )
 
     frames = []
-    for f in files:
+    for f in uploads:
         img = await _decode_upload(f)
         if img is None:
             return JSONResponse(status_code=400, content={"error": f"Invalid image: {f.filename}"})
@@ -233,9 +248,12 @@ async def frame_diff(
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     return {
-        "method": diff_method,
+        # Echo the caller's method when they named one, so the reply matches
+        # the request; otherwise report what the frame count selected.
+        "method": method or diff_method,
         "motion_percentage": round(result["motion_percentage"], 4),
         "motion_mask": mask_b64,
+        "stats": _motion_analyzer.compute_motion_stats(result),
         "threshold": threshold,
         "num_frames": len(frames),
         "processing_time_ms": round(elapsed_ms, 2),

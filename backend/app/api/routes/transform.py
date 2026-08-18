@@ -13,7 +13,7 @@ import time
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
@@ -687,18 +687,30 @@ async def compressor_presets():
     return {"presets": _compressor.presets()}
 
 
-class TTSRequest(BaseModel):
-    """TTS takes a JSON body — the text can be long and is not a form field."""
-
-    text: str
-    voice: str = "default"
-    speed: float = 1.0
-
-
 @router.post("/audio/tts")
-async def audio_tts(body: TTSRequest):
-    """Synthesize speech from text."""
-    text, voice, speed = body.text, body.voice, body.speed
+async def audio_tts(request: Request):
+    """Synthesize speech from text.
+
+    Accepts either a JSON body or form fields. Both are in use by callers, and
+    the text can be long enough that forcing it into a form field is awkward,
+    so the body is parsed rather than declared.
+    """
+    content_type = request.headers.get("content-type", "")
+
+    if content_type.startswith("application/json"):
+        payload = await request.json()
+    else:
+        payload = dict(await request.form())
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is required")
+
+    voice = str(payload.get("voice", "default"))
+    try:
+        speed = float(payload.get("speed", 1.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="speed must be a number")
     import soundfile as sf
 
     start = time.perf_counter()
