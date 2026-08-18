@@ -5,6 +5,71 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — Persistence long tail, SDK coverage, honest README
+
+### Added
+- **Persistence for the remaining in-memory subsystems.** Twenty files still
+  held state in module-level dicts, so it was lost on restart and not shared
+  between workers. Migrations 007–016 add tables for asset provenance, account
+  security (sessions, login history, two-factor), settings, pipeline schedules,
+  inference cost and quotas, agent conversations, installed vertical packs,
+  simulation scenarios and runs, field notes, and model exports and benchmarks.
+  Every converted subsystem is workspace-scoped and covered by a test that
+  writes through one connection and reads back through a fresh one.
+- **`app/services/observability/metrics_source.py`** — reads measured values out
+  of the live Prometheus registry, and reports `observed=False` where nothing
+  has been recorded rather than substituting a plausible number.
+- **SDK test coverage.** Python: 39 tests (was 11), every client method driven
+  against a mocked transport with its request path asserted, plus 401/403/404/
+  422/429/500, unmapped statuses and non-JSON error bodies. JavaScript: 30
+  tests (was 14) with paths and HTTP methods pinned.
+
+### Fixed
+- **The Python SDK targeted an API surface that does not exist.** It was written
+  against `/api/v1/*`; only health, audio, stt, tts, speaker, sentiment,
+  meeting, translate and vision live there. Auth, assets, datasets, models,
+  search, pipelines, agents, alerts and transform all 404'd. Also: models now
+  target `/api/registry`, training targets `/api/experiments`, and
+  `search.similar` and `models.compare` send POST rather than GET.
+- **The JavaScript SDK sent API keys as bearer tokens.** `Authorization: Bearer
+  <api-key>` is rejected — the server only accepts keys on `X-API-Key`. Its
+  `npm test` script also never ran, dying with a SyntaxError before executing
+  any test.
+- **Two-factor enrolment was global.** A single module-level boolean meant one
+  account enabling 2FA reported it as enabled for every user; sessions and
+  appearance preferences were shared the same way.
+- **Inference quotas were not caps.** They reset on every deploy, and each
+  worker counted its own usage, so a four-worker deployment allowed roughly
+  four times the configured limit. `check_quota` now takes a row lock.
+- **The knowledge-graph service layer was unimportable.** A duplicate
+  `app/models/knowledge_graph.py` redefined `graph_nodes`/`graph_edges` with
+  columns the database does not have, so importing it alongside the registered
+  models raised "Table already defined". Removed; migration 010 adds the one
+  column it contributed that `GraphService` actually writes.
+- Unmapped HTTP statuses raised `VAFError` with `status_code=None`, so a caller
+  could not tell a 502 from a proxy apart from a bad request.
+- `get_pool_stats` raised on pool implementations that do not report statistics.
+
+### Changed
+- **Removed fabricated data from API responses.** A fresh install reported
+  eight review tasks nobody created, a leaderboard of six reviewers who did not
+  exist, a hand-written confusion matrix, five past model exports, four edge
+  devices, three agent conversations, and two configured integrations. Unknown
+  figures now report `null` or `supported: false` — an SLA report will not
+  claim compliance it cannot evidence, and `auto-assign` no longer reports
+  twelve assignments without making any.
+- The knowledge graph returned a "Mock Node" for any id, three invented edges
+  for any node, three search hits for any query, and a fixed two-hop path
+  whether or not one existed. `/path` now runs a real breadth-first search and
+  reports `found: false` when there is none.
+- **README corrected against the code**: 563 endpoints across 492 paths (was
+  "327+"), 40 modules (was 28), 830 source files (was "540+"), 28 dashboard
+  pages (was 16), 26 pipeline node types (was 20), and the vertical pack names
+  (manufacturing, agriculture and logistics were listed; the packs are
+  industrial, call centre and education).
+
+---
+
 ## [1.0.0] - 2026-03-20 — VisionAudioForge Complete Platform (Phase 4: 20 Workstreams)
 
 ### Added

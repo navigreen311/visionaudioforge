@@ -10,7 +10,8 @@ from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.knowledge_graph import GraphEdge, GraphNode
+from app.models.graph_edge import GraphEdge
+from app.models.graph_node import GraphNode
 
 
 class KnowledgeGraphService:

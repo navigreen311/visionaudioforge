@@ -2,35 +2,39 @@
 
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
-![Modules](https://img.shields.io/badge/modules-28-green)
-![Endpoints](https://img.shields.io/badge/endpoints-327%2B-orange)
+![Modules](https://img.shields.io/badge/modules-40-green)
+![Endpoints](https://img.shields.io/badge/endpoints-563-orange)
 
-VisionAudioForge is a 28-module enterprise multimodal AI platform for end-to-end capture, processing, training, deployment, and monitoring of computer vision and audio ML models. Built on FastAPI, Next.js 14, PyTorch, and modern AI/ML tooling, it delivers a complete production pipeline from data ingestion through edge deployment, with built-in SDKs, a visual pipeline builder, AI copilot, 7 industry vertical packs, and full observability.
+VisionAudioForge is a 40-module enterprise multimodal AI platform for end-to-end capture, processing, training, deployment, and monitoring of computer vision and audio ML models. Built on FastAPI, Next.js 14, PyTorch, and modern AI/ML tooling, it delivers a complete production pipeline from data ingestion through edge deployment, with built-in SDKs, a visual pipeline builder, AI copilot, 7 industry vertical packs, and observability.
 
 ## Key Stats
 
-| Metric | Value |
-|--------|-------|
-| **Modules** | 28 |
-| **Source Files** | 540+ |
-| **API Endpoints** | 327+ |
-| **Vertical Packs** | 7 (Security, Manufacturing, Retail, Healthcare, Agriculture, Logistics, Media) |
-| **SDKs** | 2 (Python, JavaScript) |
-| **Frontend Pages** | 16 dashboard views |
-| **Docker Services** | 7 (API, Frontend, DB, Redis, MinIO, NGINX, Celery) |
+Counted from the code rather than estimated. Endpoints come from walking the
+mounted FastAPI router, so re-run the count after adding routes instead of
+bumping the number by hand.
+
+| Metric | Value | Counted from |
+|--------|-------|--------------|
+| **Modules** | 40 | rows in the module table below (58 routers are mounted — some modules mount more than one) |
+| **Source Files** | 830 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
+| **API Endpoints** | 563 | method + path operations on the mounted router, across 492 distinct `/api` paths |
+| **Vertical Packs** | 7 (Security, Industrial, Retail, Healthcare, Call Centre, Education, Media) | `backend/app/services/verticals/` |
+| **SDKs** | 2 (Python, JavaScript) | `sdk/` |
+| **Frontend Pages** | 28 dashboard views (30 routes including login and register) | `page.tsx` files under `frontend/src/app` |
+| **Docker Services** | 7 (API, Frontend, DB, Redis, MinIO, NGINX, Celery) | `docker-compose.yml` |
 
 ## Feature Highlights
 
 1. **Vision Pipeline** -- Image analysis, object detection (YOLO), optical flow, OCR, and error analysis with confusion matrices.
 2. **Audio Pipeline** -- Spectral analysis, MFCC extraction, augmentation chains, and classification with Librosa and PyTorch.
 3. **Cross-Modal Search** -- FAISS-powered similarity search with CLIP embeddings across images, audio, and text.
-4. **Visual Pipeline Builder** -- Drag-and-drop pipeline editor with 20 node types, cron scheduling, and run management.
+4. **Visual Pipeline Builder** -- Drag-and-drop pipeline editor with 26 node types, cron scheduling, and run management. Schedules are stored and listed; a scheduler process that fires them on their cron is not yet wired (that needs Celery Beat).
 5. **AI Copilot** -- Claude-powered agentic assistant with streaming chat, persistent memory, and skill packs.
 6. **Model Registry** -- Full lifecycle management (draft/active/archived/deprecated) with versioning, comparison, and rollback.
 7. **Edge Export** -- One-click model export to ONNX, TensorRT, TFLite, CoreML, and OpenVINO with quantization options.
 8. **7 Vertical Packs** -- Industry-specific solutions for security, manufacturing, retail, healthcare, agriculture, logistics, and media.
 9. **Federated Learning** -- Privacy-preserving distributed training with FedAvg aggregation and participant management.
-10. **Full Observability** -- Prometheus metrics, SRE dashboard, SLA compliance tracking, alert fatigue analytics, and audit trail.
+10. **Observability** -- Prometheus metric definitions, SRE dashboard, SLA reporting, alert fatigue analytics, and an audit trail written to `audit_logs`. Alert fatigue is computed from the alerts table. Request-level instrumentation is not yet wired, so the SRE dashboard and SLA report state which figures are unmeasured rather than filling them in — an SLA report will not claim compliance it cannot evidence.
 
 ## Architecture
 
@@ -88,7 +92,7 @@ Module Groups:
 | 8 | Experiments | `/api/experiments` | Experiment tracking with epoch metrics and comparison |
 | 9 | Registry | `/api/registry/*` | Model registry with versioning, lifecycle, rollback |
 | 10 | Search | `/api/search/*` | Cross-modal FAISS search with CLIP embeddings |
-| 11 | Pipeline | `/api/pipeline/*` | Visual pipeline builder with 20 node types, scheduling |
+| 11 | Pipeline | `/api/pipeline/*` | Visual pipeline builder with 26 node types, schedule storage |
 | 12 | Alerts | `/api/alerts/*` | Alert rules and notification management |
 | 13 | Agents | `/api/agents/*` | AI copilot with Claude, agent memory, skill packs |
 | 14 | Assets | `/api/assets/*` | Media asset management with MinIO storage |
@@ -111,7 +115,7 @@ Module Groups:
 | -- | ReviewOps | `/api/reviewops/*` | Review task management, assignments, verdict workflow |
 | -- | Edge Export | `/api/edge/*` | ONNX/TensorRT/TFLite/CoreML export with optimization |
 | -- | Fleet Manager | `/api/fleet/*` | Edge device registration, heartbeat, fleet health |
-| -- | Vertical Packs | `/api/verticals/*` | 7 industry packs (security, manufacturing, retail, healthcare, agriculture, logistics, media) |
+| -- | Vertical Packs | `/api/verticals/*` | 7 industry packs (security, industrial, retail, healthcare, callcentre, education, media) |
 | -- | Federated Learning | `/api/federated/*` | Federation management, participant join, training rounds |
 | -- | Mobile Backend | `/api/mobile/*` | Mobile dashboard, push notifications, field notes |
 | -- | Plugins | `/api/plugins/*` | Plugin marketplace, registration, enable/disable, execution |
@@ -133,8 +137,36 @@ Module Groups:
 | **Storage** | MinIO (S3-compatible), boto3 |
 | **Infrastructure** | Docker Compose, NGINX reverse proxy, Celery workers |
 | **Auth** | JWT / OAuth2, role-based access control, SSO, API keys |
-| **Observability** | Prometheus metrics, structured JSON logging, audit trail, request tracing |
+| **Observability** | Prometheus metric definitions, structured JSON logging, audit trail, request tracing |
 | **Testing** | pytest, pytest-asyncio, httpx, pytest-cov |
+
+## State and Persistence
+
+Application state lives in PostgreSQL, and capture sessions in Redis. This
+matters for anyone running more than one worker: state held in a process is
+neither shared between workers nor survives a deploy, and a subsystem that
+loses it usually reports "nothing here" rather than an error.
+
+Everything below is backed by a table with an Alembic migration, scoped by
+workspace, and covered by a test that writes through one connection and reads
+back through a new one:
+
+| Area | Tables |
+|------|--------|
+| Identity and access | `users`, `workspaces`, `api_keys`, `user_sessions`, `login_events`, `user_two_factor` |
+| Evidence and integrity | `evidence_bundles`, `custody_events`, `asset_integrity`, `provenance_events` |
+| Alerting and review | `alert_rules`, `alerts`, `review_tasks`, `reviews`, `review_shifts` |
+| Knowledge | `graph_nodes`, `graph_edges`, `semantic_memories`, `agent_conversations`, `agent_messages` |
+| Scheduling and cost | `pipeline_schedules`, `inference_cost_events`, `workspace_quotas`, `model_cost_rates` |
+| Edge and fleet | `edge_devices`, `ota_updates`, `offline_packages`, `model_exports`, `edge_benchmarks` |
+| Platform | `installed_vertical_packs`, `simulation_runs`, `field_notes`, `workspace_integrations`, `appearance_preferences` |
+
+Two stores are deliberately still in memory, and say so in the code:
+
+- the installer's loaded `VerticalPack` instances — live objects, not state;
+  the fact of an install is a row in `installed_vertical_packs`
+- the inference cache and loaded model handles — a cache is expected to be cold
+  after a restart
 
 ## Quick Start
 

@@ -10,7 +10,8 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.knowledge_graph import GraphEdge, GraphNode
+from app.models.graph_edge import GraphEdge
+from app.models.graph_node import GraphNode
 
 
 class GraphAnalytics:

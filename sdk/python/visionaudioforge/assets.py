@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class AssetClient:
-    """Wraps the /api/v1/assets endpoints."""
+    """Wraps the /api/assets endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -26,7 +26,7 @@ class AssetClient:
         if metadata:
             data["metadata"] = json.dumps(metadata)
         resp = await self._client._request(
-            "POST", "/api/v1/assets", files=files, data=data
+            "POST", "/api/assets", files=files, data=data
         )
         return Asset.model_validate(resp)
 
@@ -35,18 +35,18 @@ class AssetClient:
         params: dict[str, Any] = {}
         if type:
             params["type"] = type
-        resp = await self._client._request("GET", "/api/v1/assets", params=params)
+        resp = await self._client._request("GET", "/api/assets", params=params)
         items = resp if isinstance(resp, list) else resp.get("assets", [])
         return [Asset.model_validate(a) for a in items]
 
     async def get(self, asset_id: str) -> Asset:
         """Get an asset by ID."""
-        resp = await self._client._request("GET", f"/api/v1/assets/{asset_id}")
+        resp = await self._client._request("GET", f"/api/assets/{asset_id}")
         return Asset.model_validate(resp)
 
     async def delete(self, asset_id: str) -> None:
         """Delete an asset."""
-        await self._client._request("DELETE", f"/api/v1/assets/{asset_id}")
+        await self._client._request("DELETE", f"/api/assets/{asset_id}")
 
     async def download(self, asset_id: str) -> bytes:
         """Download an asset's file content."""
@@ -56,7 +56,7 @@ class AssetClient:
         elif self._client.api_key:
             headers["X-API-Key"] = self._client.api_key
         response = await self._client._http.get(
-            f"/api/v1/assets/{asset_id}/download", headers=headers
+            f"/api/assets/{asset_id}/download", headers=headers
         )
         response.raise_for_status()
         return response.content

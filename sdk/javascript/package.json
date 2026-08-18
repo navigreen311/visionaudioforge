@@ -9,9 +9,11 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "test": "jest",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:watch": "jest --watch",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "visionaudioforge",

@@ -49,7 +49,10 @@ describe('VAFClient', () => {
   });
 
   describe('auth headers', () => {
-    it('should send Bearer token when apiKey is set', async () => {
+    it('should send an API key on X-API-Key, not as a Bearer token', async () => {
+      // An API key is not a JWT. Sending it as `Authorization: Bearer <key>`
+      // means the server tries to decode it as a token and rejects it; the
+      // API only accepts keys on X-API-Key.
       const { fetch, calls } = capturingFetch(200, { status: 'ok' });
       const client = new VAFClient({
         baseUrl: 'http://localhost:8000',
@@ -58,7 +61,8 @@ describe('VAFClient', () => {
       });
       await client.health();
       const headers = calls[0].init.headers as Record<string, string>;
-      expect(headers['Authorization']).toBe('Bearer test-key-123');
+      expect(headers['X-API-Key']).toBe('test-key-123');
+      expect(headers['Authorization']).toBeUndefined();
     });
 
     it('should send Bearer token after login', async () => {

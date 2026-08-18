@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import get_async_session
 from app.services.runtime.router import ModelRouter, ModelRouteConfig
 from app.services.runtime.gpu_scheduler import GPUScheduler
 from app.services.runtime.cost_control import CostController
@@ -62,23 +64,31 @@ async def route_model(body: RouteRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/cost/{workspace_id}")
-async def get_cost_report(workspace_id: str, period: str = "monthly"):
+async def get_cost_report(
+    workspace_id: str,
+    period: str = "monthly",
+    db: AsyncSession = Depends(get_async_session),
+):
     """Get cost report for a workspace."""
-    report = _cost_controller.generate_cost_report(None, workspace_id, period=period)
-    return report
+    return await _cost_controller.generate_cost_report(db, workspace_id, period=period)
 
 
 @router.get("/quota/{workspace_id}")
-async def get_quota_status(workspace_id: str):
+async def get_quota_status(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
     """Get current quota status for a workspace."""
-    status = _cost_controller.check_quota(workspace_id)
-    return status
+    return await _cost_controller.check_quota(db, workspace_id)
 
 
 @router.post("/quota")
-async def set_quota(body: QuotaSetRequest):
+async def set_quota(
+    body: QuotaSetRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
     """Set daily inference quota for a workspace."""
-    _cost_controller.set_quota(body.workspace_id, body.daily_limit)
+    await _cost_controller.set_quota(db, body.workspace_id, body.daily_limit)
     return {"workspace_id": body.workspace_id, "daily_limit": body.daily_limit, "status": "set"}
 
 

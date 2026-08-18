@@ -6,8 +6,14 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.edge_export import EdgeBenchmark, ModelExport
+from app.models.edge_fleet import EdgeDevice, OfflinePackage
 
 router = APIRouter(prefix="/api/edge", tags=["edge"])
 
@@ -52,13 +58,30 @@ class DeviceRegisterRequest(BaseModel):
     location: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# In-memory stores
-# ---------------------------------------------------------------------------
-_exports: dict[str, dict] = {}
-_benchmarks: dict[str, dict] = {}
-_packages: dict[str, dict] = {}
-_edge_devices: dict[str, dict] = {}
+def _ws(workspace_id: str | None):
+    return uuid.UUID(str(workspace_id)) if workspace_id else None
+
+
+def _uuid_or_404(value: str, what: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(str(value))
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+
+
+def _serialise_export(row: ModelExport) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "model_id": row.model_id,
+        "format": row.format,
+        "optimize": row.optimize,
+        "quantize": row.quantize,
+        "status": row.status,
+        "file_size_mb": row.file_size_mb,
+        "download_url": row.download_url,
+        "created_at": row.created_at.timestamp() if row.created_at else None,
+    }
+
 
 SUPPORTED_FORMATS = [
     {"name": "onnx", "description": "Open Neural Network Exchange", "extensions": [".onnx"]},
@@ -77,63 +100,6 @@ _FORMAT_META = {
     "openvino": {"size_mb": 35.6, "latency_ms": 6.2, "compression_ratio": 0.84},
 }
 
-# Seed 5 mock past exports
-_MOCK_EXPORTS = [
-    {
-        "id": f"export_{i:03d}",
-        "model_id": f"model_{(i % 3) + 1}",
-        "format": ["onnx", "tensorrt", "tflite", "coreml", "openvino"][i % 5],
-        "status": "completed",
-        "file_size_mb": [42.5, 38.1, 11.2, 40.0, 35.6][i % 5],
-        "download_url": f"https://storage.example.com/exports/export_{i:03d}.zip",
-        "created_at": 1711000000 + i * 3600,
-    }
-    for i in range(5)
-]
-for _e in _MOCK_EXPORTS:
-    _exports[_e["id"]] = _e
-
-# Seed 4 mock edge devices
-_MOCK_DEVICES = [
-    {
-        "id": "dev_001",
-        "name": "Jetson-Nano-Lab1",
-        "device_type": "nvidia-jetson-nano",
-        "platform": "linux-arm64",
-        "status": "online",
-        "firmware_version": "4.6.1",
-        "last_seen": 1711000000,
-    },
-    {
-        "id": "dev_002",
-        "name": "RPi4-Warehouse",
-        "device_type": "raspberry-pi-4",
-        "platform": "linux-arm64",
-        "status": "online",
-        "firmware_version": "3.2.0",
-        "last_seen": 1711000000,
-    },
-    {
-        "id": "dev_003",
-        "name": "Xavier-AGX-Floor2",
-        "device_type": "nvidia-xavier-agx",
-        "platform": "linux-arm64",
-        "status": "offline",
-        "firmware_version": "5.0.2",
-        "last_seen": 1710900000,
-    },
-    {
-        "id": "dev_004",
-        "name": "Coral-EdgeTPU-Gate",
-        "device_type": "google-coral",
-        "platform": "linux-arm64",
-        "status": "online",
-        "firmware_version": "2.1.0",
-        "last_seen": 1711000000,
-    },
-]
-for _d in _MOCK_DEVICES:
-    _edge_devices[_d["id"]] = _d
 
 
 # ---------------------------------------------------------------------------
@@ -167,39 +133,50 @@ async def format_estimates(
 # ---------------------------------------------------------------------------
 
 @router.post("/export")
-async def export_model(body: ExportRequest) -> dict[str, Any]:
+async def export_model(
+    body: ExportRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Start an export job for a model to an edge-optimized format."""
-    job_id = f"export_{uuid.uuid4().hex[:6]}"
-    export = {
-        "id": job_id,
-        "model_id": body.model_id,
-        "format": body.format,
-        "optimize": body.optimize,
-        "quantize": body.quantize,
-        "status": "completed",
-        "file_size_mb": _FORMAT_META.get(body.format, {}).get("size_mb", 42.5),
-        "download_url": f"https://storage.example.com/exports/{job_id}.zip",
-        "created_at": time.time(),
-    }
-    _exports[job_id] = export
-    return {"job_id": job_id}
+    row = ModelExport(
+        workspace_id=_ws(workspace_id),
+        model_id=body.model_id,
+        format=body.format,
+        optimize=body.optimize,
+        quantize=body.quantize,
+        status="completed",
+        file_size_mb=_FORMAT_META.get(body.format, {}).get("size_mb"),
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    row.download_url = f"/api/edge/exports/{row.id}/download"
+    await db.commit()
+
+    return {"job_id": str(row.id)}
 
 
 @router.get("/export/{job_id}/status")
-async def export_status(job_id: str) -> dict[str, Any]:
-    """Get per-format status for an export job, including download URLs."""
-    if job_id not in _exports:
+async def export_status(
+    job_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Get status for an export job, including its download URL."""
+    row = (
+        await db.execute(
+            select(ModelExport).where(
+                ModelExport.id == _uuid_or_404(job_id, "Export job")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Export job not found")
-    exp = _exports[job_id]
-    return {
-        "job_id": job_id,
-        "model_id": exp["model_id"],
-        "status": exp["status"],
-        "format": exp["format"],
-        "file_size_mb": exp.get("file_size_mb"),
-        "download_url": exp.get("download_url", f"https://storage.example.com/exports/{job_id}.zip"),
-        "created_at": exp.get("created_at"),
-    }
+
+    payload = _serialise_export(row)
+    payload["job_id"] = str(row.id)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -207,20 +184,41 @@ async def export_status(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/exports")
-async def list_exports(model_id: str | None = None) -> list[dict]:
-    """List all exports, optionally filtered by model."""
-    exports = list(_exports.values())
+async def list_exports(
+    model_id: str | None = None,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict]:
+    """List exports, optionally filtered by model.
+
+    Returns only real exports. Five fixture rows used to be seeded at import,
+    so a system that had never exported anything listed five downloads.
+    """
+    stmt = select(ModelExport)
+    if workspace_id:
+        stmt = stmt.where(ModelExport.workspace_id == _ws(workspace_id))
     if model_id:
-        exports = [e for e in exports if e["model_id"] == model_id]
-    return exports
+        stmt = stmt.where(ModelExport.model_id == model_id)
+    rows = (await db.execute(stmt.order_by(ModelExport.created_at))).scalars().all()
+    return [_serialise_export(r) for r in rows]
 
 
 @router.get("/exports/{export_id}")
-async def get_export(export_id: str) -> dict:
+async def get_export(
+    export_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
     """Get export details."""
-    if export_id not in _exports:
+    row = (
+        await db.execute(
+            select(ModelExport).where(
+                ModelExport.id == _uuid_or_404(export_id, "Export")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Export not found")
-    return _exports[export_id]
+    return _serialise_export(row)
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +236,12 @@ async def get_formats() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 @router.post("/package")
-async def create_package(body: PackageRequest) -> dict[str, Any]:
+async def create_package(
+    body: PackageRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Package a model with runtime for edge deployment."""
-    package_id = f"pkg_{uuid.uuid4().hex[:6]}"
     contents = [
         {"name": f"model.{body.format}", "size_bytes": 44_564_480},
         {"name": "runtime.so", "size_bytes": 8_192_000},
@@ -249,21 +250,23 @@ async def create_package(body: PackageRequest) -> dict[str, Any]:
     ]
     if not body.include_runtime:
         contents = [c for c in contents if c["name"] != "runtime.so"]
-    pkg = {
-        "package_id": package_id,
-        "model_id": body.model_id,
-        "format": body.format,
-        "target_platform": body.target_platform,
-        "contents": contents,
-        "total_size_bytes": sum(c["size_bytes"] for c in contents),
-        "download_url": f"https://storage.example.com/packages/{package_id}.tar.gz",
-        "created_at": time.time(),
-    }
-    _packages[package_id] = pkg
+    total_bytes = sum(c["size_bytes"] for c in contents)
+    row = OfflinePackage(
+        workspace_id=_ws(workspace_id),
+        model_id=body.model_id,
+        device_type=body.target_platform,
+        model_format=body.format,
+        size_mb=round(total_bytes / (1024 * 1024), 2),
+        contents=contents,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
     return {
-        "package_id": package_id,
+        "package_id": str(row.id),
         "contents": contents,
-        "download_url": pkg["download_url"],
+        "download_url": f"/api/edge/packages/{row.id}/download",
     }
 
 
@@ -310,16 +313,34 @@ async def start_benchmark(body: BenchmarkRequest) -> dict[str, Any]:
         },
         "created_at": time.time(),
     }
-    _benchmarks[job_id] = bench
-    return {"job_id": job_id}
+    row = EdgeBenchmark(
+        workspace_id=_ws(workspace_id),
+        model_id=body.model_id,
+        device_type=body.device,
+        results=bench,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return {"job_id": str(row.id)}
 
 
 @router.get("/benchmark/{job_id}/results")
-async def benchmark_results(job_id: str) -> dict[str, Any]:
+async def benchmark_results(
+    job_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Get benchmark results including latency stats, histogram, and comparison."""
-    if job_id not in _benchmarks:
+    row = (
+        await db.execute(
+            select(EdgeBenchmark).where(
+                EdgeBenchmark.id == _uuid_or_404(job_id, "Benchmark job")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Benchmark job not found")
-    bench = _benchmarks[job_id]
+    bench = row.results or {}
     return {
         "job_id": job_id,
         "model_id": bench["model_id"],
@@ -339,36 +360,74 @@ async def benchmark_results(job_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/devices")
-async def list_edge_devices() -> list[dict]:
-    """List all registered edge devices with status and version."""
-    return list(_edge_devices.values())
+async def list_edge_devices(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict]:
+    """List registered edge devices.
+
+    Reads the edge_fleet table. Four fixture devices used to be seeded at
+    import, so an empty fleet reported a Jetson, a Pi, an Xavier and a Coral.
+    """
+    stmt = select(EdgeDevice)
+    if workspace_id:
+        stmt = stmt.where(EdgeDevice.workspace_id == _ws(workspace_id))
+    rows = (await db.execute(stmt.order_by(EdgeDevice.created_at))).scalars().all()
+    return [
+        {
+            "id": str(d.id),
+            "name": d.device_name,
+            "device_type": d.device_type,
+            "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+            "last_seen": d.last_seen.timestamp() if d.last_seen else None,
+        }
+        for d in rows
+    ]
 
 
 @router.post("/devices")
-async def register_edge_device(body: DeviceRegisterRequest) -> dict[str, Any]:
+async def register_edge_device(
+    body: DeviceRegisterRequest,
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Register a new edge device, returning device info with API key."""
-    device_id = f"dev_{uuid.uuid4().hex[:6]}"
     api_key = f"eak_{uuid.uuid4().hex}"
-    device = {
-        "id": device_id,
-        "name": body.name,
-        "device_type": body.device_type,
+    row = EdgeDevice(
+        workspace_id=_ws(workspace_id),
+        device_name=body.name,
+        device_type=body.device_type,
+        location=body.location,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    return {
+        "id": str(row.id),
+        "name": row.device_name,
+        "device_type": row.device_type,
         "platform": body.platform,
-        "location": body.location,
-        "status": "online",
-        "firmware_version": "1.0.0",
+        "location": row.location,
+        "status": row.status.value if hasattr(row.status, "value") else str(row.status),
         "api_key": api_key,
-        "registered_at": time.time(),
-        "last_seen": time.time(),
+        "registered_at": row.created_at.timestamp() if row.created_at else None,
     }
-    _edge_devices[device_id] = device
-    return device
 
 
 @router.post("/devices/{device_id}/update")
-async def update_device_firmware(device_id: str) -> dict[str, Any]:
+async def update_device_firmware(
+    device_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
     """Trigger firmware/software update on an edge device."""
-    if device_id not in _edge_devices:
+    row = (
+        await db.execute(
+            select(EdgeDevice).where(
+                EdgeDevice.id == _uuid_or_404(device_id, "Device")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
         raise HTTPException(status_code=404, detail="Device not found")
-    _edge_devices[device_id]["status"] = "updating"
     return {"device_id": device_id, "status": "updating"}

@@ -7,121 +7,137 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from croniter import croniter
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.scheduling import PipelineSchedule
 
 
 class PipelineScheduler:
     """Manage cron-based pipeline scheduling.
 
-    Schedules are stored in the Pipeline model's definition JSONB field
-    under the ``schedule`` key.  Actual cron execution is V2 (requires
-    Celery Beat); this service provides schedule CRUD and cron parsing.
+    Schedules are rows in ``pipeline_schedules``. They used to be held in a
+    per-instance dict: writes went to the pipeline's definition JSON but reads
+    came from memory, so after a restart the service reported no schedules
+    while the rows still existed, and each worker had its own view.
+
+    Actual cron execution is still V2 (it needs Celery Beat); this service
+    provides schedule CRUD and cron parsing.
     """
 
-    def __init__(self, db_session: Any = None):
-        self._db = db_session
-        # In-memory store for when no DB session is available (testing/dev)
-        self._schedules: dict[str, dict[str, Any]] = {}
+    @staticmethod
+    def _serialise(row: PipelineSchedule) -> dict[str, Any]:
+        return {
+            "schedule_id": str(row.id),
+            "pipeline_id": str(row.pipeline_id),
+            "cron": row.cron,
+            "enabled": row.enabled,
+            "next_run": row.next_run.isoformat() if row.next_run else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+        }
 
     async def schedule(
         self,
+        db: AsyncSession,
         pipeline_id: str,
         cron_expression: str,
         enabled: bool = True,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a schedule for a pipeline.
 
         Returns schedule metadata including the next calculated run time.
         """
-        # Validate cron expression
         if not croniter.is_valid(cron_expression):
             raise ValueError(f"Invalid cron expression: {cron_expression}")
 
-        schedule_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
-        cron = croniter(cron_expression, now)
-        next_run: datetime = cron.get_next(datetime)
+        next_run: datetime = croniter(cron_expression, now).get_next(datetime)
 
-        schedule_data = {
-            "schedule_id": schedule_id,
-            "pipeline_id": pipeline_id,
-            "cron": cron_expression,
-            "enabled": enabled,
-            "next_run": next_run.isoformat(),
-            "created_at": now.isoformat(),
-        }
-
-        # Persist to DB if available
-        if self._db is not None:
-            from sqlalchemy import select
-
-            from app.models.pipeline import Pipeline
-
-            result = await self._db.execute(
-                select(Pipeline).where(Pipeline.id == uuid.UUID(pipeline_id))
-            )
-            pipeline = result.scalar_one_or_none()
-            if pipeline is not None:
-                definition = dict(pipeline.definition or {})
-                definition["schedule"] = schedule_data
-                pipeline.definition = definition
-                await self._db.commit()
-
-        # Always store in memory for fast access
-        self._schedules[schedule_id] = schedule_data
-        return schedule_data
-
-    async def unschedule(self, schedule_id: str) -> bool:
-        """Remove a schedule by ID.  Returns True if found and removed."""
-        if schedule_id in self._schedules:
-            schedule = self._schedules.pop(schedule_id)
-
-            # Remove from DB if available
-            if self._db is not None:
-                from sqlalchemy import select
-
-                from app.models.pipeline import Pipeline
-
-                pipeline_id = schedule["pipeline_id"]
-                result = await self._db.execute(
-                    select(Pipeline).where(Pipeline.id == uuid.UUID(pipeline_id))
+        # One schedule per pipeline: re-scheduling replaces rather than
+        # accumulating duplicates that would each fire.
+        existing = (
+            await db.execute(
+                select(PipelineSchedule).where(
+                    PipelineSchedule.pipeline_id == uuid.UUID(pipeline_id)
                 )
-                pipeline = result.scalar_one_or_none()
-                if pipeline is not None:
-                    definition = dict(pipeline.definition or {})
-                    definition.pop("schedule", None)
-                    pipeline.definition = definition
-                    await self._db.commit()
+            )
+        ).scalar_one_or_none()
 
-            return True
-        return False
+        if existing is None:
+            existing = PipelineSchedule(
+                pipeline_id=uuid.UUID(pipeline_id),
+                workspace_id=workspace_id,
+            )
+            db.add(existing)
 
-    async def list_schedules(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        existing.cron = cron_expression
+        existing.enabled = enabled
+        existing.next_run = next_run
+        if workspace_id is not None:
+            existing.workspace_id = workspace_id
+
+        await db.commit()
+        await db.refresh(existing)
+        return self._serialise(existing)
+
+    async def unschedule(self, db: AsyncSession, schedule_id: str) -> bool:
+        """Remove a schedule by ID. Returns True if found and removed."""
+        row = (
+            await db.execute(
+                select(PipelineSchedule).where(
+                    PipelineSchedule.id == uuid.UUID(schedule_id)
+                )
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            return False
+
+        await db.delete(row)
+        await db.commit()
+        return True
+
+    async def list_schedules(
+        self, db: AsyncSession, workspace_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return all stored schedules, optionally filtered by workspace."""
-        # In the in-memory store we don't track workspace, so return all
-        return list(self._schedules.values())
+        stmt = select(PipelineSchedule)
+        if workspace_id is not None:
+            stmt = stmt.where(PipelineSchedule.workspace_id == workspace_id)
+        stmt = stmt.order_by(PipelineSchedule.created_at)
+
+        rows = (await db.execute(stmt)).scalars().all()
+        return [self._serialise(r) for r in rows]
 
     async def get_next_runs(
         self,
+        db: AsyncSession,
         workspace_id: str | None = None,
         hours: int = 24,
     ) -> list[dict[str, Any]]:
         """Return upcoming runs within the next *hours* hours."""
+        stmt = select(PipelineSchedule).where(PipelineSchedule.enabled.is_(True))
+        if workspace_id is not None:
+            stmt = stmt.where(PipelineSchedule.workspace_id == workspace_id)
+
+        rows = (await db.execute(stmt)).scalars().all()
+
         now = datetime.now(timezone.utc)
         cutoff = now + timedelta(hours=hours)
         upcoming: list[dict[str, Any]] = []
 
-        for schedule in self._schedules.values():
-            if not schedule.get("enabled", True):
-                continue
-            cron_expr = schedule["cron"]
-            cron = croniter(cron_expr, now)
+        for row in rows:
+            cron = croniter(row.cron, now)
             next_run: datetime = cron.get_next(datetime)
             while next_run <= cutoff:
-                upcoming.append({
-                    "schedule_id": schedule["schedule_id"],
-                    "pipeline_id": schedule["pipeline_id"],
-                    "run_at": next_run.isoformat(),
-                })
+                upcoming.append(
+                    {
+                        "schedule_id": str(row.id),
+                        "pipeline_id": str(row.pipeline_id),
+                        "run_at": next_run.isoformat(),
+                    }
+                )
                 next_run = cron.get_next(datetime)
 
         upcoming.sort(key=lambda r: r["run_at"])

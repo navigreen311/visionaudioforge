@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class AgentClient:
-    """Wraps the /api/v1/agents endpoints."""
+    """Wraps the /api/agents endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -27,20 +27,20 @@ class AgentClient:
         if agent_id:
             payload["agent_id"] = agent_id
         resp = await self._client._request(
-            "POST", "/api/v1/agents/chat", json=payload
+            "POST", "/api/agents/chat", json=payload
         )
         return resp.get("response", "") if isinstance(resp, dict) else str(resp)
 
     async def list_agents(self) -> list[Agent]:
         """List available agents."""
-        resp = await self._client._request("GET", "/api/v1/agents")
+        resp = await self._client._request("GET", "/api/agents")
         items = resp if isinstance(resp, list) else resp.get("agents", [])
         return [Agent.model_validate(a) for a in items]
 
     async def get_memory(self, agent_id: str) -> list[Memory]:
         """Retrieve an agent's memory entries."""
         resp = await self._client._request(
-            "GET", f"/api/v1/agents/{agent_id}/memory"
+            "GET", f"/api/agents/{agent_id}/memory"
         )
         items = resp if isinstance(resp, list) else resp.get("memories", [])
         return [Memory.model_validate(m) for m in items]

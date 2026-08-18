@@ -48,6 +48,31 @@ from app.models.evidence import (
     EvidenceBundle,
     EvidenceBundleItem,
 )
+from app.models.provenance import (
+    ProvenanceAction,
+    ProvenanceEvent,
+)
+from app.models.security import (
+    LoginEvent,
+    LoginStatus,
+    UserSession,
+    UserTwoFactor,
+)
+from app.models.settings import (
+    AppearancePreference,
+    WorkspaceIntegration,
+)
+from app.models.scheduling import PipelineSchedule
+from app.models.conversation import AgentConversation, AgentMessage
+from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
+from app.models.field_note import FieldNote
+from app.models.simulation import SimulationRun, SimulationScenario
+from app.models.edge_export import EdgeBenchmark, ModelExport
+from app.models.runtime import (
+    InferenceCostEvent,
+    ModelCostRate,
+    WorkspaceQuota,
+)
 from app.models.edge_fleet import (
     EdgeDevice,
     DeviceMetric,
@@ -109,6 +134,27 @@ __all__ = [
     "CustodyEvent",
     "EvidenceBundle",
     "EvidenceBundleItem",
+    "ProvenanceAction",
+    "ProvenanceEvent",
+    "LoginEvent",
+    "LoginStatus",
+    "UserSession",
+    "UserTwoFactor",
+    "AppearancePreference",
+    "WorkspaceIntegration",
+    "PipelineSchedule",
+    "AgentConversation",
+    "AgentMessage",
+    "InstalledVerticalPack",
+    "VerticalInstallJob",
+    "FieldNote",
+    "SimulationRun",
+    "SimulationScenario",
+    "EdgeBenchmark",
+    "ModelExport",
+    "InferenceCostEvent",
+    "ModelCostRate",
+    "WorkspaceQuota",
     "BYOMModel",
     "CustomNode",
     "InstalledPlugin",

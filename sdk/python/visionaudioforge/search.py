@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 class SearchClient:
-    """Wraps the /api/v1/search endpoints."""
+    """Wraps the /api/search endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -30,11 +30,11 @@ class SearchClient:
             if text:
                 data["text"] = text
             resp = await self._client._request(
-                "POST", "/api/v1/search/query", files=files, data=data
+                "POST", "/api/search/query", files=files, data=data
             )
         else:
             resp = await self._client._request(
-                "POST", "/api/v1/search/query", json={"text": text, "k": k}
+                "POST", "/api/search/query", json={"text": text, "k": k}
             )
         items = resp if isinstance(resp, list) else resp.get("results", [])
         return [SearchResult.model_validate(r) for r in items]
@@ -42,15 +42,16 @@ class SearchClient:
     async def index(self, asset_id: str) -> IndexResult:
         """Index an asset for search."""
         resp = await self._client._request(
-            "POST", "/api/v1/search/index", json={"asset_id": asset_id}
+            "POST", "/api/search/index", json={"asset_id": asset_id}
         )
         return IndexResult.model_validate(resp)
 
     async def similar(self, asset_id: str, k: int = 10) -> list[SearchResult]:
         """Find assets similar to a given asset."""
+        # POST, not GET: the API defines this as a POST endpoint.
         resp = await self._client._request(
-            "GET",
-            f"/api/v1/search/similar/{asset_id}",
+            "POST",
+            f"/api/search/similar/{asset_id}",
             params={"k": k},
         )
         items = resp if isinstance(resp, list) else resp.get("results", [])

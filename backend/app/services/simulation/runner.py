@@ -5,9 +5,33 @@ import time
 import uuid
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-# In-memory store for simulation results (would be DB-backed in production)
-_simulation_store: dict[str, dict[str, Any]] = {}
+from app.models.simulation import SimulationRun
+
+
+def _serialise_run(run: SimulationRun) -> dict[str, Any]:
+    """Render a stored run in the shape callers expect."""
+    return {
+        "simulation_id": str(run.id),
+        "workspace_id": str(run.workspace_id) if run.workspace_id else None,
+        "scenario": run.scenario or {},
+        "events_injected": run.events_injected,
+        "alerts_triggered": run.alerts_triggered,
+        "duration_s": run.duration_s,
+        "timeline": run.timeline or [],
+    }
+
+
+async def _load_run(db: AsyncSession, simulation_id: str) -> SimulationRun | None:
+    try:
+        sid = uuid.UUID(str(simulation_id))
+    except ValueError:
+        return None
+    return (
+        await db.execute(select(SimulationRun).where(SimulationRun.id == sid))
+    ).scalar_one_or_none()
 
 
 class SimulationRunner:
@@ -53,18 +77,18 @@ class SimulationRunner:
 
         duration = round(time.time() - start, 3)
 
-        result = {
-            "simulation_id": simulation_id,
-            "workspace_id": workspace_id,
-            "scenario": scenario,
-            "events_injected": events_injected,
-            "alerts_triggered": alerts_triggered,
-            "duration_s": duration,
-            "timeline": timeline,
-        }
-
-        _simulation_store[simulation_id] = result
-        return result
+        run = SimulationRun(
+            workspace_id=uuid.UUID(str(workspace_id)) if workspace_id else None,
+            scenario=scenario,
+            events_injected=events_injected,
+            alerts_triggered=alerts_triggered,
+            duration_s=duration,
+            timeline=timeline,
+        )
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        return _serialise_run(run)
 
     # ------------------------------------------------------------------
     # Replay
@@ -76,14 +100,14 @@ class SimulationRunner:
         simulation_id: str,
     ) -> dict[str, Any]:
         """Re-run a previously executed simulation."""
-        original = _simulation_store.get(simulation_id)
-        if not original:
+        original = await _load_run(db, simulation_id)
+        if original is None:
             raise ValueError(f"Simulation {simulation_id} not found")
 
         return await self.run_simulation(
             db,
-            original["workspace_id"],
-            original["scenario"],
+            str(original.workspace_id) if original.workspace_id else None,
+            original.scenario or {},
         )
 
     # ------------------------------------------------------------------
@@ -99,14 +123,14 @@ class SimulationRunner:
         comparison: list[dict[str, Any]] = []
         metrics = ["events_injected", "alerts_triggered", "duration_s"]
 
+        loaded = {sid: await _load_run(db, sid) for sid in sim_ids}
+
         for metric in metrics:
             values: dict[str, Any] = {}
             for sid in sim_ids:
-                sim = _simulation_store.get(sid)
-                if sim:
-                    values[sid] = sim.get(metric, 0)
-                else:
-                    values[sid] = None
+                run = loaded[sid]
+                # None distinguishes "this run does not exist" from a real zero.
+                values[sid] = getattr(run, metric) if run is not None else None
             comparison.append({"metric": metric, "values": values})
 
         return {"comparison": comparison}
@@ -121,10 +145,11 @@ class SimulationRunner:
         simulation_id: str,
     ) -> dict[str, Any]:
         """Generate a detailed report for a simulation run."""
-        sim = _simulation_store.get(simulation_id)
-        if not sim:
+        run = await _load_run(db, simulation_id)
+        if run is None:
             raise ValueError(f"Simulation {simulation_id} not found")
 
+        sim = _serialise_run(run)
         scenario = sim["scenario"]
         timeline = sim["timeline"]
 

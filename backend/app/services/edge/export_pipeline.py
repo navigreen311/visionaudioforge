@@ -23,9 +23,61 @@ except ImportError:
     HAS_TORCH = False
 
 
-# In-memory stores (production would use a real DB)
-_exports: dict[str, dict] = {}
-_packages: dict[str, dict] = {}
+# Export and package records live in model_exports / offline_packages. The
+# artefacts these produce sit on disk and in object storage; when the record of
+# them was a module-level dict, a restart left the files present with nothing
+# pointing at them and the job reporting "not_found".
+#
+# The exporter still takes an optional session: the pure-conversion paths are
+# used directly in tests without a database, and are not worth forcing a
+# connection on.
+
+
+def _uuid_or_none(value):
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+async def _save_export(db, workspace_id, record: dict) -> dict:
+    """Persist an export record, returning it with its stored id."""
+    if db is None:
+        return record
+
+    from app.models.edge_export import ModelExport
+
+    row = ModelExport(
+        workspace_id=_uuid_or_none(workspace_id),
+        model_id=str(record.get("model_id", "")),
+        format=",".join(record.get("formats", [])) or "onnx",
+        status=record.get("status", "completed"),
+        file_size_mb=record.get("total_size_mb"),
+        details=record,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    record["export_id"] = str(row.id)
+    return record
+
+
+async def _load_export(db, export_id: str) -> dict | None:
+    if db is None:
+        return None
+
+    from sqlalchemy import select
+
+    from app.models.edge_export import ModelExport
+
+    eid = _uuid_or_none(export_id)
+    if eid is None:
+        return None
+    row = (
+        await db.execute(select(ModelExport).where(ModelExport.id == eid))
+    ).scalar_one_or_none()
+    return dict(row.details or {}, export_id=str(row.id)) if row else None
 
 
 class ExportPipeline:
@@ -45,6 +97,7 @@ class ExportPipeline:
         model_id: str,
         formats: list[str],
         optimization_level: str = "basic",
+        workspace_id: str | None = None,
     ) -> dict:
         """Export a model to one or more formats.
 
@@ -112,23 +165,35 @@ class ExportPipeline:
             "total_size_mb": round(total_size, 4),
             "status": "completed",
         }
-        _exports[export_id] = record
-        return record
+        return await _save_export(db, workspace_id, record)
 
     # ------------------------------------------------------------------
     # Status / listing
     # ------------------------------------------------------------------
 
-    async def get_export_status(self, export_id: str) -> dict:
-        if export_id not in _exports:
+    async def get_export_status(self, export_id: str, db: Any = None) -> dict:
+        record = await _load_export(db, export_id)
+        if record is None:
             return {"export_id": export_id, "status": "not_found"}
-        return _exports[export_id]
+        return record
 
     async def list_exports(self, db: Any, workspace_id: str) -> list[dict]:
-        return list(_exports.values())
+        if db is None:
+            return []
 
-    async def download_export(self, export_id: str, fmt: str) -> str:
-        record = _exports.get(export_id)
+        from sqlalchemy import select
+
+        from app.models.edge_export import ModelExport
+
+        stmt = select(ModelExport)
+        ws = _uuid_or_none(workspace_id)
+        if ws is not None:
+            stmt = stmt.where(ModelExport.workspace_id == ws)
+        rows = (await db.execute(stmt.order_by(ModelExport.created_at))).scalars().all()
+        return [dict(r.details or {}, export_id=str(r.id)) for r in rows]
+
+    async def download_export(self, export_id: str, fmt: str, db: Any = None) -> str:
+        record = await _load_export(db, export_id)
         if not record:
             raise FileNotFoundError(f"Export {export_id} not found")
         fmt_data = record["exports"].get(fmt, {})
@@ -147,6 +212,7 @@ class ExportPipeline:
         model_id: str,
         fmt: str,
         config: dict | None = None,
+        workspace_id: str | None = None,
     ) -> dict:
         """Create a deployable edge package: model + config + requirements + sample code."""
         package_id = str(uuid.uuid4())
@@ -189,7 +255,22 @@ class ExportPipeline:
             "includes": includes,
             "path": str(pkg_dir),
         }
-        _packages[package_id] = record
+        if db is not None:
+            from app.models.edge_fleet import OfflinePackage
+
+            row = OfflinePackage(
+                workspace_id=_uuid_or_none(workspace_id),
+                model_id=str(model_id or ""),
+                device_type=str((config or {}).get("target", "")),
+                model_format=fmt,
+                size_mb=round(size_mb, 4),
+                contents=includes,
+            )
+            db.add(row)
+            await db.commit()
+            await db.refresh(row)
+            record["package_id"] = str(row.id)
+
         return record
 
     # ------------------------------------------------------------------

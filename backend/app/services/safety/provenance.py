@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-import uuid
-from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.provenance import ProvenanceAction, ProvenanceEvent
 
-# In-memory provenance store (for use without a real DB)
-_provenance_store: dict[str, list[dict]] = {}
-
-VALID_ACTIONS = {"created", "transformed", "exported", "shared", "ai_generated", "annotated"}
+VALID_ACTIONS = {a.value for a in ProvenanceAction}
 
 
 class ProvenanceTracker:
@@ -24,57 +22,65 @@ class ProvenanceTracker:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def record_provenance(
-        db: Any,
+    async def record_provenance(
+        db: AsyncSession,
         asset_id: str,
         action: str,
         user_id: str,
         details: dict | None = None,
+        workspace_id: str | None = None,
     ) -> dict:
-        """Record a provenance event for an asset.
+        """Append a provenance event for an asset.
 
-        If *db* is ``None``, uses an in-memory store.  Otherwise attempts to
-        create an ``AuditLog`` row (best-effort).
-
-        Returns the provenance record dict.
+        Writes a row and commits. A failure to record raises rather than being
+        swallowed: silently dropping an integrity event leaves a chain that
+        looks complete but is not, which is the failure mode this whole table
+        exists to prevent.
         """
         if action not in VALID_ACTIONS:
             raise ValueError(f"Invalid action '{action}'. Must be one of {VALID_ACTIONS}")
 
-        record = {
-            "id": str(uuid.uuid4()),
-            "asset_id": asset_id,
-            "action": action,
-            "user_id": user_id,
-            "details": details or {},
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
+        event = ProvenanceEvent(
+            workspace_id=workspace_id,
+            asset_id=asset_id,
+            action=ProvenanceAction(action),
+            user_id=user_id or None,
+            details=details or {},
+        )
+        db.add(event)
+        await db.commit()
+        await db.refresh(event)
 
-        # Persist to in-memory store
-        _provenance_store.setdefault(asset_id, []).append(record)
-
-        # If a real DB session is provided, also persist there
-        if db is not None:
-            try:
-                from app.models.audit_log import AuditLog
-
-                log = AuditLog(
-                    user_id=user_id if user_id else None,
-                    action=action,
-                    resource=f"asset:{asset_id}",
-                    payload=record,
-                )
-                db.add(log)
-                db.commit()
-            except Exception:
-                pass  # fall back to in-memory only
-
-        return record
+        return ProvenanceTracker._serialise(event)
 
     @staticmethod
-    def get_provenance_chain(db: Any, asset_id: str) -> list[dict]:
+    async def get_provenance_chain(
+        db: AsyncSession,
+        asset_id: str,
+        workspace_id: str | None = None,
+    ) -> list[dict]:
         """Return the full provenance chain for an asset, chronologically."""
-        return list(_provenance_store.get(asset_id, []))
+        stmt = select(ProvenanceEvent).where(ProvenanceEvent.asset_id == asset_id)
+        if workspace_id is not None:
+            stmt = stmt.where(ProvenanceEvent.workspace_id == workspace_id)
+        stmt = stmt.order_by(ProvenanceEvent.timestamp, ProvenanceEvent.id)
+
+        rows = (await db.execute(stmt)).scalars().all()
+        return [ProvenanceTracker._serialise(r) for r in rows]
+
+    @staticmethod
+    def _serialise(event: ProvenanceEvent) -> dict:
+        """Render a stored event in the shape callers and the API expect."""
+        return {
+            "id": str(event.id),
+            "asset_id": event.asset_id,
+            "action": event.action.value
+            if isinstance(event.action, ProvenanceAction)
+            else str(event.action),
+            "user_id": event.user_id,
+            "details": event.details or {},
+            "timestamp": event.timestamp.isoformat() if event.timestamp else None,
+        }
 
     # ------------------------------------------------------------------
     # LSB Steganography — invisible metadata
