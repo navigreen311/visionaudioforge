@@ -45,37 +45,90 @@ docker compose -f docker-compose.prod.yml build --no-cache
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-### 3. Run Migrations
+### 3. Migrations
+
+Nothing to do: the `migrate` service runs `alembic upgrade head` on every `up`
+and `api` will not start until it exits 0. A failed migration fails the boot
+rather than leaving a half-working API pointed at a stale schema.
+
+To re-run them by hand after adding a revision:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm api alembic upgrade head
+docker compose run --rm migrate alembic upgrade head
 ```
 
 ### 4. Verify Deployment
 
+Do not stop at `ps`. "Containers are running" was true of this stack for its
+entire history while it was, in fact, unable to start at all.
+
 ```bash
-docker compose -f docker-compose.prod.yml ps
-curl http://localhost:8000/api/health
-curl http://localhost:3000
+make smoke        # boots and asserts the whole stack; exit status is the verdict
 ```
+
+That checks migrations reached head, both Postgres extensions exist, the bucket
+exists, `/api/health` reports every dependency up, the auth boundary answers 401
+through nginx, the WebSocket upgrade is forwarded, and the Celery worker takes a
+real task off the queue.
+
+The manual equivalents:
+
+```bash
+docker compose ps                      # all healthy; migrate/minio_init exited 0
+curl http://localhost:8000/api/health  # status healthy, db+redis+minio up
+curl -I http://localhost/login         # console through nginx -> 200
+curl -o /dev/null -w '%{http_code}\n' http://localhost/api/assets   # -> 401
+```
+
+A `401` there is the correct answer, not a fault — see [auth.md](auth.md).
 
 ## Environment Variables Reference
 
-| Variable | Description | Default | Required |
+These are the names `Settings` in `backend/app/config.py` actually reads. It is
+**case-sensitive and exact**: a plausible near-miss is silently ignored and the
+application falls back to its default — which for `JWT_SECRET_KEY` means signing
+tokens with a string published in this repository.
+
+An earlier version of this table listed `DATABASE_URL`, `REDIS_URL`,
+`JWT_SECRET` and `JWT_EXPIRE_MINUTES`. **Nothing reads any of those.** A
+deployment configured from that table is running entirely on defaults.
+
+| Variable | Description | Default | Required in prod |
 |---|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://vaf:changeme@db:5432/vaf` | Yes |
-| `POSTGRES_PASSWORD` | Database password | `changeme` | Yes |
-| `REDIS_URL` | Redis connection string | `redis://redis:6379/0` | Yes |
-| `MINIO_ENDPOINT` | MinIO S3 endpoint | `minio:9000` | Yes |
-| `MINIO_ROOT_USER` | MinIO admin username | `minioadmin` | Yes |
-| `MINIO_ROOT_PASSWORD` | MinIO admin password | `minioadmin` | Yes |
-| `MINIO_BUCKET` | Default S3 bucket | `vaf-assets` | Yes |
-| `JWT_SECRET` | JWT signing secret | `change-me-in-production` | Yes |
+| `POSTGRES_HOST` | Database host | `db` | No |
+| `POSTGRES_PORT` | Database port | `5432` | No |
+| `POSTGRES_USER` | Database user | `visionaudio` | Yes |
+| `POSTGRES_PASSWORD` | Database password | `change-me-db-password` | **Yes** |
+| `POSTGRES_DB` | Database name | `visionaudioforge` | Yes |
+| `REDIS_HOST` | Redis host | `redis` | No |
+| `REDIS_PORT` | Redis port | `6379` | No |
+| `REDIS_PASSWORD` | Redis password | (empty) | Recommended |
+| `MINIO_ENDPOINT` | MinIO S3 endpoint | `minio:9000` | No |
+| `MINIO_ACCESS_KEY` | Credential the **application** uses | `minioaccess` | **Yes** |
+| `MINIO_SECRET_KEY` | Credential the **application** uses | `miniosecret` | **Yes** |
+| `MINIO_BUCKET` | Bucket name | `visionaudioforge` | Yes |
+| `JWT_SECRET_KEY` | JWT signing secret — **not** `JWT_SECRET` | `change-me-jwt-secret` | **Yes** |
 | `JWT_ALGORITHM` | JWT algorithm | `HS256` | No |
-| `JWT_EXPIRE_MINUTES` | Token expiry in minutes | `30` | No |
-| `ANTHROPIC_API_KEY` | Anthropic API key | - | Yes |
-| `CELERY_BROKER_URL` | Celery broker URL | `redis://redis:6379/1` | Yes |
-| `LOG_LEVEL` | Application log level | `INFO` | No |
+| `JWT_EXPIRATION_MINUTES` | Token expiry | `60` | No |
+| `AUTH_REQUIRED` | App-level auth middleware | `true` | Leave `true` |
+| `DEBUG_ERRORS` | Put exception text in 500 bodies | `false` | Leave `false` |
+| `AUDIT_ENABLED` | Write an audit row per request | `true` | Yes |
+| `CELERY_BROKER_URL` | Celery broker | `redis://redis:6379/0` | Yes |
+| `CELERY_RESULT_BACKEND` | Celery results | `redis://redis:6379/1` | Yes |
+| `ANTHROPIC_API_KEY` | Anthropic API key | (empty) | **No** — empty means the copilot runs in mock mode and the API still starts |
+| `LOG_LEVEL` | Log level | `INFO` | No |
+| `CORS_ORIGINS` | Comma-separated allowed origins | `http://localhost:3000` | Yes |
+
+`MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` configure the MinIO **server** and are
+read by `docker-compose.yml`, not by the application. They must agree with
+`MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY`; compose wires them together for you.
+
+The backend warns at startup if `JWT_SECRET_KEY` is still the default. Check
+for it before declaring a deployment done:
+
+```bash
+docker compose logs api | grep -i "JWT_SECRET_KEY"
+```
 
 ## Scaling Guide
 
