@@ -52,6 +52,16 @@ from app.models.provenance import (
     ProvenanceAction,
     ProvenanceEvent,
 )
+from app.models.security import (
+    LoginEvent,
+    LoginStatus,
+    UserSession,
+    UserTwoFactor,
+)
+from app.models.settings import (
+    AppearancePreference,
+    WorkspaceIntegration,
+)
 from app.models.edge_fleet import (
     EdgeDevice,
     DeviceMetric,
@@ -115,6 +125,12 @@ __all__ = [
     "EvidenceBundleItem",
     "ProvenanceAction",
     "ProvenanceEvent",
+    "LoginEvent",
+    "LoginStatus",
+    "UserSession",
+    "UserTwoFactor",
+    "AppearancePreference",
+    "WorkspaceIntegration",
     "BYOMModel",
     "CustomNode",
     "InstalledPlugin",
