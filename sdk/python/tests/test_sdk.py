@@ -71,7 +71,7 @@ async def test_vision_analyze_builds_request(tmp_path):
     img.write_bytes(b"\xff\xd8fake-image")
 
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/v1/vision/analyze").mock(
+        route = mock.post("/api/vision/analyze").mock(
             return_value=httpx.Response(200, json={"detections": [], "metadata": {}})
         )
         client = VAFClient(base_url=BASE, api_key="k")
@@ -91,7 +91,7 @@ async def test_audio_analyze_builds_request(tmp_path):
     audio.write_bytes(b"RIFF" + b"\x00" * 40)
 
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/v1/audio/analyze").mock(
+        route = mock.post("/api/audio/analyze").mock(
             return_value=httpx.Response(
                 200,
                 json={"duration": 3.5, "sample_rate": 44100, "channels": 2, "features": {}},
@@ -112,7 +112,7 @@ async def test_audio_analyze_builds_request(tmp_path):
 async def test_search_query_builds_request():
     """SearchClient.query sends JSON body for text-only search."""
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/v1/search/query").mock(
+        route = mock.post("/api/search/query").mock(
             return_value=httpx.Response(
                 200,
                 json={"results": [{"asset_id": "a1", "score": 0.95, "metadata": {}}]},
@@ -134,7 +134,7 @@ async def test_search_query_builds_request():
 async def test_pipeline_create():
     """PipelineClient.create sends correct payload."""
     with respx.mock(base_url=BASE) as mock:
-        route = mock.post("/api/v1/pipelines").mock(
+        route = mock.post("/api/pipeline/create").mock(
             return_value=httpx.Response(
                 200,
                 json={"id": "p1", "name": "ingest", "definition": {"steps": []}, "status": "created"},
@@ -170,7 +170,7 @@ async def test_error_handling_401():
 async def test_error_handling_404():
     """404 responses raise NotFoundError."""
     with respx.mock(base_url=BASE) as mock:
-        mock.get("/api/v1/models/experiments/missing").mock(
+        mock.get("/api/experiments/missing").mock(
             return_value=httpx.Response(404, json={"detail": "Not found"})
         )
         client = VAFClient(base_url=BASE, api_key="k")

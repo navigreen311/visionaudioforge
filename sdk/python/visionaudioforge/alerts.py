@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class AlertClient:
-    """Wraps the /api/v1/alerts endpoints."""
+    """Wraps the /api/alerts endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -20,7 +20,7 @@ class AlertClient:
         """Create a new alert."""
         resp = await self._client._request(
             "POST",
-            "/api/v1/alerts",
+            "/api/alerts",
             json={"type": type, "message": message, "severity": severity},
         )
         return Alert.model_validate(resp)
@@ -30,15 +30,15 @@ class AlertClient:
         params: dict[str, Any] = {}
         if severity:
             params["severity"] = severity
-        resp = await self._client._request("GET", "/api/v1/alerts", params=params)
+        resp = await self._client._request("GET", "/api/alerts", params=params)
         items = resp if isinstance(resp, list) else resp.get("alerts", [])
         return [Alert.model_validate(a) for a in items]
 
     async def get(self, alert_id: str) -> Alert:
         """Get an alert by ID."""
-        resp = await self._client._request("GET", f"/api/v1/alerts/{alert_id}")
+        resp = await self._client._request("GET", f"/api/alerts/{alert_id}")
         return Alert.model_validate(resp)
 
     async def dismiss(self, alert_id: str) -> None:
         """Dismiss an alert."""
-        await self._client._request("DELETE", f"/api/v1/alerts/{alert_id}")
+        await self._client._request("DELETE", f"/api/alerts/{alert_id}")

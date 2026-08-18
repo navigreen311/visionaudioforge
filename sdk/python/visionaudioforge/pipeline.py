@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class PipelineClient:
-    """Wraps the /api/v1/pipelines endpoints."""
+    """Wraps the /api/pipeline endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -20,7 +20,7 @@ class PipelineClient:
         """Create a new pipeline."""
         resp = await self._client._request(
             "POST",
-            "/api/v1/pipelines",
+            "/api/pipeline/create",
             json={"name": name, "definition": definition},
         )
         return Pipeline.model_validate(resp)
@@ -28,13 +28,13 @@ class PipelineClient:
     async def run(self, pipeline_id: str) -> PipelineRun:
         """Execute a pipeline."""
         resp = await self._client._request(
-            "POST", f"/api/v1/pipelines/{pipeline_id}/run"
+            "POST", f"/api/pipeline/run/{pipeline_id}"
         )
         return PipelineRun.model_validate(resp)
 
     async def list(self) -> list[Pipeline]:
         """List all pipelines."""
-        resp = await self._client._request("GET", "/api/v1/pipelines")
+        resp = await self._client._request("GET", "/api/pipeline/list")
         items = resp if isinstance(resp, list) else resp.get("pipelines", [])
         return [Pipeline.model_validate(p) for p in items]
 
@@ -42,7 +42,7 @@ class PipelineClient:
         """Generate a pipeline definition from a natural-language description."""
         resp = await self._client._request(
             "POST",
-            "/api/v1/pipelines/generate",
+            "/api/pipeline/generate",
             json={"description": description},
         )
         return Pipeline.model_validate(resp)

@@ -65,7 +65,7 @@ class VAFClient:
     async def login(self, email: str, password: str) -> dict[str, Any]:
         """Authenticate with email/password and store the JWT token."""
         resp = await self._request(
-            "POST", "/api/v1/auth/login", json={"email": email, "password": password}
+            "POST", "/api/auth/login", json={"email": email, "password": password}
         )
         self.token = resp.get("access_token") or resp.get("token")
         return resp
@@ -94,13 +94,25 @@ class VAFClient:
                 detail = response.json()
             except Exception:
                 detail = response.text
-            exc_cls = _ERROR_MAP.get(response.status_code, VAFError)
             message = (
                 detail.get("detail", str(detail))
                 if isinstance(detail, dict)
                 else str(detail)
             )
-            raise exc_cls(message=message, detail=detail)
+
+            exc_cls = _ERROR_MAP.get(response.status_code)
+            if exc_cls is not None:
+                # These subclasses hardcode the status they represent.
+                raise exc_cls(message=message, detail=detail)
+
+            # Anything unmapped — a 418, or a 502 from a proxy sitting in front
+            # of the API — still has to carry its status, or the caller cannot
+            # tell a gateway failure from a bad request.
+            raise VAFError(
+                message=message,
+                status_code=response.status_code,
+                detail=detail,
+            )
 
         if response.status_code == 204:
             return {}

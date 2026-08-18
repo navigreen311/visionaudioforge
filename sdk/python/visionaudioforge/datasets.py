@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 
 class DatasetClient:
-    """Wraps the /api/v1/datasets endpoints."""
+    """Wraps the /api/datasets endpoints."""
 
     def __init__(self, client: VAFClient) -> None:
         self._client = client
@@ -21,29 +21,29 @@ class DatasetClient:
         payload: dict[str, Any] = {"name": name, "format": format}
         if metadata:
             payload["metadata"] = metadata
-        resp = await self._client._request("POST", "/api/v1/datasets", json=payload)
+        resp = await self._client._request("POST", "/api/datasets", json=payload)
         return Dataset.model_validate(resp)
 
     async def list(self) -> list[Dataset]:
         """List all datasets."""
-        resp = await self._client._request("GET", "/api/v1/datasets")
+        resp = await self._client._request("GET", "/api/datasets")
         items = resp if isinstance(resp, list) else resp.get("datasets", [])
         return [Dataset.model_validate(d) for d in items]
 
     async def get(self, dataset_id: str) -> Dataset:
         """Get a dataset by ID."""
-        resp = await self._client._request("GET", f"/api/v1/datasets/{dataset_id}")
+        resp = await self._client._request("GET", f"/api/datasets/{dataset_id}")
         return Dataset.model_validate(resp)
 
     async def delete(self, dataset_id: str) -> None:
         """Delete a dataset."""
-        await self._client._request("DELETE", f"/api/v1/datasets/{dataset_id}")
+        await self._client._request("DELETE", f"/api/datasets/{dataset_id}")
 
     async def create_version(self, dataset_id: str, version: str) -> DatasetVersion:
         """Create a new version of a dataset."""
         resp = await self._client._request(
             "POST",
-            f"/api/v1/datasets/{dataset_id}/versions",
+            f"/api/datasets/{dataset_id}/versions",
             json={"version": version},
         )
         return DatasetVersion.model_validate(resp)
@@ -51,7 +51,7 @@ class DatasetClient:
     async def list_versions(self, dataset_id: str) -> list[DatasetVersion]:
         """List all versions of a dataset."""
         resp = await self._client._request(
-            "GET", f"/api/v1/datasets/{dataset_id}/versions"
+            "GET", f"/api/datasets/{dataset_id}/versions"
         )
         items = resp if isinstance(resp, list) else resp.get("versions", [])
         return [DatasetVersion.model_validate(v) for v in items]
