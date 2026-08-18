@@ -7,8 +7,14 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import async_session_factory
+from app import database
 from app.schemas.common import HealthResponse, ServiceHealth
+
+# A 2s budget is not enough on a dual-stack host: "localhost" resolves to ::1
+# first, and when the server listens on IPv4 only the whole budget is spent on
+# the IPv6 attempt before IPv4 is tried. The check then reports a Redis that is
+# up as down — a health check that cries wolf is worse than none.
+REDIS_CONNECT_TIMEOUT_S = 5
 
 router = APIRouter(tags=["health"])
 
@@ -19,7 +25,7 @@ async def _check_database() -> ServiceHealth:
     """Probe PostgreSQL with SELECT 1."""
     try:
         t0 = time.monotonic()
-        async with async_session_factory() as session:
+        async with database.async_session_factory() as session:
             await session.execute(text("SELECT 1"))
         latency = (time.monotonic() - t0) * 1000
         return ServiceHealth(status="up", latency_ms=round(latency, 2))
@@ -33,7 +39,7 @@ async def _check_redis() -> ServiceHealth:
         import redis.asyncio as aioredis
 
         t0 = time.monotonic()
-        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=REDIS_CONNECT_TIMEOUT_S)
         await r.ping()
         await r.aclose()
         latency = (time.monotonic() - t0) * 1000

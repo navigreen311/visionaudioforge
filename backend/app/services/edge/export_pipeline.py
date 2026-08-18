@@ -3,6 +3,7 @@ edge-deployment packaging."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -258,6 +259,14 @@ class ExportPipeline:
         if db is not None:
             from app.models.edge_fleet import OfflinePackage
 
+            # offline_packages.checksum is NOT NULL: a package that ships
+            # without one cannot be verified after transfer, which is the
+            # reason to record a checksum at all.
+            manifest = json.dumps(
+                {"model_id": model_id, "format": fmt, "includes": includes},
+                sort_keys=True,
+            )
+
             row = OfflinePackage(
                 workspace_id=_uuid_or_none(workspace_id),
                 model_id=str(model_id or ""),
@@ -265,6 +274,7 @@ class ExportPipeline:
                 model_format=fmt,
                 size_mb=round(size_mb, 4),
                 contents=includes,
+                checksum=hashlib.sha256(manifest.encode()).hexdigest(),
             )
             db.add(row)
             await db.commit()

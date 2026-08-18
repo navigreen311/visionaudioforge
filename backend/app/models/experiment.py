@@ -1,15 +1,35 @@
-from sqlalchemy import Column, Float, ForeignKey, Integer, String
+import enum
+
+from sqlalchemy import Column, Enum, Float, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
 
 
+class ExperimentStatus(str, enum.Enum):
+    """Lifecycle states for a training experiment.
+
+    Mirrors the `experimentstatus` Postgres enum. Declared as String here, so
+    a plain-string assignment was rejected by asyncpg as a datatype mismatch.
+    """
+
+    created = "created"
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class Experiment(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "experiments"
 
     name = Column(String(255), nullable=False)
-    status = Column(String(50), nullable=False, default="created")
+    status = Column(
+        Enum(ExperimentStatus, name="experimentstatus"),
+        nullable=False,
+        default=ExperimentStatus.created,
+    )
     config = Column(JSON, nullable=True, default=dict)
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False)
     model_id = Column(UUID(as_uuid=True), ForeignKey("model_registry.id"), nullable=True)

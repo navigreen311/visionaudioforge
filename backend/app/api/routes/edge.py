@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from typing import Any
@@ -14,8 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_async_session
 from app.models.edge_export import EdgeBenchmark, ModelExport
 from app.models.edge_fleet import EdgeDevice, OfflinePackage
+from app.services.edge.export_pipeline import ExportPipeline
 
 router = APIRouter(prefix="/api/edge", tags=["edge"])
+
+_export_pipeline = ExportPipeline()
 
 
 # ---------------------------------------------------------------------------
@@ -32,8 +37,17 @@ class ExportRequest(BaseModel):
 class MultiFormatExportRequest(BaseModel):
     model_id: str
     formats: list[str] = Field(default_factory=lambda: ["onnx"])
+    # Callers that export one format send `format`. It used to be dropped
+    # silently and the default ["onnx"] used instead, so asking for tflite
+    # quietly produced ONNX.
+    format: str | None = None
     optimize: bool = True
     quantize: bool = False
+
+    def requested_formats(self) -> list[str]:
+        if self.format:
+            return [self.format]
+        return self.formats
 
 
 class PackageRequest(BaseModel):
@@ -72,6 +86,8 @@ def _uuid_or_404(value: str, what: str) -> uuid.UUID:
 def _serialise_export(row: ModelExport) -> dict[str, Any]:
     return {
         "id": str(row.id),
+        # Callers key on export_id; `id` is kept for older ones.
+        "export_id": str(row.id),
         "model_id": row.model_id,
         "format": row.format,
         "optimize": row.optimize,
@@ -83,12 +99,15 @@ def _serialise_export(row: ModelExport) -> dict[str, Any]:
     }
 
 
+# Each entry carries both "format" and "name": callers key on "format", and the
+# console renders "name". webgpu is listed because ModelConverter exports it.
 SUPPORTED_FORMATS = [
-    {"name": "onnx", "description": "Open Neural Network Exchange", "extensions": [".onnx"]},
-    {"name": "tensorrt", "description": "NVIDIA TensorRT", "extensions": [".engine"]},
-    {"name": "tflite", "description": "TensorFlow Lite", "extensions": [".tflite"]},
-    {"name": "coreml", "description": "Apple Core ML", "extensions": [".mlmodel"]},
-    {"name": "openvino", "description": "Intel OpenVINO", "extensions": [".xml", ".bin"]},
+    {"format": "onnx", "name": "onnx", "description": "Open Neural Network Exchange", "extensions": [".onnx"]},
+    {"format": "tensorrt", "name": "tensorrt", "description": "NVIDIA TensorRT", "extensions": [".engine"]},
+    {"format": "tflite", "name": "tflite", "description": "TensorFlow Lite", "extensions": [".tflite"]},
+    {"format": "coreml", "name": "coreml", "description": "Apple Core ML", "extensions": [".mlmodel"]},
+    {"format": "openvino", "name": "openvino", "description": "Intel OpenVINO", "extensions": [".xml", ".bin"]},
+    {"format": "webgpu", "name": "webgpu", "description": "WebGPU / in-browser inference", "extensions": [".json", ".bin"]},
 ]
 
 # Format metadata for estimates
@@ -134,28 +153,28 @@ async def format_estimates(
 
 @router.post("/export")
 async def export_model(
-    body: ExportRequest,
+    body: MultiFormatExportRequest,
     workspace_id: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
-    """Start an export job for a model to an edge-optimized format."""
-    row = ModelExport(
-        workspace_id=_ws(workspace_id),
-        model_id=body.model_id,
-        format=body.format,
-        optimize=body.optimize,
-        quantize=body.quantize,
-        status="completed",
-        file_size_mb=_FORMAT_META.get(body.format, {}).get("size_mb"),
+    """Export a model to one or more edge formats.
+
+    Delegates to ExportPipeline, which performs the conversions and returns a
+    per-format result; the record is persisted so the artefacts it produced can
+    be found again after a restart.
+    """
+    formats = body.requested_formats()
+    record = await _export_pipeline.export_model(
+        db,
+        body.model_id,
+        formats,
+        workspace_id=workspace_id,
     )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
-
-    row.download_url = f"/api/edge/exports/{row.id}/download"
-    await db.commit()
-
-    return {"job_id": str(row.id)}
+    # Echo the singular `format` for single-format exports; multi-format
+    # callers keep reading `formats`.
+    if len(formats) == 1:
+        record.setdefault("format", formats[0])
+    return record
 
 
 @router.get("/export/{job_id}/status")
@@ -241,38 +260,24 @@ async def create_package(
     workspace_id: str | None = Query(None),
     db: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
-    """Package a model with runtime for edge deployment."""
-    contents = [
-        {"name": f"model.{body.format}", "size_bytes": 44_564_480},
-        {"name": "runtime.so", "size_bytes": 8_192_000},
-        {"name": "config.json", "size_bytes": 1_024},
-        {"name": "labels.txt", "size_bytes": 512},
-    ]
-    if not body.include_runtime:
-        contents = [c for c in contents if c["name"] != "runtime.so"]
-    total_bytes = sum(c["size_bytes"] for c in contents)
-    row = OfflinePackage(
-        workspace_id=_ws(workspace_id),
-        model_id=body.model_id,
-        device_type=body.target_platform,
-        model_format=body.format,
-        size_mb=round(total_bytes / (1024 * 1024), 2),
-        contents=contents,
-    )
-    db.add(row)
-    await db.commit()
-    await db.refresh(row)
+    """Build a deployable edge package: model, config, requirements, sample code.
 
+    Delegates to ExportPipeline, which writes the package to disk and reports
+    what it contains, then records it in offline_packages so the artefact can
+    be found again after a restart.
+    """
+    record = await _export_pipeline.create_edge_package(
+        db,
+        body.model_id,
+        body.format,
+        config={"target": body.target_platform},
+        workspace_id=workspace_id,
+    )
     return {
-        "package_id": str(row.id),
-        "contents": contents,
-        "download_url": f"/api/edge/packages/{row.id}/download",
+        **record,
+        "download_url": f"/api/edge/packages/{record['package_id']}/download",
     }
 
-
-# ---------------------------------------------------------------------------
-# Benchmark
-# ---------------------------------------------------------------------------
 
 @router.post("/benchmark")
 async def start_benchmark(body: BenchmarkRequest) -> dict[str, Any]:

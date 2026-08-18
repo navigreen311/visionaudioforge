@@ -271,7 +271,17 @@ async def install_pack(
     await db.commit()
     await db.refresh(job)
 
-    return {"job_id": str(job.id)}
+    # The install has already finished by the time this returns, so report the
+    # outcome rather than handing back a job id to poll for a completed job.
+    return {
+        "job_id": str(job.id),
+        "pack_id": body.pack_id,
+        "status": "installed",
+        "version": pack["version"],
+        "modules": list(pack["modules"]),
+        "pipelines": list(pack["pipelines"]),
+        "alerts": list(pack["alerts"]),
+    }
 
 
 @router.get("/install/{job_id}/status")

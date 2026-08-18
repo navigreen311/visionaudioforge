@@ -53,13 +53,16 @@ class DatasetService:
         workspace_id: uuid.UUID,
     ) -> Dataset:
         """Create a new dataset record."""
+        # The `datasets` table has name/modality/version/stats/sample_count.
+        # This wrote format/description/item_count/size_bytes/metadata_, none
+        # of which exist, so creating a dataset raised TypeError every time.
+        # Totals that have no column of their own live in the stats JSON.
         dataset = Dataset(
             name=name,
-            format=modality,
-            description=f"{modality} dataset",
-            item_count=0,
-            size_bytes=0,
-            metadata_={"modality": modality, "version": 1},
+            modality=modality,
+            version="1.0",
+            stats={"description": f"{modality} dataset", "total_size_bytes": 0},
+            sample_count=0,
             workspace_id=workspace_id,
         )
         db.add(dataset)
@@ -97,7 +100,7 @@ class DatasetService:
             select(Dataset).where(Dataset.id == dataset_id)
         )
         dataset = result.scalar_one_or_none()
-        if dataset and not dataset.metadata_.get("stats"):
+        if dataset and not (dataset.stats or {}).get("stats"):
             # Lazy-compute stats if missing
             await DatasetService.compute_stats(db, dataset_id)
             await db.refresh(dataset)
@@ -157,7 +160,7 @@ class DatasetService:
                 errors.append(f"{f.filename}: {exc}")
 
         # Update sample count
-        dataset.item_count = (dataset.item_count or 0) + uploaded
+        dataset.sample_count = (dataset.sample_count or 0) + uploaded
         await db.commit()
 
         return {"uploaded": uploaded, "failed": failed, "errors": errors}
@@ -234,11 +237,11 @@ class DatasetService:
             "label_distribution": dict(label_distribution),
         }
 
-        meta = dict(dataset.metadata_ or {})
+        meta = dict(dataset.stats or {})
         meta["stats"] = stats
-        dataset.metadata_ = meta
-        dataset.item_count = total_samples
-        dataset.size_bytes = total_size
+        meta["total_size_bytes"] = total_size
+        dataset.stats = meta
+        dataset.sample_count = total_samples
         await db.commit()
 
         return stats
@@ -315,9 +318,9 @@ class DatasetService:
         dataset = await db.get(Dataset, dataset_id)
         if dataset is None:
             return False
-        meta = dict(dataset.metadata_ or {})
+        meta = dict(dataset.stats or {})
         meta["archived"] = True
-        dataset.metadata_ = meta
+        dataset.stats = meta
         await db.commit()
         return True
 
@@ -348,10 +351,10 @@ class DatasetService:
             "dataset": {
                 "id": str(dataset.id),
                 "name": dataset.name,
-                "modality": dataset.format,
-                "sample_count": dataset.item_count,
-                "size_bytes": dataset.size_bytes,
-                "stats": (dataset.metadata_ or {}).get("stats"),
+                "modality": str(getattr(dataset.modality, "value", dataset.modality)),
+                "sample_count": dataset.sample_count,
+                "size_bytes": (dataset.stats or {}).get("total_size_bytes", 0),
+                "stats": (dataset.stats or {}).get("stats"),
             },
             "samples": [
                 {

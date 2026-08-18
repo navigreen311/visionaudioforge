@@ -1,4 +1,5 @@
 import enum
+import uuid
 
 from sqlalchemy import Column, Enum, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSON, UUID
@@ -11,6 +12,13 @@ class PlanType(str, enum.Enum):
     free = "free"
     pro = "pro"
     enterprise = "enterprise"
+
+
+# Rows that arrive without a tenant are filed here rather than being dropped
+# or given an invented workspace id that no row could satisfy. Created by
+# migration 022. It is a holding area, not a tenant: nothing grants access to
+# it, and anything filed here is unattributed by definition.
+SYSTEM_WORKSPACE_ID = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
 
 class Workspace(UUIDMixin, TimestampMixin, Base):

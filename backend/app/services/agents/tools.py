@@ -8,6 +8,12 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
+# A 2s budget is not enough on a dual-stack host: "localhost" resolves to ::1
+# first, and when the server listens on IPv4 only the whole budget is spent on
+# the IPv6 attempt before IPv4 is tried. The check then reports a Redis that is
+# up as down — a health check that cries wolf is worse than none.
+REDIS_CONNECT_TIMEOUT_S = 5
+
 logger = logging.getLogger(__name__)
 
 COPILOT_TOOLS: list[dict] = [
@@ -463,7 +469,7 @@ async def _get_system_status_real() -> dict:
 
         from app.config import settings
 
-        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=REDIS_CONNECT_TIMEOUT_S)
         await r.ping()
         await r.aclose()
         services["redis"] = "up"

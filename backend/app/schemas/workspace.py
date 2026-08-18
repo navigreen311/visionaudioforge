@@ -21,6 +21,9 @@ class WorkspaceRead(BaseModel):
 
 class WorkspaceUpdate(BaseModel):
     name: Optional[str] = None
+    # The workspaces table has had a plan column all along; leaving it out of
+    # the update schema meant a plan change could not be sent at all.
+    plan: Optional[str] = None
     settings: Optional[dict] = None
 
 

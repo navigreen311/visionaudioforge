@@ -13,9 +13,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from dataclasses import asdict
+
 from app.database import get_async_session
 from app.models.simulation import SimulationRun as SimulationRunModel
 from app.models.simulation import SimulationScenario
+from app.services.simulation.scenario_generator import ScenarioGenerator
+from app.services.simulation.stress_tester import StressTestConfig, StressTester
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -421,3 +425,102 @@ async def get_report(
         "results": results,
         "summary": f"Simulation completed with {error_rate*100:.1f}% error rate" if results else "Simulation completed",
     }
+
+
+# ---------------------------------------------------------------------------
+# Scenario generation
+# ---------------------------------------------------------------------------
+
+
+class ScenarioGenerateRequest(BaseModel):
+    """Generate a synthetic scenario of a known type."""
+
+    type: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    seed: int | None = None
+    workspace_id: str | None = None
+
+
+@router.post("/scenarios/generate")
+async def generate_scenario_of_type(
+    body: ScenarioGenerateRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Generate and store a scenario of the requested type.
+
+    An unknown type is a 400 rather than a 500: the caller asked for something
+    this build does not know how to synthesise, which is their error to fix.
+    """
+    generator = ScenarioGenerator(seed=body.seed)
+
+    try:
+        scenario = generator.generate_scenario(body.type, body.params)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    row = SimulationScenario(
+        workspace_id=uuid.UUID(str(body.workspace_id)) if body.workspace_id else None,
+        name=f"{body.type} scenario",
+        scenario_type=body.type,
+        definition=scenario,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    return {**scenario, "scenario_id": str(row.id)}
+
+
+# ---------------------------------------------------------------------------
+# Stress testing, edge cases and benchmarking
+# ---------------------------------------------------------------------------
+
+
+class StressTestRequest(BaseModel):
+    target_module: str = "vision"
+    concurrent_requests: int = Field(10, ge=1, le=500)
+    duration_s: float = Field(5.0, gt=0, le=300)
+    payload_type: str = "medium"
+    workspace_id: str | None = None
+
+
+class EdgeCaseRequest(BaseModel):
+    model_name: str
+
+
+class BenchmarkRequest(BaseModel):
+    pipeline_id: str
+    iterations: int = Field(100, ge=1, le=10_000)
+
+
+@router.post("/stress-test")
+async def run_stress_test(
+    body: StressTestRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Drive concurrent load and report throughput and latency.
+
+    Without a real target callable the harness drives a deterministic
+    in-process workload, and the result carries `synthetic: true` — the latency
+    figures then describe the harness, not the target module.
+    """
+    config = StressTestConfig(
+        target_module=body.target_module,
+        concurrent_requests=body.concurrent_requests,
+        duration_s=body.duration_s,
+        payload_type=body.payload_type,
+    )
+    result = await StressTester().run_stress_test(db, body.workspace_id or "", config)
+    return asdict(result)
+
+
+@router.post("/edge-cases")
+async def run_edge_cases(body: EdgeCaseRequest) -> dict[str, Any]:
+    """Run the edge-case input battery against a model."""
+    return await StressTester().run_edge_case_suite(body.model_name)
+
+
+@router.post("/benchmark")
+async def run_benchmark(body: BenchmarkRequest) -> dict[str, Any]:
+    """Benchmark a pipeline's latency and identify its slowest node."""
+    return await StressTester().benchmark_pipeline(body.pipeline_id, body.iterations)

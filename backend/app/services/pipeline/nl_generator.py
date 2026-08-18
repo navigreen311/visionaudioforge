@@ -7,6 +7,26 @@ import uuid
 from typing import Any
 
 
+
+def _singular(word: str) -> str:
+    """Strip a plural 's', leaving words like "class" and "similar" alone."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
+def _tokenise(text: str) -> set[str]:
+    """Split into words, keeping both the word and its singular form.
+
+    The patterns are written with singular keywords ("object", "image") while
+    people describe pipelines in the plural ("detect objects in images"). Every
+    such description scored 1 against a threshold of 2 and fell through to the
+    generic input-plus-save fallback, so asking for object detection produced a
+    pipeline that detected nothing.
+    """
+    words = re.findall(r"[a-z]+", text)
+    return {w for word in words for w in (word, _singular(word))}
+
 # Mapping from keywords to node type sequences
 _PATTERN_MAP: list[tuple[list[str], list[dict[str, Any]]]] = [
     # "detect objects in images"
@@ -168,13 +188,13 @@ class NLPipelineGenerator:
         Returns a valid pipeline definition ``{"nodes": [...], "edges": [...]}``.
         """
         desc_lower = description.lower()
-        tokens = set(re.findall(r"[a-z]+", desc_lower))
+        tokens = _tokenise(desc_lower)
 
         best_match: list[dict[str, Any]] | None = None
         best_score = 0
 
         for keywords, node_templates in _PATTERN_MAP:
-            score = sum(1 for kw in keywords if kw in tokens)
+            score = sum(1 for kw in keywords if kw in tokens or _singular(kw) in tokens)
             # Require at least 2 keyword matches or all keywords matched
             if score >= min(2, len(keywords)) and score > best_score:
                 best_score = score

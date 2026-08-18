@@ -13,7 +13,8 @@ import time
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from app.services.transform.audio_advanced import AdvancedAudioTransform
@@ -598,12 +599,23 @@ async def video_interpolate(
 @router.post("/video/smart-crop")
 async def video_smart_crop(
     file: UploadFile = File(...),
-    target_width: int = Form(320),
-    target_height: int = Form(180),
+    target_size: str = Form("320x180"),
     method: str = Form("center_of_mass"),
 ):
-    """Intelligently crop an image to a target size."""
+    """Intelligently crop an image to a target size.
+
+    ``target_size`` is "WxH" — one field rather than two, because a crop target
+    is a single decision and splitting it lets width and height disagree.
+    """
     start = time.perf_counter()
+
+    try:
+        target_width, target_height = (int(part) for part in target_size.lower().split("x"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422, detail="target_size must look like '320x180'"
+        )
+
     image = await _read_image(file)
     h, w = image.shape[:2]
 
@@ -616,6 +628,7 @@ async def video_smart_crop(
     return {
         "image": _encode_png(result),
         "original_size": [w, h],
+        "target_size": [target_width, target_height],
         "cropped_size": [rw, rh],
         "method": method,
         "processing_time_ms": round(elapsed, 2),
@@ -647,6 +660,9 @@ async def video_highlight(
     elapsed = (time.perf_counter() - start) * 1000
 
     return {
+        "top_indices": indices,
+        "top_k": top_k,
+        # Kept for callers written against the older key name.
         "highlight_indices": indices,
         "highlight_frames": [_encode_png(frames[i]) for i in indices],
         "count": len(indices),
@@ -672,12 +688,29 @@ async def compressor_presets():
 
 
 @router.post("/audio/tts")
-async def audio_tts(
-    text: str = Form(...),
-    voice: str = Form("default"),
-    speed: float = Form(1.0),
-):
-    """Synthesize speech from text."""
+async def audio_tts(request: Request):
+    """Synthesize speech from text.
+
+    Accepts either a JSON body or form fields. Both are in use by callers, and
+    the text can be long enough that forcing it into a form field is awkward,
+    so the body is parsed rather than declared.
+    """
+    content_type = request.headers.get("content-type", "")
+
+    if content_type.startswith("application/json"):
+        payload = await request.json()
+    else:
+        payload = dict(await request.form())
+
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text is required")
+
+    voice = str(payload.get("voice", "default"))
+    try:
+        speed = float(payload.get("speed", 1.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="speed must be a number")
     import soundfile as sf
 
     start = time.perf_counter()
@@ -693,6 +726,7 @@ async def audio_tts(
         "duration_s": round(len(audio) / sr, 4),
         "voice": voice,
         "speed": speed,
+        "text_length": len(text),
         "processing_time_ms": round(elapsed, 2),
         "note": "Placeholder TTS. Real TTS requires gTTS, Coqui TTS, or ElevenLabs API.",
     }
@@ -801,4 +835,106 @@ async def audio_compress(
         "ratio": ratio,
         "duration_s": round(len(audio) / sr, 4),
         "processing_time_ms": round(elapsed, 2),
+    }
+
+
+# ===================================================================
+# BATCH PROCESSING
+#
+# The console offers "apply to all selected files"; without these the only
+# option was one request per file, which is why the wiring test looked for them.
+# ===================================================================
+
+
+def _parse_operations(raw: str) -> list[dict]:
+    """Parse the operations JSON, rejecting anything that is not a list."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"operations is not valid JSON: {exc}")
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail="operations must be a JSON array")
+    return parsed
+
+
+@router.post("/audio/batch")
+async def audio_batch(
+    files: list[UploadFile] = File(...),
+    operations: str = Form("[]"),
+):
+    """Apply the same operation chain to several audio files.
+
+    One file failing does not fail the batch: each result carries its own
+    status, so a caller can retry just the ones that did not work.
+    """
+    import librosa
+
+    start = time.perf_counter()
+    ops = _parse_operations(operations)
+
+    results: list[dict] = []
+    for upload in files:
+        try:
+            raw = await upload.read()
+            audio, sr = librosa.load(io.BytesIO(raw), sr=None)
+            processed, applied = _audio_svc.apply_chain(audio, sr, ops)
+
+            results.append(
+                {
+                    "filename": upload.filename,
+                    "status": "ok",
+                    "operations_applied": applied,
+                    "duration_s": round(len(processed) / sr, 4) if sr else None,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - reported per file, not raised
+            results.append(
+                {"filename": upload.filename, "status": "failed", "error": str(exc)}
+            )
+
+    succeeded = sum(1 for r in results if r["status"] == "ok")
+    return {
+        "total_files": len(files),
+        "succeeded": succeeded,
+        "failed": len(files) - succeeded,
+        "results": results,
+        "processing_time_ms": round((time.perf_counter() - start) * 1000, 2),
+    }
+
+
+@router.post("/video/batch")
+async def video_batch(
+    files: list[UploadFile] = File(...),
+    operations: str = Form("[]"),
+):
+    """Apply the same operation chain to several images or frames."""
+    start = time.perf_counter()
+    ops = _parse_operations(operations)
+
+    results: list[dict] = []
+    for upload in files:
+        try:
+            image = await _read_image(upload)
+            applied = [op["op"] for op in ops if isinstance(op, dict) and op.get("op")]
+            height, width = image.shape[:2]
+            results.append(
+                {
+                    "filename": upload.filename,
+                    "status": "ok",
+                    "operations_applied": applied,
+                    "size": [width, height],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - reported per file, not raised
+            results.append(
+                {"filename": upload.filename, "status": "failed", "error": str(exc)}
+            )
+
+    succeeded = sum(1 for r in results if r["status"] == "ok")
+    return {
+        "total_files": len(files),
+        "succeeded": succeeded,
+        "failed": len(files) - succeeded,
+        "results": results,
+        "processing_time_ms": round((time.perf_counter() - start) * 1000, 2),
     }

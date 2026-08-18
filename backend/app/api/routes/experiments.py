@@ -11,10 +11,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_optional_workspace_id
 from app.schemas.common import PaginatedResponse
+from app.models.experiment import Experiment
+from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.services.models.experiments import ExperimentService
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -88,7 +91,8 @@ class ExperimentCreate(BaseModel):
     name: str
     config: dict[str, Any] = Field(default_factory=dict)
     model_id: uuid.UUID | None = None
-    workspace_id: uuid.UUID
+    # Optional: the caller's own workspace supplies it when the body does not.
+    workspace_id: uuid.UUID | None = None
 
 
 class EpochLog(BaseModel):
@@ -132,13 +136,23 @@ class ExperimentRead(BaseModel):
 
 @router.get("")
 async def list_experiments(
-    workspace_id: uuid.UUID = Query(...),
+    # Optional so the endpoint answers unscoped callers the way the other
+    # list endpoints do. An unresolvable workspace yields an empty page,
+    # never an unscoped read across tenants.
+    workspace_id: uuid.UUID | None = Query(None),
+    caller_workspace: uuid.UUID | None = Depends(get_optional_workspace_id),
     model_id: uuid.UUID | None = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
 ) -> PaginatedResponse:
     """List experiments for a workspace with optional model filter."""
+    workspace_id = workspace_id or caller_workspace
+    if workspace_id is None:
+        return PaginatedResponse(
+            items=[], total=0, page=1, size=limit, page_size=limit, total_pages=1
+        )
+
     try:
         experiments, total = await ExperimentService.list_experiments(
             db, workspace_id, model_id=model_id, skip=skip, limit=limit
@@ -162,32 +176,31 @@ async def list_experiments(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_experiment(
     body: ExperimentCreate,
+    caller_workspace: uuid.UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new experiment."""
+    # On any failure this used to return a fabricated experiment carrying a
+    # fresh uuid that had never been written. The caller got a 200 and an id
+    # that would 404 on the very next request, and the real error was lost.
+    workspace_id = body.workspace_id or caller_workspace or SYSTEM_WORKSPACE_ID
+
     try:
         experiment = await ExperimentService.create_experiment(
             db,
             name=body.name,
             config=body.config,
             model_id=body.model_id,
-            workspace_id=body.workspace_id,
+            workspace_id=workspace_id,
         )
-        return ExperimentRead.model_validate(experiment).model_dump(mode="json")
-    except Exception:
-        # Fallback mock creation
-        new_id = str(uuid.uuid4())
-        return {
-            "id": new_id,
-            "name": body.name,
-            "status": "created",
-            "config": body.config,
-            "workspace_id": str(body.workspace_id),
-            "model_id": str(body.model_id) if body.model_id else None,
-            "best_epoch": None,
-            "error_message": None,
-            "epochs": [],
-        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=f"workspace_id {workspace_id} does not exist",
+        )
+
+    return ExperimentRead.model_validate(experiment).model_dump(mode="json")
 
 
 @router.get("/{experiment_id}")
@@ -243,19 +256,24 @@ async def cancel_experiment(
     return {"id": str(experiment.id), "status": experiment.status}
 
 
+# Both spellings are in use by callers; one handler serves them.
 @router.post("/{experiment_id}/epochs", status_code=status.HTTP_201_CREATED)
+@router.post("/{experiment_id}/log", status_code=status.HTTP_201_CREATED)
 async def log_epoch(
     experiment_id: uuid.UUID,
     body: EpochLog,
     db: AsyncSession = Depends(get_db),
 ) -> EpochRead:
     """Log an epoch's metrics for an experiment."""
-    try:
-        epoch = await ExperimentService.log_epoch(
-            db, experiment_id, body.epoch, body.metrics
-        )
-    except Exception:
+    # Catching everything here and reporting 404 hid a schema mismatch behind
+    # "Experiment not found" for as long as it existed. Check for the
+    # experiment explicitly and let anything else surface as itself.
+    if await db.get(Experiment, experiment_id) is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
+
+    epoch = await ExperimentService.log_epoch(
+        db, experiment_id, body.epoch, body.metrics
+    )
     return EpochRead.model_validate(epoch)
 
 
@@ -267,12 +285,20 @@ async def get_best_checkpoint(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Get the best checkpoint for an experiment by a given metric."""
+    if await db.get(Experiment, experiment_id) is None:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+
     result = await ExperimentService.get_best_checkpoint(
         db, experiment_id, metric=metric, mode=mode
     )
     if not result:
-        raise HTTPException(status_code=404, detail="No epochs found")
-    return result
+        # 404 here used to mean three different things: no such experiment, no
+        # epochs logged, and epochs logged but none carrying this metric. Only
+        # the first is a missing resource — the others are a real answer to the
+        # question asked.
+        return {"found": False, "metric": metric, "mode": mode, "best": None}
+
+    return {"found": True, "metric": metric, "mode": mode, **result}
 
 
 @router.post("/compare")

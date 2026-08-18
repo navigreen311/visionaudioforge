@@ -5,6 +5,88 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Unreleased] — Backend test suite green
+
+The backend suite had 139 failures. It now has none (1604 passing). Most
+were not flaky tests: they were subsystems that could not work at all,
+kept invisible by broad `except` clauses and by tests that asserted
+against mocks.
+
+### Security
+- **Any registered user could modify any other tenant's workspace.**
+  `require_role("admin")` checks the role string only, and registration
+  makes every self-registered user an admin of the workspace created for
+  them. Nothing compared the workspace in the URL to the caller's own, so
+  a user could read another tenant's workspace and member list, rename
+  it, invite members, change their roles and remove them. All seven
+  workspace-scoped routes now require membership. The test meant to catch
+  this passed a placeholder token while the suite ran with auth disabled,
+  so it asserted nothing.
+- **The governance module was unreachable in a deployed stack.** It was
+  mounted at `/governance` while nginx proxies only `/api` and `/ws` to
+  the backend, so API keys, SSO, billing, permissions and feature flags
+  landed on the frontend. Now under `/api/governance`.
+
+### Fixed
+- **Six tables had drifted from their models** (migrations 018–022).
+  `model_registry` was missing `tags` and `description`;
+  `experiment_epochs` was created with entirely different column names
+  than the model declares; `experiments` never had `error_message`, which
+  every ORM read of an experiment named; `agent_memories` was missing
+  three columns. Because SQLAlchemy names every mapped column in its
+  SELECT, these broke reading as well as writing. `status` on models and
+  experiments is now the Postgres enum it has always been in the
+  database, and `experimentstatus` gained the `cancelled` value the
+  cancel route writes.
+- **Foreign keys were being invented.** Creating an agent, chatting to
+  one, and thirteen other call sites substituted a fresh or nil UUID for
+  a missing workspace or agent. None could satisfy the constraint.
+  Migration 022 creates the system workspace those thirteen already
+  assumed; the rest now say what is missing.
+- **`get_db` bound the session factory at import**, so anything that
+  replaced the engine afterwards was ignored, splitting the app between
+  routes that used the pooled engine and routes that did not.
+- **transformers 5 changed `get_text_features` to return an output
+  object**, so `.squeeze()` raised AttributeError and every text and
+  image search query failed.
+- **Dataset creation was impossible**: the service wrote five columns the
+  table does not have.
+- **Pipeline templates could not run.** Edges were hard-coded to
+  "output" -> "input" while nodes name real ports, and one edge per pair
+  cannot feed a node that needs two inputs. The engine also understood
+  only `from`/`to`, so pipelines built in the React Flow UI died with
+  `KeyError: 'from'`.
+- The natural-language pipeline generator matched singular keywords
+  against plural input, so "detect objects in images" produced a pipeline
+  that detected nothing.
+- The dashboard counted models with statuses that are not in the enum,
+  and bucketed its daily history with `date(created_at)` — which uses the
+  server's timezone while the buckets were built from UTC dates, so on
+  any database not running in UTC every history read as zeros.
+- The Redis health probe allowed 2s to connect; on a dual-stack host the
+  IPv6 attempt consumes that budget before IPv4 is tried, so a healthy
+  Redis was reported as down.
+- Offline `add_note` recorded an Event rather than a FieldNote, so a note
+  written offline vanished after syncing.
+
+### Added
+- `/api/transfer/estimate-cost` and `/api/mobile/sync` (plus sync
+  packages and conflict resolution) — complete services that nothing
+  exposed over HTTP.
+- `CaptureSessionManager(use_redis=False)`, so a session manager can be
+  built without reaching for the shared Redis.
+
+### Changed
+- **67 database-backed tests were skipping in CI.** `db_utils` defaulted
+  to a database name CI never creates, and skips are green, so the whole
+  restart-survival suite had been silently absent from every build. The
+  test database name now falls back to `POSTGRES_DB`.
+- Tests that asserted against mocks of services their routes had stopped
+  using — semantic memory, mobile, experiment creation — now drive the
+  real endpoints against a real database.
+
+---
+
 ## [Unreleased] — Persistence long tail, SDK coverage, honest README
 
 ### Added

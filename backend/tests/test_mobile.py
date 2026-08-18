@@ -455,64 +455,130 @@ def test_biometric_verify_invalid():
 
 
 @pytest.mark.asyncio
-async def test_api_dashboard():
-    """Dashboard API endpoint returns 200 with expected shape."""
-    from unittest.mock import patch
+async def test_api_dashboard_reports_measured_counts_only():
+    """GET /api/mobile/dashboard counts field notes and admits what it cannot measure.
 
-    mock_result = {
-        "alerts": [],
-        "active_streams": 0,
-        "my_shifts": [],
-        "pending_reviews": 0,
-        "notifications": [],
-    }
+    This replaces a test that patched `routes.mobile.MobileAPIService`, which
+    the route does not use, and asserted a shape it no longer returns: stream,
+    alert and review counts used to be the hard-coded numbers 3, 2 and 5, and
+    are now reported as unmeasured rather than invented.
+    """
+    from httpx import ASGITransport, AsyncClient
 
-    with patch(
-        "app.api.routes.mobile.MobileAPIService.get_mobile_dashboard",
-        new_callable=AsyncMock,
-        return_value=mock_result,
-    ):
-        from fastapi.testclient import TestClient
-        from app.api.routes.mobile import router as mobile_router
-        from fastapi import FastAPI
+    from app.database import get_async_session
+    from app.main import app
+    from app.models.field_note import FieldNote
+    from tests.db_utils import (
+        db_session_factory,
+        fresh_engine,
+        requires_postgres,
+        seed_workspace,
+    )
 
-        app = FastAPI()
-        app.include_router(mobile_router)
-        client = TestClient(app)
+    await requires_postgres()
 
-        resp = client.get(
-            "/api/mobile/dashboard",
-            params={"workspace_id": str(WORKSPACE_ID), "user_id": str(USER_ID)},
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    async with factory() as session:
+        workspace_id = await seed_workspace(session, "mobile-dashboard")
+        session.add(
+            FieldNote(
+                workspace_id=workspace_id,
+                title="Gate B check",
+                content="Nothing unusual.",
+            )
         )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "alerts" in data
-        assert "pending_reviews" in data
+        await session.commit()
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.get(
+                "/api/mobile/dashboard", params={"workspace_id": str(workspace_id)}
+            )
+    finally:
+        app.dependency_overrides.pop(get_async_session, None)
+        await engine.dispose()
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["field_notes"] == 1
+    for key in ("active_streams", "recent_alerts", "pending_reviews"):
+        assert data[key] is None, f"{key} should be reported as unmeasured, not guessed"
+        assert key in data["unmeasured"]
 
 
 @pytest.mark.asyncio
-async def test_api_sync():
-    """Sync API endpoint processes actions."""
-    mock_result = {"processed": 1, "failed": 0, "conflicts": []}
+async def test_api_sync_replays_offline_actions():
+    """POST /api/mobile/sync replays a queued action against the database.
 
-    with patch(
-        "app.api.routes.mobile.OfflineSyncService.process_offline_actions",
-        new_callable=AsyncMock,
-        return_value=mock_result,
-    ):
-        from fastapi.testclient import TestClient
-        from app.api.routes.mobile import router as mobile_router
-        from fastapi import FastAPI
+    The endpoint did not exist: OfflineSyncService could replay offline
+    actions, but nothing exposed it, so a mobile client had no way to sync.
+    """
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import func, select
 
-        app = FastAPI()
-        app.include_router(mobile_router)
-        client = TestClient(app)
+    from app.database import get_async_session
+    from app.main import app
+    from app.models.field_note import FieldNote
+    from tests.db_utils import (
+        db_session_factory,
+        fresh_engine,
+        requires_postgres,
+        seed_workspace,
+    )
 
-        resp = client.post(
-            "/api/mobile/sync",
-            json={"actions": [{"type": "add_note", "workspace_id": str(WORKSPACE_ID), "payload": {"content": "test"}}]},
-        )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["processed"] == 1
-        assert data["failed"] == 0
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    async with factory() as session:
+        workspace_id = await seed_workspace(session, "mobile-sync")
+
+    async def _override():
+        async with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_async_session] = _override
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(
+                "/api/mobile/sync",
+                json={
+                    "actions": [
+                        {
+                            "type": "add_note",
+                            "workspace_id": str(workspace_id),
+                            "title": "Queued while offline",
+                            "content": "Recorded at the perimeter.",
+                        }
+                    ]
+                },
+            )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["processed"] == 1
+        assert body["failed"] == 0
+
+        # The action must have actually landed, not merely been counted.
+        async with factory() as session:
+            stored = (
+                await session.execute(
+                    select(func.count())
+                    .select_from(FieldNote)
+                    .where(FieldNote.workspace_id == workspace_id)
+                )
+            ).scalar()
+        assert stored == 1
+    finally:
+        app.dependency_overrides.pop(get_async_session, None)
+        await engine.dispose()

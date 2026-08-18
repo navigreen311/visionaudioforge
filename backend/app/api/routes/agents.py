@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_optional_workspace_id
+from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.database import get_async_session
 from app.models.agent import Agent, AgentMemory
 from app.models.conversation import AgentConversation, AgentMessage
@@ -45,7 +46,9 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    agent_id: str
+    # None when the chat was not tied to an agent: there is then nothing to
+    # recall from and nothing to store to.
+    agent_id: str | None = None
     memories_used: int
 
 
@@ -125,23 +128,50 @@ class FeedbackRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+async def _resolve_chat_agent(db: AsyncSession, agent_id: str | None) -> Agent | None:
+    """Return the Agent a chat belongs to, if one was named.
+
+    A missing agent_id used to become `str(uuid.uuid4())`. `agent_memories`
+    has a foreign key to `agents`, so storing the reply then failed on the
+    constraint and took the whole request down. Chat without an agent is a
+    legitimate thing to do — it just has nowhere to keep memories, so it keeps
+    none.
+    """
+    if not agent_id:
+        return None
+
+    try:
+        key = uuid.UUID(str(agent_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+
+    agent = await db.get(Agent, key)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return agent
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def agent_chat(
     body: ChatRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """Non-streaming chat fallback: collects all tokens and returns full response."""
-    agent_id = body.agent_id or str(uuid.uuid4())
+    agent = await _resolve_chat_agent(db, body.agent_id)
+    agent_id = str(agent.id) if agent else None
+    workspace_id = str(agent.workspace_id) if agent else str(SYSTEM_WORKSPACE_ID)
 
-    # Recall relevant memories
-    memories_list = await memory_service.recall(db, agent_id, query=body.message, k=5)
+    # Recall relevant memories — only an existing agent has any.
+    memories_list = (
+        await memory_service.recall(db, agent_id, query=body.message, k=5) if agent else []
+    )
     memory_strings = [m.content for m in memories_list]
 
     # Collect streamed tokens
     full_response: list[str] = []
     async for event in copilot_service.chat(
         message=body.message,
-        workspace_id="default",
+        workspace_id=workspace_id,
         agent_id=agent_id,
         context=body.context,
         skill_pack=body.skill_pack,
@@ -153,8 +183,9 @@ async def agent_chat(
 
     response_text = "".join(full_response)
 
-    # Store response as memory if it's substantive
-    if len(response_text) > 50:
+    # Store response as memory if it's substantive and there is an agent to
+    # attach it to.
+    if agent is not None and len(response_text) > 50:
         await memory_service.store_memory(
             db, agent_id, response_text[:500], importance_score=0.4
         )
@@ -176,9 +207,12 @@ async def agent_chat_stream(
     CopilotChat reads ``data: {json}`` lines and stops on ``data: [DONE]``,
     forwarding each event's ``type`` (token / tool_use / tool_result / error).
     """
-    agent_id = body.agent_id or str(uuid.uuid4())
+    agent = await _resolve_chat_agent(db, body.agent_id)
+    agent_id = str(agent.id) if agent else None
 
-    memories_list = await memory_service.recall(db, agent_id, query=body.message, k=5)
+    memories_list = (
+        await memory_service.recall(db, agent_id, query=body.message, k=5) if agent else []
+    )
     memory_strings = [m.content for m in memories_list]
 
     async def event_stream():
@@ -249,10 +283,15 @@ async def list_agents(
 @router.post("", status_code=201)
 async def create_agent(
     body: CreateAgentRequest,
+    workspace_id: uuid.UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new agent."""
-    workspace_id = body.workspace_id or str(uuid.uuid4())
+    # This used to fall back to `str(uuid.uuid4())`. `agents.workspace_id` is a
+    # foreign key, so a made-up id could never resolve and every unscoped
+    # create died on the constraint. The system workspace is a real row, so an
+    # agent with no tenant is filed there rather than lost.
+    workspace_id = body.workspace_id or workspace_id or SYSTEM_WORKSPACE_ID
 
     agent = Agent(
         name=body.name,

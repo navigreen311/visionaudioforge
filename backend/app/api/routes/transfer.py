@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db
 from app.services.models.automl import TRAINING_RECIPES, AutoMLService
 from app.services.models.continuous_learning import ContinuousLearningService
+from app.services.models.cost_estimator import TrainingCostEstimator
 from app.services.models.experiments import ExperimentService
 from app.services.models.fewshot import FewShotClassifier
 from app.services.models.training import FinetuneConfig
@@ -260,3 +261,64 @@ async def capture_feedback(body: FeedbackRequest) -> dict[str, Any]:
 async def feedback_queue(model_id: str) -> dict[str, Any]:
     """Get the feedback queue status for a model."""
     return _continuous_learning.get_feedback_queue(model_id)
+
+
+# ---------------------------------------------------------------------------
+# Cost estimation
+# ---------------------------------------------------------------------------
+
+_cost_estimator = TrainingCostEstimator()
+
+
+class CostEstimateRequest(BaseModel):
+    """Inputs for a training cost estimate. Defaults describe a ResNet-18 run."""
+
+    model_config = {"protected_namespaces": ()}
+
+    model_params: int = Field(11_000_000, gt=0)
+    num_epochs: int = Field(10, gt=0)
+    num_samples: int = Field(10_000, gt=0)
+    gpu_type: str = Field("T4")
+
+
+@router.post("/estimate-cost")
+async def estimate_training_cost(body: CostEstimateRequest) -> dict[str, Any]:
+    """Estimate GPU hours and dollar cost for a fine-tuning run.
+
+    The estimator has existed in `services/models/cost_estimator.py` all along
+    but was never mounted, so callers had no way to price a run before starting
+    one.
+    """
+    return _cost_estimator.estimate_cost(body.model_dump())
+
+
+class InferenceCostRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    model_params: int = Field(11_000_000, gt=0)
+    requests_per_day: int = Field(10_000, gt=0)
+
+
+@router.post("/estimate-inference-cost")
+async def estimate_inference_cost(body: InferenceCostRequest) -> dict[str, Any]:
+    """Estimate per-request and monthly serving cost for a model."""
+    return _cost_estimator.estimate_inference_cost(
+        model_params=body.model_params,
+        requests_per_day=body.requests_per_day,
+    )
+
+
+class InstanceRecommendationRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    model_params: int = Field(11_000_000, gt=0)
+    batch_size: int = Field(32, gt=0)
+
+
+@router.post("/recommend-instance")
+async def recommend_instance(body: InstanceRecommendationRequest) -> dict[str, Any]:
+    """Recommend the cheapest GPU whose VRAM fits the model and batch size."""
+    return _cost_estimator.recommend_instance(
+        model_params=body.model_params,
+        batch_size=body.batch_size,
+    )

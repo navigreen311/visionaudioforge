@@ -63,7 +63,9 @@ class EscalationConfigSchema(BaseModel):
 class AlertRuleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     conditions: dict[str, Any]
-    actions: list[dict[str, Any]]
+    # alert_rules.actions is a JSON column: a single action object and a list
+    # of them are both valid, and requiring a list rejected the simple case.
+    actions: dict[str, Any] | list[dict[str, Any]]
     enabled: bool = True
     escalation_config: Optional[dict[str, Any]] = None
 

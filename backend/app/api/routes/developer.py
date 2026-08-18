@@ -6,12 +6,14 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
 from app.models.plugin import CustomNode
+from app.services.plugins.node_sdk import CustomNodeSDK
 
 router = APIRouter(prefix="/api/developer", tags=["developer"])
 
@@ -168,3 +170,47 @@ async def developer_health(
         "sdks_available": ["python", "javascript"],
         "templates_count": templates_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Node SDK — scaffold and validate custom pipeline nodes
+#
+# CustomNodeSDK was implemented and unit-tested but had no route, so the node
+# authoring flow the developer tools advertise could not be driven over HTTP.
+# ---------------------------------------------------------------------------
+
+
+class NodeTemplateRequest(BaseModel):
+    name: str
+    category: str = "custom"
+    description: str = "A custom pipeline node"
+
+
+class NodeValidateRequest(BaseModel):
+    code: str
+
+
+@router.post("/nodes/template")
+async def generate_node_template(body: NodeTemplateRequest) -> dict[str, Any]:
+    """Scaffold a custom node class from a name and category."""
+    return CustomNodeSDK.create_node_template(
+        name=body.name,
+        category=body.category,
+        description=body.description,
+    )
+
+
+@router.post("/nodes/validate")
+async def validate_node_code(body: NodeValidateRequest) -> dict[str, Any]:
+    """Check that submitted code defines a usable custom node."""
+    return CustomNodeSDK.validate_custom_node(body.code)
+
+
+@router.get("/grpc/proto", response_class=PlainTextResponse)
+async def grpc_proto() -> str:
+    """Return the proto definition as text.
+
+    Plain text rather than JSON: callers save this straight to a .proto file
+    and feed it to protoc, so a JSON envelope would have to be unwrapped first.
+    """
+    return (await download_proto())["content"]

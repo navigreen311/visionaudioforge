@@ -88,7 +88,10 @@ class TestConnectionManager:
 
 class TestCaptureSessionManager:
     def setup_method(self):
-        self.mgr = CaptureSessionManager()
+        # In-memory, so each test starts empty. Sharing the configured Redis
+        # meant sessions from every previous run counted towards these
+        # assertions — list_active_sessions("ws-1") saw 18 where it expected 2.
+        self.mgr = CaptureSessionManager(use_redis=False)
 
     def test_create_session(self):
         result = self.mgr.create_session("ws-1", "camera")

@@ -55,8 +55,8 @@ def _dataset_to_read(d) -> DatasetRead:
     # Safely read attributes that may or may not exist on the ORM object
     modality = getattr(d, "modality", None) or getattr(d, "format", "image")
     sample_count = getattr(d, "sample_count", None) or getattr(d, "item_count", 0) or 0
-    size_bytes = getattr(d, "size_bytes", 0) or 0
-    description = getattr(d, "description", None) or ""
+    size_bytes = stats_raw.get("total_size_bytes", 0) or 0
+    description = stats_raw.get("description", "") or ""
     version = getattr(d, "version", "1")
 
     return DatasetRead(
@@ -85,10 +85,21 @@ def _dataset_to_read(d) -> DatasetRead:
 @router.post("", status_code=201)
 async def create_dataset(
     body: DatasetCreate,
+    workspace_id: uuid.UUID | None = Query(None),
     db: AsyncSession = Depends(get_db),
 ) -> DatasetRead:
+    # The workspace may come from the body or the query. Datasets are
+    # workspace-scoped, so neither is a 422 rather than a foreign-key error
+    # from the database.
+    resolved = body.workspace_id or workspace_id
+    if resolved is None:
+        raise HTTPException(
+            status_code=422,
+            detail="workspace_id is required, in the body or as a query parameter",
+        )
+
     dataset = await DatasetService.create_dataset(
-        db, body.name, body.modality, body.workspace_id
+        db, body.name, body.modality, resolved
     )
     return _dataset_to_read(dataset)
 

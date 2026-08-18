@@ -58,11 +58,15 @@ _call_intelligence = CallIntelligence()
 async def analyze(
     file: UploadFile = File(...),
     operations: str = Form('["all"]'),
+    features: str | None = Form(None),
 ):
     """Analyse an uploaded audio file with selectable spectral operations.
 
     *operations* is a JSON array of operation names. Supported values:
     ``"stft"``, ``"mel"``, ``"mfcc"``, ``"power"``, ``"waveform"``, ``"all"``.
+    ``features`` is accepted as an alias: callers use both spellings, and the
+    unrecognised one used to be ignored, so asking for one feature silently
+    computed all of them.
     """
     start = time.perf_counter()
 
@@ -75,7 +79,7 @@ async def analyze(
 
     # --- Parse requested operations ---------------------------------------
     try:
-        ops = json.loads(operations)
+        ops = json.loads(features if features is not None else operations)
         if not isinstance(ops, list):
             raise ValueError("operations must be a JSON array")
     except (json.JSONDecodeError, ValueError) as exc:
@@ -84,14 +88,14 @@ async def analyze(
     run_all = "all" in ops
 
     # --- Run analyses -----------------------------------------------------
-    features: dict = {}
+    computed: dict = {}
     visualizations: dict = {}
 
     try:
         if run_all or "stft" in ops:
             stft = _analyzer.compute_stft(audio, sr)
             mag_db = librosa.amplitude_to_db(stft["magnitude"], ref=np.max)
-            features["stft"] = {
+            computed["stft"] = {
                 "shape": list(stft["magnitude"].shape),
                 "freqs_count": len(stft["freqs"]),
                 "times_count": len(stft["times"]),
@@ -108,7 +112,7 @@ async def analyze(
         if run_all or "mel" in ops:
             mel = _analyzer.compute_mel_spectrogram(audio, sr)
             mel_db = mel["mel_spectrogram"]
-            features["mel"] = {
+            computed["mel"] = {
                 "shape": list(mel_db.shape),
                 "n_mels": int(mel_db.shape[0]),
                 "stats": {
@@ -135,7 +139,7 @@ async def analyze(
                     "std": round(float(np.std(row)), 6),
                     "values": [round(float(v), 4) for v in row[::step]],
                 })
-            features["mfcc"] = {
+            computed["mfcc"] = {
                 "shape": list(mfcc_arr.shape),
                 "n_mfcc": int(mfcc_arr.shape[0]),
                 "coefficients": coefficients,
@@ -144,13 +148,13 @@ async def analyze(
 
         if run_all or "power" in ops:
             power = _analyzer.compute_power_spectrogram(audio, sr)
-            features["power"] = {
+            computed["power"] = {
                 "shape": list(power["power_spec"].shape),
             }
 
         if run_all or "waveform" in ops:
             waveform = _analyzer.compute_waveform_stats(audio, sr)
-            features["waveform"] = waveform
+            computed["waveform"] = waveform
             visualizations["waveform"] = plot_waveform(audio, sr)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Audio processing error: {exc}")
@@ -158,7 +162,11 @@ async def analyze(
     elapsed_ms = (time.perf_counter() - start) * 1000.0
 
     return {
-        "features": features,
+        "features": computed,
+        # Each feature is also exposed at the top level, which is where callers
+        # look for it (`data["stft"]`). Names never collide with the keys
+        # below.
+        **computed,
         "visualizations": visualizations,
         "audio_info": {
             "sample_rate": sr,

@@ -13,7 +13,11 @@ from app.services.governance.feature_flags import FeatureFlagService
 from app.services.governance.permissions import PermissionService
 from app.services.governance.sso import SSOService
 
-router = APIRouter(prefix="/governance", tags=["governance"])
+# Every other router on the platform is mounted under /api, and nginx proxies
+# only /api and /ws to the backend — everything else goes to the frontend. At
+# "/governance" this whole module (API keys, SSO, billing, permissions, feature
+# flags) was unreachable in a deployed stack; requests landed on Next.js.
+router = APIRouter(prefix="/api/governance", tags=["governance"])
 
 
 # --- Request/Response Models ---

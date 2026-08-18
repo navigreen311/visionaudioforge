@@ -58,12 +58,23 @@ def _make_alert(rule_id=None, **overrides) -> Alert:
     return alert
 
 
-def _mock_db_session():
-    """Create a mock async DB session."""
+def _mock_db_session(existing=None):
+    """Create a mock async DB session.
+
+    ``execute`` is configured explicitly: a bare AsyncMock returns a coroutine
+    from every child call, so deduplicate_alert saw a phantom "existing alert"
+    and never reached the code under test. Pass *existing* to simulate a
+    duplicate already being present.
+    """
     db = AsyncMock()
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
     db.add = MagicMock()
+
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = existing
+    result.scalars.return_value.all.return_value = []
+    db.execute = AsyncMock(return_value=result)
     return db
 
 

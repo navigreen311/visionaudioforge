@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_optional_workspace_id
 from app.database import get_async_session
 from app.models.semantic_memory import SemanticMemory
 
@@ -58,6 +59,16 @@ def _serialise(memory: SemanticMemory) -> dict[str, Any]:
     }
 
 
+def _score(value: float) -> float:
+    """Clamp an importance score to 0–1 and round off binary-float noise.
+
+    Promotion and decay repeatedly multiply and add, so without this a memory
+    stored at 0.7 and boosted by 0.2 lands on 0.8999999999999999, and repeated
+    cycles drift further.
+    """
+    return round(min(1.0, max(0.0, value)), 6)
+
+
 def _require_workspace(workspace_id: str | None) -> uuid.UUID:
     """Memories are workspace-scoped; refuse to store one without a workspace."""
     if not workspace_id:
@@ -85,11 +96,14 @@ def _scoped(stmt, workspace_id: str | None):
 @router.post("/store", status_code=201)
 async def store_memory(
     body: MemoryStore,
+    caller_workspace: uuid.UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_async_session),
 ) -> dict[str, Any]:
     """Store a new semantic memory."""
     memory = SemanticMemory(
-        workspace_id=_require_workspace(body.workspace_id),
+        # An authenticated caller's own workspace is a valid source for the
+        # scope; only a request that names none anywhere is refused.
+        workspace_id=_require_workspace(body.workspace_id or caller_workspace),
         content=body.content,
         category=body.category,
         importance=body.importance,
@@ -153,7 +167,7 @@ async def decay_memories(
     rows = (await db.execute(stmt)).scalars().all()
 
     for row in rows:
-        row.importance = row.importance * factor
+        row.importance = _score(row.importance * factor)
         row.importance_score = row.importance
     await db.commit()
 
@@ -178,7 +192,7 @@ async def promote_memory(
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
 
-    memory.importance = min(1.0, memory.importance + boost)
+    memory.importance = _score(memory.importance + boost)
     memory.importance_score = memory.importance
     await db.commit()
     await db.refresh(memory)

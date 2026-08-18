@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert, AlertStatus
+from app.models.field_note import FieldNote
 from app.models.event import Event
 from app.models.integration import SyncConflict
 
@@ -173,14 +174,22 @@ class OfflineSyncService:
                     processed += 1
 
                 elif action_type == "add_note":
-                    event = Event(
-                        id=uuid.uuid4(),
-                        type="field_note",
-                        payload=action.get("payload", {}),
-                        source="mobile_offline",
-                        workspace_id=uuid.UUID(action["workspace_id"]),
+                    # A note written offline has to end up where a note written
+                    # online does. This recorded an Event instead, so a synced
+                    # note never appeared in /mobile/field-notes — the author
+                    # saw it vanish. Fields may arrive at the top level or
+                    # under `payload`, depending on the client.
+                    payload = {**action.get("payload", {}), **action}
+                    db.add(
+                        FieldNote(
+                            workspace_id=uuid.UUID(action["workspace_id"]),
+                            title=payload.get("title", ""),
+                            content=payload.get("content", ""),
+                            location=payload.get("location"),
+                            tags=payload.get("tags") or [],
+                            attachments=payload.get("attachments") or [],
+                        )
                     )
-                    db.add(event)
                     processed += 1
 
                 elif action_type == "upload_evidence":

@@ -39,10 +39,11 @@ class PipelineEngine:
 
         # Check edges reference valid node ids
         for edge in edges:
-            if edge.get("from") not in node_ids:
-                errors.append(f"Edge references unknown source node '{edge.get('from')}'.")
-            if edge.get("to") not in node_ids:
-                errors.append(f"Edge references unknown target node '{edge.get('to')}'.")
+            src, dst = _edge_endpoints(edge)
+            if src not in node_ids:
+                errors.append(f"Edge references unknown source node '{src}'.")
+            if dst not in node_ids:
+                errors.append(f"Edge references unknown target node '{dst}'.")
 
         # Check for cycles via topological sort
         try:
@@ -85,7 +86,7 @@ class PipelineEngine:
         adjacency: dict[str, list[str]] = defaultdict(list)
 
         for edge in edges:
-            src, dst = edge["from"], edge["to"]
+            src, dst = _edge_endpoints(edge)
             adjacency[src].append(dst)
             in_degree[dst] = in_degree.get(dst, 0) + 1
 
@@ -152,7 +153,7 @@ class PipelineEngine:
             # Gather inputs: start with static params, overlay upstream outputs
             inputs = dict(node_def.get("params", {}))
             for edge in incoming.get(nid, []):
-                src_output = node_results.get(edge["from"], {})
+                src_output = node_results.get(_edge_endpoints(edge)[0], {})
                 from_port = edge.get("from_port", "output")
                 to_port = edge.get("to_port", "input")
                 value = src_output.get(from_port, src_output)
@@ -173,3 +174,16 @@ class PipelineEngine:
             "duration_ms": round(duration_ms, 2),
             "errors": errors,
         }
+
+
+def _edge_endpoints(edge: dict) -> tuple[str | None, str | None]:
+    """Return an edge's (source, target) node ids.
+
+    Two vocabularies reach this engine: pipelines authored in the builder come
+    from React Flow and use `source`/`target`, while pipelines defined in code
+    (vertical packs, templates) use `from`/`to`. The engine understood only the
+    latter, so any pipeline built in the UI died with KeyError: 'from'.
+    """
+    src = edge.get("from", edge.get("source"))
+    dst = edge.get("to", edge.get("target"))
+    return src, dst

@@ -464,17 +464,17 @@ Complete API reference for all 327+ endpoints in VisionAudioForge.
 
 | # | Method | Path | Description | Auth | Request | Response |
 |---|--------|------|-------------|------|---------|----------|
-| 233 | `POST` | `/governance/api-keys` | Create API key | Yes | `CreateAPIKeyRequest` (name, scopes, expires_in_days?) | API key result |
-| 234 | `GET` | `/governance/api-keys` | List workspace API keys | Yes | - | Key list (prefix only) |
-| 235 | `DELETE` | `/governance/api-keys/{key_id}` | Revoke API key | Yes | - | `{revoked}` |
-| 236 | `POST` | `/governance/api-keys/{key_id}/rotate` | Rotate API key | Yes | - | New key result |
-| 237 | `GET` | `/governance/sso/config` | Get SSO configuration | Yes | - | SSO config |
-| 238 | `POST` | `/governance/sso/login` | Initiate SSO login | No | `SSOLoginRequest` (workspace_id) | SSO login URL |
-| 239 | `GET` | `/governance/permissions/{role}` | Get role permissions | No | - | `{role, permissions}` |
-| 240 | `GET` | `/governance/billing/usage` | Get workspace usage | Yes | - | Usage data |
-| 241 | `GET` | `/governance/billing/dashboard` | Billing dashboard | Yes | - | Billing dashboard |
-| 242 | `POST` | `/governance/billing/upgrade` | Upgrade workspace plan | Yes | `UpgradePlanRequest` (plan) | Upgrade result |
-| 243 | `GET` | `/governance/features` | Get enabled feature flags | Yes | - | `{plan, features}` |
+| 233 | `POST` | `/api/governance/api-keys` | Create API key | Yes | `CreateAPIKeyRequest` (name, scopes, expires_in_days?) | API key result |
+| 234 | `GET` | `/api/governance/api-keys` | List workspace API keys | Yes | - | Key list (prefix only) |
+| 235 | `DELETE` | `/api/governance/api-keys/{key_id}` | Revoke API key | Yes | - | `{revoked}` |
+| 236 | `POST` | `/api/governance/api-keys/{key_id}/rotate` | Rotate API key | Yes | - | New key result |
+| 237 | `GET` | `/api/governance/sso/config` | Get SSO configuration | Yes | - | SSO config |
+| 238 | `POST` | `/api/governance/sso/login` | Initiate SSO login | No | `SSOLoginRequest` (workspace_id) | SSO login URL |
+| 239 | `GET` | `/api/governance/permissions/{role}` | Get role permissions | No | - | `{role, permissions}` |
+| 240 | `GET` | `/api/governance/billing/usage` | Get workspace usage | Yes | - | Usage data |
+| 241 | `GET` | `/api/governance/billing/dashboard` | Billing dashboard | Yes | - | Billing dashboard |
+| 242 | `POST` | `/api/governance/billing/upgrade` | Upgrade workspace plan | Yes | `UpgradePlanRequest` (plan) | Upgrade result |
+| 243 | `GET` | `/api/governance/features` | Get enabled feature flags | Yes | - | `{plan, features}` |
 
 ---
 
