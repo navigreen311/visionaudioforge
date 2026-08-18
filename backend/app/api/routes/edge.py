@@ -37,8 +37,17 @@ class ExportRequest(BaseModel):
 class MultiFormatExportRequest(BaseModel):
     model_id: str
     formats: list[str] = Field(default_factory=lambda: ["onnx"])
+    # Callers that export one format send `format`. It used to be dropped
+    # silently and the default ["onnx"] used instead, so asking for tflite
+    # quietly produced ONNX.
+    format: str | None = None
     optimize: bool = True
     quantize: bool = False
+
+    def requested_formats(self) -> list[str]:
+        if self.format:
+            return [self.format]
+        return self.formats
 
 
 class PackageRequest(BaseModel):
@@ -154,12 +163,17 @@ async def export_model(
     per-format result; the record is persisted so the artefacts it produced can
     be found again after a restart.
     """
+    formats = body.requested_formats()
     record = await _export_pipeline.export_model(
         db,
         body.model_id,
-        body.formats,
+        formats,
         workspace_id=workspace_id,
     )
+    # Echo the singular `format` for single-format exports; multi-format
+    # callers keep reading `formats`.
+    if len(formats) == 1:
+        record.setdefault("format", formats[0])
     return record
 
 

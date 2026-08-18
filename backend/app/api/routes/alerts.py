@@ -18,7 +18,7 @@ from app.schemas.alert import (
     AlertStats,
 )
 from app.services.alerts.actions import AlertActionExecutor
-from app.services.alerts.alert_service import AlertService
+from app.services.alerts.alert_service import AlertService, UnknownActorError
 from app.services.alerts.auto_clip import AutoClipService
 from app.services.alerts.evidence_bundle import EvidenceBundleService
 from app.services.alerts.chain_of_custody import ChainOfCustodyService
@@ -280,6 +280,10 @@ async def acknowledge_alert(
     """Acknowledge an alert."""
     try:
         return await AlertService.acknowledge_alert(db, alert_id, user_id)
+    except UnknownActorError as exc:
+        # The alert exists; the supplied user does not — a bad argument, not
+        # a missing resource.
+        raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
@@ -293,6 +297,10 @@ async def resolve_alert(
     """Resolve an alert."""
     try:
         return await AlertService.resolve_alert(db, alert_id, user_id)
+    except UnknownActorError as exc:
+        # The alert exists; the supplied user does not — a bad argument, not
+        # a missing resource.
+        raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

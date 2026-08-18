@@ -15,8 +15,19 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import Alert, AlertRule, AlertSeverity, AlertStatus
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
+
+
+class UnknownActorError(ValueError):
+    """Raised when the user acknowledging or resolving an alert does not exist.
+
+    `alerts.acknowledged_by` is a foreign key to `users`, so an unknown id used
+    to surface as an unhandled IntegrityError — a 500 with a traceback rather
+    than a message telling the caller which value was wrong.
+    """
+
 
 # Severity levels ordered for escalation
 _SEVERITY_ORDER = [
@@ -712,6 +723,8 @@ class AlertService:
         alert = result.scalar_one_or_none()
         if alert is None:
             raise ValueError(f"Alert {alert_id} not found")
+        if await db.get(User, user_id) is None:
+            raise UnknownActorError(f"User {user_id} does not exist")
         alert.status = new_status
         alert.acknowledged_by = user_id
         await db.commit()

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
 from app.schemas.common import PaginatedResponse
+from app.models.experiment import Experiment
 from app.services.models.experiments import ExperimentService
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -250,12 +251,15 @@ async def log_epoch(
     db: AsyncSession = Depends(get_db),
 ) -> EpochRead:
     """Log an epoch's metrics for an experiment."""
-    try:
-        epoch = await ExperimentService.log_epoch(
-            db, experiment_id, body.epoch, body.metrics
-        )
-    except Exception:
+    # Catching everything here and reporting 404 hid a schema mismatch behind
+    # "Experiment not found" for as long as it existed. Check for the
+    # experiment explicitly and let anything else surface as itself.
+    if await db.get(Experiment, experiment_id) is None:
         raise HTTPException(status_code=404, detail="Experiment not found")
+
+    epoch = await ExperimentService.log_epoch(
+        db, experiment_id, body.epoch, body.metrics
+    )
     return EpochRead.model_validate(epoch)
 
 
