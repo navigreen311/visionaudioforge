@@ -1,0 +1,39 @@
+# Files that are executed inside Linux containers must keep LF endings, no
+# matter what the checkout platform prefers.
+#
+# This repository is developed on Windows with core.autocrlf=true. Without the
+# rules below, git rewrites shell scripts to CRLF on checkout; bind-mounting
+# one into a container then fails with the classic and thoroughly unhelpful
+#
+#     /bin/sh^M: bad interpreter: No such file or directory
+#
+# scripts/init-minio.sh is mounted into minio_init and scripts/init-db.sql into
+# the Postgres entrypoint, so this is load-bearing for `docker compose up`.
+
+* text=auto
+
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.sql           text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+.dockerignore   text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.conf          text eol=lf
+
+# Windows-native tooling keeps CRLF.
+*.ps1           text eol=crlf
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# Binary — never touch.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pt  binary
+*.onnx binary
+*.woff binary
+*.woff2 binary

@@ -1,5 +1,80 @@
+# VisionAudioForge — production stack.
+#
+# Differences from docker-compose.yml: resource limits, segmented networks,
+# multiple uvicorn workers, and a REQUIRED .env (production must be configured
+# explicitly; there are no safe defaults for secrets).
+#
+# STATUS: the defects fixed here were found by booting docker-compose.yml and
+# are corrected by inspection. This file has not itself been booted end to end —
+# doing so needs real secrets and a TLS terminator. Treat a first production
+# deploy as unverified and run `scripts/smoke-stack.sh` against it.
+
+# Application settings. These names are the fields on `Settings` in
+# backend/app/config.py, which is case-sensitive. Values come from .env.
+x-backend-env: &backend-env
+  POSTGRES_HOST: db
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-vaf}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set for production}
+  POSTGRES_DB: ${POSTGRES_DB:-vaf}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set for production}
+  MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set for production}
+  MINIO_BUCKET: ${MINIO_BUCKET:-vaf-assets}
+  CELERY_BROKER_URL: redis://redis:6379/0
+  CELERY_RESULT_BACKEND: redis://redis:6379/1
+  # `:?` deliberately: a production stack must refuse to start rather than sign
+  # tokens with the default secret published in this repository.
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:?JWT_SECRET_KEY must be set for production}
+  AUTH_REQUIRED: "true"
+  DEBUG_ERRORS: "false"
+  APP_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS must be set for production}
+
 services:
+  # One-shot: bring the schema to head before anything serves traffic. The
+  # production stack had no migration step at all — deploy.md told operators to
+  # run alembic by hand, so a forgotten step meant an API against a stale schema.
+  migrate:
+    image: vaf-backend:prod
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - backend-net
+      - data-net
+
+  # One-shot: create the bucket. Without it every asset write fails against a
+  # bucket that does not exist.
+  minio_init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set for production}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set for production}
+      MINIO_BUCKET: ${MINIO_BUCKET:-vaf-assets}
+    entrypoint: ["/bin/sh", "/init-minio.sh"]
+    volumes:
+      - ./scripts/init-minio.sh:/init-minio.sh:ro
+    restart: "no"
+    networks:
+      - data-net
+
   api:
+    image: vaf-backend:prod
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -10,6 +85,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      minio_init:
+        condition: service_completed_successfully
+    environment: *backend-env
     env_file:
       - .env
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
@@ -18,7 +98,7 @@ services:
         limits:
           memory: 2g
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -29,6 +109,7 @@ services:
       - frontend-net
 
   frontend:
+    image: vaf-frontend:prod
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -43,7 +124,7 @@ services:
         limits:
           memory: 1g
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/login"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -53,7 +134,7 @@ services:
       - frontend-net
 
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: vaf
       POSTGRES_USER: vaf
@@ -68,7 +149,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vaf"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vaf} -d ${POSTGRES_DB:-vaf}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -103,7 +184,7 @@ services:
       - backend-net
 
   minio:
-    image: minio/minio
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -113,7 +194,7 @@ services:
     volumes:
       - miniodata:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -139,7 +220,7 @@ services:
       frontend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -153,10 +234,12 @@ services:
       - frontend-net
 
   celery_worker:
+    image: vaf-backend:prod
     build:
       context: ./backend
       dockerfile: Dockerfile
     command: celery -A app.celery_app worker -l info --concurrency 4
+    environment: *backend-env
     env_file:
       - .env
     depends_on:
@@ -164,6 +247,8 @@ services:
         condition: service_healthy
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
