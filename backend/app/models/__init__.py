@@ -62,6 +62,12 @@ from app.models.settings import (
     AppearancePreference,
     WorkspaceIntegration,
 )
+from app.models.scheduling import PipelineSchedule
+from app.models.runtime import (
+    InferenceCostEvent,
+    ModelCostRate,
+    WorkspaceQuota,
+)
 from app.models.edge_fleet import (
     EdgeDevice,
     DeviceMetric,
@@ -131,6 +137,10 @@ __all__ = [
     "UserTwoFactor",
     "AppearancePreference",
     "WorkspaceIntegration",
+    "PipelineSchedule",
+    "InferenceCostEvent",
+    "ModelCostRate",
+    "WorkspaceQuota",
     "BYOMModel",
     "CustomNode",
     "InstalledPlugin",
