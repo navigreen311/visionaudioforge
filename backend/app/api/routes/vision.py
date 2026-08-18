@@ -19,6 +19,9 @@ from app.services.vision.motion import MotionAnalyzer
 from app.services.vision.ocr import OCREngine
 from app.services.vision.preprocessing import ImagePreprocessor
 from app.services.vision.screen_intel import ScreenIntelligence
+from app.services.vision.depth import DepthEstimator
+from app.services.vision.anomaly import AnomalyDetector
+from app.services.vision.face_plate import FacePlateDetector
 from app.services.vision.tracking import MultiObjectTracker, TrajectoryAnalyzer
 from app.services.vision.segmentation import SegmentationService
 from app.services.vision.pose import PoseEstimator
@@ -36,6 +39,9 @@ _embedding_viz = EmbeddingVisualizer()
 _preprocessor = ImagePreprocessor()
 _motion_analyzer = MotionAnalyzer()
 _screen_intel = ScreenIntelligence()
+_depth_estimator = DepthEstimator()
+_anomaly_detector = AnomalyDetector()
+_face_plate = FacePlateDetector()
 
 logger = logging.getLogger(__name__)
 
@@ -679,4 +685,150 @@ async def embeddings_visualize(body: EmbeddingVisualizeRequest):
         "plot": plot_b64,
         "method": body.method,
         "num_points": len(body.embeddings),
+    }
+
+
+# ------------------------------------------------------------------
+# Specialized analysis — depth, anomaly, faces, plates, screen intel
+#
+# The services behind these were implemented and unit-tested but never
+# mounted, so the only way to reach them was to import the service directly.
+# ------------------------------------------------------------------
+
+
+def _png_b64(image: np.ndarray) -> str:
+    """Encode a BGR image as base64 PNG for JSON transport."""
+    _, buf = cv2.imencode(".png", image)
+    return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+
+@router.post("/depth")
+async def estimate_depth(file: UploadFile = File(...)):
+    """Estimate relative depth from a single image."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        result = _depth_estimator.estimate_depth(image)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Depth estimation failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    depth_map = result["depth_map"]
+    return {
+        "min_depth": result["min_depth"],
+        "max_depth": result["max_depth"],
+        # The map itself is large; return its shape and a colourised preview
+        # rather than several megabytes of float32 in JSON.
+        "depth_map_shape": list(depth_map.shape),
+        "visualization": _png_b64(result["visualization"]),
+        "method": "relative",
+        "processing_time_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
+@router.post("/anomaly")
+async def detect_anomaly(file: UploadFile = File(...)):
+    """Flag an image as anomalous against baseline image statistics."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        result = _anomaly_detector.detect_anomaly(image)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Anomaly detection failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    return {
+        "is_anomaly": result["is_anomaly"],
+        "anomaly_score": result["anomaly_score"],
+        "anomaly_regions": result["anomaly_regions"],
+        "reason": result["reason"],
+        "processing_time_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
+@router.post("/faces")
+async def detect_faces(file: UploadFile = File(...)):
+    """Detect faces and return an annotated preview."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        faces = _face_plate.detect_faces(image)
+        annotated = _face_plate.draw_detections(image, faces)
+    except Exception as exc:
+        logger.exception("Face detection failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    return {
+        "faces": faces,
+        "count": len(faces),
+        "visualization": _png_b64(annotated),
+        "processing_time_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
+@router.post("/plates")
+async def detect_plates(file: UploadFile = File(...)):
+    """Detect license plates and return an annotated preview."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        plates = _face_plate.detect_license_plates(image)
+        annotated = _face_plate.draw_detections(image, plates)
+    except Exception as exc:
+        logger.exception("Plate detection failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    return {
+        "plates": plates,
+        "count": len(plates),
+        "visualization": _png_b64(annotated),
+        "processing_time_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+    }
+
+
+@router.post("/screen-intel")
+async def screen_intel(file: UploadFile = File(...)):
+    """Analyse a screenshot for UI elements, layout and colour."""
+    t0 = time.perf_counter()
+
+    image = await _decode_upload(file)
+    if image is None:
+        return JSONResponse(status_code=400, content={"error": "Invalid image file"})
+
+    try:
+        result = _screen_intel.analyze_screenshot(image)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Screen analysis failed")
+        return JSONResponse(status_code=500, content={"error": f"Processing error: {exc}"})
+
+    return {
+        "ui_elements": result["ui_elements"],
+        "text_content": result["text_content"],
+        "brightness": result["brightness"],
+        "edge_density": result["edge_density"],
+        "dominant_colors": result["dominant_colors"],
+        "layout_type": result["layout_type"],
+        "processing_time_ms": round((time.perf_counter() - t0) * 1000.0, 2),
     }
