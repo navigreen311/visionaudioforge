@@ -253,13 +253,20 @@ async def test_api_list_experiments(client):
 
 
 @pytest.mark.anyio
-async def test_api_create_experiment(client):
-    """POST /api/experiments should accept valid body."""
+async def test_api_create_experiment(client, test_workspace_id):
+    """POST /api/experiments creates an experiment in a real workspace.
+
+    This used to post a random workspace_id and accept 201 or 500. The id
+    could never satisfy the foreign key, so the 201 it saw came from a
+    fallback that fabricated an experiment — an id that had never been
+    written and would 404 on the next request. Against a real workspace the
+    endpoint has to genuinely create the row.
+    """
     body = {
         "name": "test-exp",
         "config": {"backbone": "resnet18"},
-        "workspace_id": str(uuid.uuid4()),
+        "workspace_id": test_workspace_id,
     }
     response = await client.post("/api/experiments", json=body)
-    # With real DB this returns 201; with mock/test DB we accept 201 or 500
-    assert response.status_code in (201, 500)
+    assert response.status_code == 201, response.text
+    assert response.json()["workspace_id"] == test_workspace_id

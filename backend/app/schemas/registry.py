@@ -14,7 +14,9 @@ class ModelCreate(BaseModel):
     tags: list[str] | None = None
     description: str | None = None
     status: str = "registered"
-    workspace_id: UUID
+    # Optional so the caller's own workspace can supply it; the route falls
+    # back to the system workspace when nothing resolves, as elsewhere.
+    workspace_id: UUID | None = None
 
 
 class ModelRead(BaseModel):

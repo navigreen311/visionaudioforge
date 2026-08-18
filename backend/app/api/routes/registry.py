@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
 from app.core.deps import get_db
+from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.schemas.common import PaginatedResponse
 from app.schemas.registry import (
     CompareRequest,
@@ -27,8 +28,11 @@ svc = ModelRegistryService()
 @router.post("/register", response_model=ModelRead, status_code=201)
 async def register_model(
     body: ModelCreate,
+    caller_workspace: UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_db),
 ):
+    workspace_id = body.workspace_id or caller_workspace or SYSTEM_WORKSPACE_ID
+
     try:
         record = await svc.register_model(
             db,
@@ -36,7 +40,7 @@ async def register_model(
             version=body.version,
             backbone=body.backbone,
             metrics=body.metrics,
-            workspace_id=body.workspace_id,
+            workspace_id=workspace_id,
             tags=body.tags,
             description=body.description,
             status=body.status,
@@ -47,7 +51,7 @@ async def register_model(
         await db.rollback()
         raise HTTPException(
             status_code=422,
-            detail=f"workspace_id {body.workspace_id} does not exist",
+            detail=f"workspace_id {workspace_id} does not exist",
         )
 
     return record

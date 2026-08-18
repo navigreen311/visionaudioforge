@@ -11,11 +11,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db, get_optional_workspace_id
 from app.schemas.common import PaginatedResponse
 from app.models.experiment import Experiment
+from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.services.models.experiments import ExperimentService
 
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
@@ -89,7 +91,8 @@ class ExperimentCreate(BaseModel):
     name: str
     config: dict[str, Any] = Field(default_factory=dict)
     model_id: uuid.UUID | None = None
-    workspace_id: uuid.UUID
+    # Optional: the caller's own workspace supplies it when the body does not.
+    workspace_id: uuid.UUID | None = None
 
 
 class EpochLog(BaseModel):
@@ -173,32 +176,31 @@ async def list_experiments(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_experiment(
     body: ExperimentCreate,
+    caller_workspace: uuid.UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a new experiment."""
+    # On any failure this used to return a fabricated experiment carrying a
+    # fresh uuid that had never been written. The caller got a 200 and an id
+    # that would 404 on the very next request, and the real error was lost.
+    workspace_id = body.workspace_id or caller_workspace or SYSTEM_WORKSPACE_ID
+
     try:
         experiment = await ExperimentService.create_experiment(
             db,
             name=body.name,
             config=body.config,
             model_id=body.model_id,
-            workspace_id=body.workspace_id,
+            workspace_id=workspace_id,
         )
-        return ExperimentRead.model_validate(experiment).model_dump(mode="json")
-    except Exception:
-        # Fallback mock creation
-        new_id = str(uuid.uuid4())
-        return {
-            "id": new_id,
-            "name": body.name,
-            "status": "created",
-            "config": body.config,
-            "workspace_id": str(body.workspace_id),
-            "model_id": str(body.model_id) if body.model_id else None,
-            "best_epoch": None,
-            "error_message": None,
-            "epochs": [],
-        }
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail=f"workspace_id {workspace_id} does not exist",
+        )
+
+    return ExperimentRead.model_validate(experiment).model_dump(mode="json")
 
 
 @router.get("/{experiment_id}")

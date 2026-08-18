@@ -44,9 +44,19 @@ class CaptureSessionManager:
     reason.
     """
 
-    def __init__(self, redis_url: str | None = None) -> None:
+    def __init__(self, redis_url: str | None = None, *, use_redis: bool = True) -> None:
+        """Build a session manager.
+
+        `redis_url=None` means "use the configured URL", so there was no way to
+        ask for a process-local manager: every instance shared one Redis, and
+        sessions outlived whatever created them. Pass ``use_redis=False`` for
+        an isolated, in-memory manager.
+        """
         self._local: dict[str, dict] = {}
         self._redis: Any | None = None
+
+        if not use_redis:
+            return
 
         if redis_url is None:
             try:
