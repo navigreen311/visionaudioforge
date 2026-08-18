@@ -33,6 +33,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Object storage, so the asset tests actually run here instead of skipping.
+      # Without it the tenant-isolation tests for asset read/download/delete —
+      # the ones covering media reachable by id alone — skip, and a skipped
+      # security test protects nothing.
+      #
+      # A step rather than a `services:` entry because service containers cannot
+      # override the image command, and minio/minio needs `server /data`.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioaccess \
+            -e MINIO_ROOT_PASSWORD=miniosecret \
+            minio/minio:RELEASE.2025-04-22T22-12-26Z server /data
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+              echo "MinIO is live after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MinIO did not become live"; docker logs minio; exit 1
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -80,6 +101,9 @@ jobs:
         working-directory: backend
         run: python -m pytest tests/ -v --cov=app --cov-report=term-missing
         env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: minioaccess
+          MINIO_SECRET_KEY: miniosecret
           POSTGRES_HOST: localhost
           POSTGRES_PORT: "5432"
           POSTGRES_USER: vaf

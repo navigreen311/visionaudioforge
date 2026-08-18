@@ -18,6 +18,21 @@ from fastapi import UploadFile
 WORKSPACE_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 
 
+def _token_for(workspace_id) -> str:
+    """A real signed token for *workspace_id* - see test_auth_enforcement.py."""
+    import uuid as _uuid
+
+    from app.core.security import create_access_token
+
+    return create_access_token(
+        {"sub": str(_uuid.uuid4()), "workspace_id": str(workspace_id)}
+    )
+
+
+def _auth_headers(workspace_id) -> dict:
+    return {"Authorization": f"Bearer {_token_for(workspace_id)}"}
+
+
 def _make_upload_file(
     filename: str = "test.png",
     content: bytes = b"fake-image-data",
@@ -193,8 +208,14 @@ async def test_delete_asset_soft_deletes():
 
 
 @pytest.mark.asyncio
+@pytest.mark.auth_enforced
 async def test_api_upload_endpoint(client):
-    """POST /api/assets/upload should accept a file and return asset data."""
+    """POST /api/assets/upload should accept a file and return asset data.
+
+    Marked ``auth_enforced`` and sent with a token for the workspace the body
+    names: the route now derives the tenant from the session, because an upload
+    with no owner is not an upload, and the browser has no business choosing one.
+    """
     fake = _fake_asset_obj()
 
     with patch("app.api.routes.assets._get_storage", return_value=_mock_storage()):
@@ -210,6 +231,7 @@ async def test_api_upload_endpoint(client):
                     "asset_type": "image",
                     "workspace_id": str(WORKSPACE_ID),
                 },
+                headers=_auth_headers(WORKSPACE_ID),
             )
 
     assert response.status_code == 200
@@ -219,6 +241,7 @@ async def test_api_upload_endpoint(client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.auth_enforced
 async def test_api_list_endpoint(client):
     """GET /api/assets should return a paginated response."""
     fake = _fake_asset_obj()
@@ -231,6 +254,7 @@ async def test_api_list_endpoint(client):
         response = await client.get(
             "/api/assets",
             params={"workspace_id": str(WORKSPACE_ID)},
+            headers=_auth_headers(WORKSPACE_ID),
         )
 
     assert response.status_code == 200

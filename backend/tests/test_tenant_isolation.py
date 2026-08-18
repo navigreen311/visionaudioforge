@@ -26,6 +26,10 @@ pytestmark = [pytest.mark.anyio, pytest.mark.auth_enforced]
 PASSWORD = "TenantIsolation!2026"
 
 
+class _StorageUnavailable(RuntimeError):
+    """Object storage is not reachable in this environment."""
+
+
 async def _register(client) -> tuple[str, str]:
     """Create a tenant through the public flow. Returns (token, workspace_id)."""
     stamp = uuid.uuid4().hex[:12]
@@ -214,18 +218,27 @@ async def test_a_tenant_cannot_register_a_model_into_another_workspace(client, t
 # ---------------------------------------------------------------------------
 
 async def _upload(client, token: str, name: str):
-    """Upload a one-pixel PNG through the real multipart endpoint."""
+    """Upload a one-pixel PNG through the real multipart endpoint.
+
+    Raises ``_StorageUnavailable`` when object storage is not reachable, so the
+    asset tests below skip rather than fail in an environment without MinIO.
+    """
     png = (
         b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
         b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00"
         b"\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
     )
-    return await client.post(
-        "/api/assets/upload",
-        files={"file": (name, png, "image/png")},
-        data={"asset_type": "image"},
-        headers=_auth(token),
-    )
+    try:
+        return await client.post(
+            "/api/assets/upload",
+            files={"file": (name, png, "image/png")},
+            data={"asset_type": "image"},
+            headers=_auth(token),
+        )
+    except Exception as exc:  # noqa: BLE001 - any storage failure means "no MinIO"
+        if "S3" in type(exc).__name__ or "minio" in type(exc).__module__:
+            raise _StorageUnavailable(str(exc)) from exc
+        raise
 
 
 async def test_an_asset_cannot_be_read_or_downloaded_by_another_tenant(client, tenants):
@@ -233,7 +246,10 @@ async def test_an_asset_cannot_be_read_or_downloaded_by_another_tenant(client, t
     token_a, _ = tenants["a"]
     token_b, _ = tenants["b"]
 
-    created = await _upload(client, token_a, "tenant-a-secret.png")
+    try:
+        created = await _upload(client, token_a, "tenant-a-secret.png")
+    except _StorageUnavailable as exc:
+        pytest.skip(f"object storage unavailable: {exc}")
     if created.status_code not in (200, 201):
         pytest.skip(f"asset upload unavailable in this environment: {created.status_code}")
     asset_id = created.json()["id"]
@@ -260,7 +276,10 @@ async def test_upload_needs_no_workspace_field_from_the_browser(client, tenants)
     choosing a tenant in the first place.
     """
     token_a, ws_a = tenants["a"]
-    created = await _upload(client, token_a, "no-workspace-field.png")
+    try:
+        created = await _upload(client, token_a, "no-workspace-field.png")
+    except _StorageUnavailable as exc:
+        pytest.skip(f"object storage unavailable: {exc}")
     if created.status_code not in (200, 201):
         pytest.skip(f"asset upload unavailable in this environment: {created.status_code}")
     assert str(created.json()["workspace_id"]) == ws_a
