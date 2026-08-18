@@ -53,23 +53,34 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture(autouse=True)
-async def _reset_app_engine_pool():
-    """Return the application engine's pool after each test.
+def _use_pool_free_engine() -> None:
+    """Rebuild the application engine without a connection pool, for tests.
 
-    ``app.database.engine`` is a module-level singleton, and asyncpg
-    connections bind to the event loop that opened them. Each test gets a fresh
-    loop, so a pooled connection left over from the previous test raises
-    "attached to a different loop" the moment a second DB-backed test runs.
-    Disposing between tests keeps each one on connections it owns.
+    asyncpg connections bind to the event loop that opened them, and the test
+    suite creates a fresh loop per test — and, with the synchronous TestClient,
+    per request. A pooled connection therefore outlives its loop and the next
+    caller gets "attached to a different loop" or "Event loop is closed".
+    NullPool opens and closes a connection per checkout, so nothing is ever
+    reused across loops. Only worth doing in tests; production wants the pool.
     """
-    yield
     try:
-        from app.database import engine
+        import app.database as database
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
 
-        await engine.dispose()
+        from app.config import settings
+
+        database.engine = create_async_engine(
+            settings.DATABASE_URL, poolclass=NullPool
+        )
+        database.async_session_factory = async_sessionmaker(
+            database.engine, expire_on_commit=False
+        )
     except Exception:
         pass
+
+
+_use_pool_free_engine()
 
 
 @pytest.fixture

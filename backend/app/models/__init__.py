@@ -67,6 +67,7 @@ from app.models.conversation import AgentConversation, AgentMessage
 from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
 from app.models.field_note import FieldNote
 from app.models.simulation import SimulationRun, SimulationScenario
+from app.models.edge_export import EdgeBenchmark, ModelExport
 from app.models.runtime import (
     InferenceCostEvent,
     ModelCostRate,
@@ -149,6 +150,8 @@ __all__ = [
     "FieldNote",
     "SimulationRun",
     "SimulationScenario",
+    "EdgeBenchmark",
+    "ModelExport",
     "InferenceCostEvent",
     "ModelCostRate",
     "WorkspaceQuota",
