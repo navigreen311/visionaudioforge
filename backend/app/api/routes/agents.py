@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_db
+from app.core.deps import get_db, get_optional_workspace_id
 from app.database import get_async_session
 from app.models.agent import Agent, AgentMemory
 from app.models.conversation import AgentConversation, AgentMessage
@@ -249,10 +249,20 @@ async def list_agents(
 @router.post("", status_code=201)
 async def create_agent(
     body: CreateAgentRequest,
+    workspace_id: uuid.UUID | None = Depends(get_optional_workspace_id),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new agent."""
-    workspace_id = body.workspace_id or str(uuid.uuid4())
+    # This used to fall back to `str(uuid.uuid4())`. `agents.workspace_id` is a
+    # foreign key, so a made-up id could never resolve — every unscoped create
+    # died on the constraint. Say what is missing instead.
+    resolved = body.workspace_id or workspace_id
+    if resolved is None:
+        raise HTTPException(
+            status_code=422,
+            detail="workspace_id is required: agents are workspace-scoped",
+        )
+    workspace_id = resolved
 
     agent = Agent(
         name=body.name,

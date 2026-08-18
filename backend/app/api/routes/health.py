@@ -7,7 +7,7 @@ from fastapi import APIRouter
 from sqlalchemy import text
 
 from app.config import settings
-from app.database import async_session_factory
+from app import database
 from app.schemas.common import HealthResponse, ServiceHealth
 
 router = APIRouter(tags=["health"])
@@ -19,7 +19,7 @@ async def _check_database() -> ServiceHealth:
     """Probe PostgreSQL with SELECT 1."""
     try:
         t0 = time.monotonic()
-        async with async_session_factory() as session:
+        async with database.async_session_factory() as session:
             await session.execute(text("SELECT 1"))
         latency = (time.monotonic() - t0) * 1000
         return ServiceHealth(status="up", latency_ms=round(latency, 2))

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.identity import Identity
 from app.core.security import decode_token
-from app.database import async_session_factory
+from app import database
 from app.models.user import User
 from app.models.workspace import Workspace
 
@@ -18,8 +18,16 @@ security_scheme = HTTPBearer(auto_error=False)
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async database session."""
-    async with async_session_factory() as session:
+    """Yield an async database session.
+
+    The factory is looked up on the module at call time rather than bound at
+    import. Binding it early meant anything that swapped the engine afterwards
+    — the test suite replaces it with a NullPool one, because asyncpg
+    connections cannot cross event loops — was ignored here, so every route
+    depending on `get_db` kept using the pooled engine and failed with
+    "Event loop is closed".
+    """
+    async with database.async_session_factory() as session:
         yield session
 
 

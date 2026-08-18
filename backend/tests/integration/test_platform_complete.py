@@ -417,12 +417,16 @@ async def test_investigation_lifecycle(test_app, test_workspace_id):
 
 
 @pytest.mark.asyncio
-async def test_agent_lifecycle(test_app):
+async def test_agent_lifecycle(test_app, test_workspace_id):
     """Full agent lifecycle: create, memory store/recall/decay, patrol, conversation."""
     # Create agent
     r_create = await test_app.post(
         "/api/agents",
-        json={"name": f"agent-{uuid.uuid4().hex[:6]}", "agent_type": "copilot"},
+        json={
+            "name": f"agent-{uuid.uuid4().hex[:6]}",
+            "agent_type": "copilot",
+            "workspace_id": test_workspace_id,
+        },
     )
     assert r_create.status_code != 404, "agents create returned 404"
 
@@ -627,7 +631,7 @@ async def test_knowledge_graph_lifecycle(test_app):
 
 
 @pytest.mark.asyncio
-async def test_semantic_memory_lifecycle(test_app):
+async def test_semantic_memory_lifecycle(test_app, test_workspace_id):
     """Full semantic memory lifecycle: store, recall, promote, decay, list."""
     # Store memory 1
     r_store1 = await test_app.post(
@@ -636,6 +640,7 @@ async def test_semantic_memory_lifecycle(test_app):
             "content": "The security camera detected motion at 2am near gate B",
             "category": "security",
             "importance": 0.7,
+            "workspace_id": test_workspace_id,
         },
     )
     assert r_store1.status_code != 404, "semantic-memory/store returned 404"
@@ -651,6 +656,7 @@ async def test_semantic_memory_lifecycle(test_app):
             "content": "Motion near gate B was a false alarm caused by wind",
             "category": "security",
             "importance": 0.5,
+            "workspace_id": test_workspace_id,
         },
     )
     assert r_store2.status_code != 404
@@ -658,7 +664,12 @@ async def test_semantic_memory_lifecycle(test_app):
     # Recall by query
     r_recall = await test_app.post(
         "/api/semantic-memory/recall",
-        json={"query": "gate B", "limit": 10, "category": "security"},
+        json={
+            "query": "gate B",
+            "limit": 10,
+            "category": "security",
+            "workspace_id": test_workspace_id,
+        },
     )
     assert r_recall.status_code != 404, "semantic-memory/recall returned 404"
 
