@@ -194,22 +194,53 @@ async def test_long_paths_are_truncated_to_the_column_width(captured, monkeypatc
 
 
 # ---------------------------------------------------------------------------
-# The documented gap
+# Unauthenticated events — the case the NOT NULL constraint used to forbid
 # ---------------------------------------------------------------------------
 
 
-async def test_request_without_a_workspace_is_skipped_not_crashed(captured, monkeypatch):
-    """workspace_id is NOT NULL, so an unattributable event cannot be stored.
+async def test_unauthenticated_request_is_recorded_with_a_null_workspace(
+    captured, monkeypatch
+):
+    """The inverse of the old behaviour, and the point of migration 017.
 
-    This is a real gap in the audit trail — a failed login records nothing —
-    and it is pinned here so that it is a known limitation rather than a
-    surprise. Closing it needs audit_logs.workspace_id to become nullable.
+    While audit_logs.workspace_id was NOT NULL these events could not be
+    stored, so the middleware dropped them. They are now recorded unattributed.
     """
     monkeypatch.setattr(audit_module.settings, "AUDIT_ENABLED", True)
 
     await run_middleware(make_scope(state={}), status=401)
 
-    assert captured == []
+    assert len(captured) == 1
+    row = captured[0]
+    assert row.workspace_id is None
+    assert row.user_id is None
+    assert row.payload["status_code"] == 401
+
+
+async def test_failed_login_leaves_an_audit_row(captured, monkeypatch):
+    """The event an auditor asks for first.
+
+    A rejected login has no tenant by definition — the credentials did not
+    resolve to one. That is exactly why the NOT NULL constraint made this
+    unrecordable, and exactly why it had to go.
+    """
+    monkeypatch.setattr(audit_module.settings, "AUDIT_ENABLED", True)
+
+    scope = make_scope(method="POST", path="/api/auth/login", state={})
+    await run_middleware(scope, status=401)
+
+    assert len(captured) == 1
+    row = captured[0]
+    assert row.action == "http.post"
+    assert row.resource == "/api/auth/login"
+    assert row.workspace_id is None
+    assert row.payload["status_code"] == 401
+    assert row.payload["ip"] == "10.0.0.7"
+
+
+async def test_model_permits_a_null_workspace(captured, monkeypatch):
+    """Guards the constraint itself, not just the middleware's use of it."""
+    assert AuditLog.__table__.columns["workspace_id"].nullable is True
 
 
 async def test_disabled_flag_writes_nothing(captured, monkeypatch):
@@ -236,3 +267,28 @@ async def test_write_failure_does_not_escape(monkeypatch, caplog):
     )
     # Reaching here at all is the assertion: the exception stayed inside the
     # background task and the response completed.
+
+
+async def test_health_probes_are_not_audited(captured, monkeypatch):
+    """Liveness checks would otherwise bury the trail in noise.
+
+    The container healthcheck hits /api/health every 10 seconds. Auditing it
+    adds thousands of rows a day that mean nothing and make the rows that
+    matter harder to find.
+    """
+    monkeypatch.setattr(audit_module.settings, "AUDIT_ENABLED", True)
+
+    for path in ("/api/health", "/api/metrics"):
+        await run_middleware(make_scope(path=path, state={}))
+
+    assert captured == []
+
+
+async def test_exemption_does_not_extend_to_credential_endpoints(captured, monkeypatch):
+    """Only probes are exempt. /api/auth/* is allowlisted but still audited."""
+    monkeypatch.setattr(audit_module.settings, "AUDIT_ENABLED", True)
+
+    for path in ("/api/auth/login", "/api/auth/register", "/api/auth/refresh"):
+        await run_middleware(make_scope(method="POST", path=path, state={}), status=401)
+
+    assert len(captured) == 3

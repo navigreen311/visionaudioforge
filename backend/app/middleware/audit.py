@@ -17,6 +17,10 @@ failed on a NOT NULL violation instead. Because the write is fire-and-forget
 the failure only ever surfaced as a WARNING in the log, which is why an audit
 trail that recorded nothing looked healthy.
 
+Unauthenticated requests are recorded with a NULL workspace as of migration
+017. Before it, ``workspace_id`` was NOT NULL and every rejected request —
+every failed login — had to be dropped.
+
 Earlier defects, fixed when the middleware was re-enabled:
 
 1. ``asyncio.ensure_future`` with no reference held — the event loop only keeps
@@ -50,11 +54,19 @@ _pending: set[asyncio.Task[None]] = set()
 # insert, which — being fire-and-forget — would again be invisible.
 RESOURCE_MAX_LEN = 200
 
+# Liveness and scrape endpoints are deliberately not audited. Container
+# healthchecks hit /api/health every 10 seconds and Prometheus scrapes
+# /api/metrics on its own schedule; recording them adds thousands of rows a day
+# that carry no security meaning and bury the events that do. Everything else
+# on the public allowlist IS audited — a failed login is the single most
+# important row this table holds.
+AUDIT_EXEMPT_PATHS = frozenset({"/api/health", "/api/metrics"})
+
 
 async def _write_audit_log(
     *,
     user_id: str | None,
-    workspace_id: str,
+    workspace_id: str | None,
     action: str,
     resource: str,
     payload: dict[str, Any],
@@ -67,7 +79,7 @@ async def _write_audit_log(
         session.add(
             AuditLog(
                 user_id=UUID(user_id) if user_id else None,
-                workspace_id=UUID(workspace_id),
+                workspace_id=UUID(workspace_id) if workspace_id else None,
                 action=action,
                 resource=resource[:RESOURCE_MAX_LEN],
                 payload=payload,
@@ -145,29 +157,20 @@ class AuditMiddleware:
         method = scope.get("method", "")
         path = scope.get("path", "")
 
-        if workspace_id is None:
-            # audit_logs.workspace_id is NOT NULL, so an unattributable event
-            # cannot be stored — the same guard app/services/alerts/
-            # chain_of_custody.py applies. This covers allowlisted paths
-            # (/api/health, /api/metrics) and, more importantly, every rejected
-            # request: a failed login leaves no audit row.
-            #
-            # Closing that gap needs audit_logs.workspace_id to become nullable,
-            # which is a model plus migration change and belongs to whoever owns
-            # backend/app/models/. Logged at debug so the omission is at least
-            # observable rather than silent.
-            logger.debug(
-                "audit skipped: no workspace on request",
-                extra={"method": method, "path": path, "status_code": status_code},
-            )
+        if path in AUDIT_EXEMPT_PATHS:
             return
 
+        # Unauthenticated requests are recorded too, with a NULL workspace.
+        # This is the case that matters most: a failed login is the first thing
+        # anyone asks an audit trail for, and it is precisely the event that has
+        # no tenant yet. audit_logs.workspace_id was NOT NULL until revision
+        # 017, which is why these were previously dropped.
         user_id = state.get("user_id")
 
         _spawn(
             _write_audit_log(
                 user_id=str(user_id) if user_id else None,
-                workspace_id=str(workspace_id),
+                workspace_id=str(workspace_id) if workspace_id else None,
                 # Dotted verbs match the convention used by the service layer
                 # ("custody.create"), so audit rows from both sources sort and
                 # filter together.

@@ -102,19 +102,21 @@ class ChainOfCustodyService:
         db.add(event)
 
         # The workspace-wide audit log gets the same event. It is a mirror for
-        # operators, not the source of truth, so it is only written when the
-        # workspace is known (audit_logs.workspace_id is NOT NULL).
-        if workspace is not None:
-            db.add(
-                AuditLog(
-                    id=uuid.uuid4(),
-                    user_id=user_uuid,
-                    action=f"custody.{action}",
-                    resource=f"asset:{asset_id}",
-                    payload={"details": details, "asset_id": str(asset_id)},
-                    workspace_id=workspace,
-                )
+        # operators, not the source of truth. It used to be written only when
+        # the workspace was known, because audit_logs.workspace_id was NOT NULL;
+        # that dropped custody events rather than storing them unattributed,
+        # which is the wrong trade for a chain of custody. Since revision 017 the
+        # column is nullable, so the event is always recorded.
+        db.add(
+            AuditLog(
+                id=uuid.uuid4(),
+                user_id=user_uuid,
+                action=f"custody.{action}",
+                resource=f"asset:{asset_id}",
+                payload={"details": details, "asset_id": str(asset_id)},
+                workspace_id=workspace,
             )
+        )
 
         await db.commit()
 
