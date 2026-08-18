@@ -97,3 +97,63 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  compose-smoke:
+    name: Compose smoke (stack boots)
+    runs-on: ubuntu-latest
+    # Blocking by design: this job is what stands between a broken compose file
+    # and a repository that claims a seven-service platform. Add it to the
+    # branch protection required checks alongside `backend` and `frontend`.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The backend image carries torch, faiss, transformers and ffmpeg.
+      # A GitHub-hosted runner starts with ~14 GB free, which is not enough
+      # headroom once the frontend image and the four pulled images land too.
+      - name: Reclaim runner disk
+        run: |
+          echo "before: $(df -h / | awk 'NR==2 {print $4}') free"
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af
+          echo "after:  $(df -h / | awk 'NR==2 {print $4}') free"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built here rather than by the smoke script so the layer cache applies.
+      # Without it every push pays the full torch install; with it an unchanged
+      # requirements.txt is a cache hit.
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          tags: vaf-backend:local
+          load: true
+          cache-from: type=gha,scope=vaf-backend
+          cache-to: type=gha,mode=max,scope=vaf-backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          tags: vaf-frontend:local
+          load: true
+          cache-from: type=gha,scope=vaf-frontend
+          cache-to: type=gha,mode=max,scope=vaf-frontend
+
+      - name: Smoke the stack
+        env:
+          # Images are already built and loaded above; rebuilding inside the
+          # script would discard the cache we just populated.
+          SMOKE_NO_BUILD: "1"
+          # No ANTHROPIC_API_KEY on purpose — the copilot must degrade to mock
+          # mode rather than take the API container down. The script asserts
+          # the variable is genuinely absent.
+          WAIT_TIMEOUT: "600"
+        run: ./scripts/smoke-stack.sh --down
+
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose logs --tail 200 || true
