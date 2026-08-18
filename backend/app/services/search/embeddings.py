@@ -17,6 +17,28 @@ _CLAP_MODEL_NAME = "laion/clap-htsat-unfused"
 _EMBEDDING_DIM = 512
 
 
+
+def _clap_audio_kwarg(processor) -> str:
+    """Name of the audio argument this ClapProcessor accepts.
+
+    transformers renamed it from `audios` to `audio`. Passing the wrong one is
+    not a TypeError — the processor takes **kwargs and then reports "You have
+    to specify either text or audios", so an audio search failed with a 500
+    that named neither the version nor the argument.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(processor.__call__).parameters
+    except (TypeError, ValueError):
+        return "audio"
+
+    if "audio" in parameters:
+        return "audio"
+    if "audios" in parameters:
+        return "audios"
+    return "audio"
+
 class EmbeddingService:
     """Generate CLIP embeddings for images and text, CLAP embeddings for audio.
 
@@ -179,7 +201,9 @@ class EmbeddingService:
                 sr = target_sr
 
             inputs = self._clap_processor(
-                audio=audio, sampling_rate=sr, return_tensors="pt"
+                **{_clap_audio_kwarg(self._clap_processor): audio},
+                sampling_rate=sr,
+                return_tensors="pt",
             )
             with torch.no_grad():
                 features = self._clap_model.get_audio_features(**inputs)
