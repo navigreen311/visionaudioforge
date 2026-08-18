@@ -113,6 +113,7 @@ services:
   # One-shot: bring the schema up to head before anything talks to the
   # database. Six migrations existed and nothing ever ran them.
   migrate:
+    image: vaf-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -125,6 +126,7 @@ services:
     restart: "no"
 
   api:
+    image: vaf-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -150,6 +152,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    image: vaf-frontend:local
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -196,6 +199,7 @@ services:
     restart: unless-stopped
 
   celery_worker:
+    image: vaf-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile

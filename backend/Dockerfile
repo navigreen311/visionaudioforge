@@ -13,6 +13,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
+
+# Install the CPU builds of torch/torchvision first, from PyTorch's own index.
+#
+# `pip install torch==2.2.0` from PyPI resolves to the CUDA build on Linux and
+# drags in ~1.2 GB of nvidia_* wheels — cuBLAS alone is 410 MB, cuDNN 732 MB —
+# none of which this stack can use: TORCH_DEVICE is cpu and no container is
+# given a GPU. Pre-installing +cpu satisfies the pin below (PEP 440: `==2.2.0`
+# matches the `2.2.0+cpu` local version), so the requirements pass that follows
+# leaves it alone.
+#
+# If this image ever needs GPU support, drop these two lines rather than adding
+# a second torch — having both indexes in play produces a silently mixed
+# install.
+RUN pip install --no-cache-dir \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.2.0 torchvision==0.17.0
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---- Production stage ----
