@@ -60,6 +60,7 @@ from app.models.security import (
 )
 from app.models.settings import (
     AppearancePreference,
+    WorkspaceSetting,
     WorkspaceIntegration,
 )
 from app.models.scheduling import PipelineSchedule
@@ -186,4 +187,5 @@ __all__ = [
     "LegalHold",
     "SafetyScan",
     "VoiceConsent",
+    "WorkspaceSetting",
 ]

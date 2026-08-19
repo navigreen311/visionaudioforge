@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.core.deps import get_db, get_workspace_id
 from app.models.integration import Webhook, WebhookDelivery
+from app.models.settings import WorkspaceSetting
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -55,12 +56,56 @@ class TeamMember(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# In-memory state
+# Storage
+#
+# These three were module-level dicts seeded from the Pydantic defaults, so
+# every save was forgotten on restart and the console showed the defaults
+# again as though nothing had been configured. Each section is now a row in
+# workspace_settings.
 # ---------------------------------------------------------------------------
 
-_general: dict[str, Any] = GeneralSettings().model_dump()
-_security: dict[str, Any] = SecuritySettings().model_dump()
-_notifications: dict[str, Any] = NotificationSettings().model_dump()
+
+async def _read_section(
+    db: AsyncSession, workspace_id: UUID, section: str, model: type[BaseModel]
+) -> BaseModel:
+    """Return a settings section, falling back to its defaults."""
+    result = await db.execute(
+        select(WorkspaceSetting).where(
+            WorkspaceSetting.workspace_id == workspace_id,
+            WorkspaceSetting.section == section,
+        )
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return model()
+    # Defaults fill in any field added since the row was written.
+    return model(**{**model().model_dump(), **(row.value or {})})
+
+
+async def _write_section(
+    db: AsyncSession, workspace_id: UUID, section: str, payload: BaseModel
+) -> BaseModel:
+    """Persist a settings section and return what was stored."""
+    result = await db.execute(
+        select(WorkspaceSetting).where(
+            WorkspaceSetting.workspace_id == workspace_id,
+            WorkspaceSetting.section == section,
+        )
+    )
+    row = result.scalar_one_or_none()
+    value = payload.model_dump()
+
+    if row is None:
+        db.add(
+            WorkspaceSetting(
+                workspace_id=workspace_id, section=section, value=value
+            )
+        )
+    else:
+        row.value = {**(row.value or {}), **value}
+
+    await db.commit()
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -68,16 +113,22 @@ _notifications: dict[str, Any] = NotificationSettings().model_dump()
 # ---------------------------------------------------------------------------
 
 @router.get("/general", response_model=GeneralSettings)
-async def get_general():
+async def get_general(
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Return general platform settings."""
-    return GeneralSettings(**_general)
+    return await _read_section(db, workspace_id, "general", GeneralSettings)
 
 
 @router.put("/general", response_model=GeneralSettings)
-async def update_general(body: GeneralSettings):
+async def update_general(
+    body: GeneralSettings,
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Update general platform settings."""
-    _general.update(body.model_dump())
-    return GeneralSettings(**_general)
+    return await _write_section(db, workspace_id, "general", body)
 
 
 # ---------------------------------------------------------------------------
@@ -85,16 +136,22 @@ async def update_general(body: GeneralSettings):
 # ---------------------------------------------------------------------------
 
 @router.get("/security", response_model=SecuritySettings)
-async def get_security():
+async def get_security(
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Return security settings."""
-    return SecuritySettings(**_security)
+    return await _read_section(db, workspace_id, "security", SecuritySettings)
 
 
 @router.put("/security", response_model=SecuritySettings)
-async def update_security(body: SecuritySettings):
+async def update_security(
+    body: SecuritySettings,
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Update security settings."""
-    _security.update(body.model_dump())
-    return SecuritySettings(**_security)
+    return await _write_section(db, workspace_id, "security", body)
 
 
 # ---------------------------------------------------------------------------
@@ -102,16 +159,22 @@ async def update_security(body: SecuritySettings):
 # ---------------------------------------------------------------------------
 
 @router.get("/notifications", response_model=NotificationSettings)
-async def get_notifications():
+async def get_notifications(
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Return notification preferences."""
-    return NotificationSettings(**_notifications)
+    return await _read_section(db, workspace_id, "notifications", NotificationSettings)
 
 
 @router.put("/notifications", response_model=NotificationSettings)
-async def update_notifications(body: NotificationSettings):
+async def update_notifications(
+    body: NotificationSettings,
+    workspace_id: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
     """Update notification preferences."""
-    _notifications.update(body.model_dump())
-    return NotificationSettings(**_notifications)
+    return await _write_section(db, workspace_id, "notifications", body)
 
 
 # ---------------------------------------------------------------------------
