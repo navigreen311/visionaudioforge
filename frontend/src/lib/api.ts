@@ -1,6 +1,11 @@
 import axios from "axios";
 
-import { clearSession, readAccessToken, readWorkspaceId } from "@/lib/session";
+import {
+  clearSession,
+  isTokenExpired,
+  readAccessToken,
+  readWorkspaceId,
+} from "@/lib/session";
 
 /**
  * Where the API lives.
@@ -41,7 +46,14 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     const status = error?.response?.status;
-    if (status === 401 && typeof window !== "undefined") {
+    // Only bounce to /login when the session is genuinely gone or expired.
+    // Treating *any* 401 as "you are logged out" meant one misbehaving endpoint
+    // could throw a working session away mid-task - which is what happened in
+    // the e2e run: a single 401 on one page logged the browser out before the
+    // next test. A 401 with a live token is an authorization problem for the
+    // caller to surface, not a reason to end the session.
+    const sessionGone = isTokenExpired(readAccessToken());
+    if (status === 401 && sessionGone && typeof window !== "undefined") {
       clearSession();
       const { pathname, search } = window.location;
       if (pathname !== "/login" && pathname !== "/register") {
@@ -142,6 +154,10 @@ export interface VisionImageStats {
 }
 
 export interface VisionAnalyzeResult {
+  /** Base64 PNG of the processed image. The endpoint names this `image`;
+   *  `processed_image` never appears in a response and is kept only so older
+   *  callers keep compiling. */
+  image?: string;
   processed_image?: string;
   stats?: VisionImageStats;
   processing_time_ms?: number;
@@ -229,7 +245,10 @@ export interface ErrorAnalysisResult {
 
 export async function analyzeImage(
   file: File,
-  operations?: Record<string, unknown>,
+  // An array of {op, params} steps, which is what the endpoint validates for.
+  // It was typed as a Record, which let the caller send an object the server
+  // rejects and made the mismatch invisible to the type checker.
+  operations?: Array<{ op: string; params: Record<string, unknown> }>,
 ): Promise<VisionAnalyzeResult> {
   const formData = new FormData();
   formData.append("file", file);
