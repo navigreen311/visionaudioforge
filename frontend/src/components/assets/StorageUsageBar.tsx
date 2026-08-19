@@ -16,7 +16,10 @@ interface StorageStats {
   by_type: StorageByType;
 }
 
-function formatGB(gb: number): string {
+function formatGB(gb: number | undefined | null): string {
+  // Defensive: a missing bucket is zero, not a crash. The assets page used
+  // to white-screen on `undefined.toFixed` whenever the API omitted a type.
+  if (gb == null || Number.isNaN(gb)) return "0 MB";
   if (gb < 0.01) return "0 GB";
   if (gb < 1) return `${(gb * 1024).toFixed(0)} MB`;
   return `${gb.toFixed(1)} GB`;
@@ -96,21 +99,21 @@ export default function StorageUsageBar() {
         <span>
           Images:{" "}
           <span className="font-medium text-gray-700">
-            {formatGB(data.by_type.image)}
+            {formatGB(data.by_type?.image ?? 0)}
           </span>
         </span>
         <span className="text-gray-300">|</span>
         <span>
           Audio:{" "}
           <span className="font-medium text-gray-700">
-            {formatGB(data.by_type.audio)}
+            {formatGB(data.by_type?.audio ?? 0)}
           </span>
         </span>
         <span className="text-gray-300">|</span>
         <span>
           Video:{" "}
           <span className="font-medium text-gray-700">
-            {formatGB(data.by_type.video)}
+            {formatGB(data.by_type?.video ?? 0)}
           </span>
         </span>
       </div>

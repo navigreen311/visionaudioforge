@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import mimetypes
 import uuid
 from typing import Any, Optional
@@ -39,6 +40,11 @@ class AssetService:
         """Upload a single file to MinIO and persist an Asset record."""
         file_bytes = await file.read()
         size_bytes = len(file_bytes)
+        # Content hash, recorded so duplicate detection can be a real lookup
+        # rather than the `{"duplicate": false}` it always used to return. Stored
+        # in the metadata JSON so this needs no migration; indexed lookups can
+        # come later if the table grows enough to want one.
+        content_hash = hashlib.sha256(file_bytes).hexdigest()
         filename = file.filename or "untitled"
         content_type = file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
@@ -56,7 +62,7 @@ class AssetService:
             path=path,
             filename=filename,
             size_bytes=size_bytes,
-            metadata_=metadata or {},
+            metadata_={**(metadata or {}), "sha256": content_hash},
             tags=tags,
             workspace_id=workspace_id,
         )

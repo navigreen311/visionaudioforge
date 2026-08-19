@@ -11,6 +11,10 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel
 from starlette.responses import Response
 
+from sqlalchemy import func, select
+
+from app.config import settings
+
 from app.core.deps import get_db, get_workspace_id
 from app.schemas.asset import (
     AssetRead,
@@ -19,6 +23,7 @@ from app.schemas.asset import (
     BulkUploadResponse,
 )
 from app.schemas.common import PaginatedResponse
+from app.models.asset import Asset, AssetType
 from app.services.assets.asset_service import AssetService
 from app.services.data.storage import MinIOStorageService
 
@@ -115,16 +120,45 @@ async def upload_asset(
 
 
 @router.get("/storage-stats")
-async def storage_stats():
-    """Return storage usage summary. Returns mock data when storage is unavailable."""
+async def storage_stats(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db=Depends(get_db),
+):
+    """Storage actually used by this workspace, by asset type.
+
+    This returned a hardcoded 2.4 GB of 50, split 1.2/0.8/0.4 across image,
+    audio and video - and the console rendered it in a usage bar as though it had
+    been measured. Every workspace saw the same numbers, including an empty one.
+
+    Now summed from `assets.size_bytes`. The quota is configuration rather than
+    measurement, so it comes from settings and is reported as such; a workspace
+    with no assets correctly reads zero.
+    """
+    rows = (
+        await db.execute(
+            select(Asset.type, func.coalesce(func.sum(Asset.size_bytes), 0))
+            .where(Asset.workspace_id == session_workspace)
+            .group_by(Asset.type)
+        )
+    ).all()
+
+    # Every known type is present with a zero rather than omitted. The console
+    # reads `by_type.image` directly, so a workspace with no images used to crash
+    # the assets page on `undefined.toFixed` - a shape that varies with the data
+    # is a shape callers get wrong.
+    by_type: dict[str, float] = {t.value: 0.0 for t in AssetType}
+    total_bytes = 0
+    for asset_type, size in rows:
+        total_bytes += int(size or 0)
+        label = getattr(asset_type, "value", str(asset_type))
+        by_type[label] = round(int(size or 0) / 1_000_000_000, 4)
+
     return {
-        "used_gb": 2.4,
-        "total_gb": 50,
-        "by_type": {
-            "image": 1.2,
-            "audio": 0.8,
-            "video": 0.4,
-        },
+        "used_gb": round(total_bytes / 1_000_000_000, 4),
+        "used_bytes": total_bytes,
+        "total_gb": settings.STORAGE_QUOTA_GB,
+        "by_type": by_type,
+        "measured": True,
     }
 
 
@@ -179,9 +213,43 @@ async def list_assets(
 
 
 @router.get("/check-duplicate")
-async def check_duplicate(hash: str = Query("")):
-    """Check whether a file hash already exists in the system (stub)."""
-    return {"duplicate": False, "asset_id": None, "filename": None}
+async def check_duplicate(
+    hash: str = Query("", description="sha256 of the file being uploaded"),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db=Depends(get_db),
+):
+    """Whether this workspace already holds a file with the same contents.
+
+    This always answered `{"duplicate": false}` regardless of what was asked, so
+    the console's duplicate warning could never fire. Uploads now record a sha256
+    in the asset's metadata, and this looks it up - scoped to the caller's
+    workspace, because "someone else already uploaded this" is not information
+    one tenant should learn about another.
+
+    Assets uploaded before hashing existed have no sha256 and simply will not
+    match; that is a miss, not a false positive.
+    """
+    if not hash:
+        return {"duplicate": False, "asset_id": None, "filename": None}
+
+    existing = (
+        await db.execute(
+            select(Asset)
+            .where(
+                Asset.workspace_id == session_workspace,
+                Asset.metadata_["sha256"].astext == hash,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        return {"duplicate": False, "asset_id": None, "filename": None}
+    return {
+        "duplicate": True,
+        "asset_id": str(existing.id),
+        "filename": existing.filename,
+    }
 
 
 # ------------------------------------------------------------------

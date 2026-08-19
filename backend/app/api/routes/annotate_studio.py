@@ -1,4 +1,4 @@
-"""Annotation Studio routes — lightweight stubs for the annotation UI.
+"""Annotation Studio routes - lightweight stubs for the annotation UI.
 
 These endpoints power the Annotation Studio frontend with mock data
 until the real ML and persistence layers are wired up.
@@ -6,10 +6,16 @@ until the real ML and persistence layers are wired up.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_current_user, get_db
+from app.models.user import User
+from app.services.data.annotation import AnnotationService
 
 router = APIRouter(prefix="/api/annotate", tags=["annotate-studio"])
 
@@ -96,7 +102,7 @@ MOCK_SUGGESTIONS: list[dict[str, Any]] = [
 
 # NOTE: GET /api/annotate/assets is served by routes/annotations.py. This
 # module registers first, so its bare-list version shadowed that one and the
-# Annotate page — which sends workspace_id/dataset_id and reads `data.items` —
+# Annotate page - which sends workspace_id/dataset_id and reads `data.items` -
 # got a payload it could not parse. The duplicate was removed.
 
 
@@ -107,12 +113,53 @@ async def auto_label(body: AutoLabelRequest):
 
 
 @router.post("/save", response_model=SaveResponse)
-async def save_annotations(body: SaveRequest):
-    """Persist annotations for an asset (stub — returns success)."""
-    return SaveResponse(success=True, count=len(body.annotations))
+async def save_annotations(
+    body: SaveRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Persist annotations for an asset.
+
+    This returned `{"success": true, "count": N}` without writing anything: the
+    studio reported a successful save and the work was gone on reload. The
+    Annotation model and AnnotationService existed the whole time - this route
+    simply never called them.
+    """
+    saved = 0
+    for annotation in body.annotations:
+        await AnnotationService.create_annotation(
+            db=db,
+            asset_id=uuid.UUID(body.asset_id),
+            annotation_type=str(annotation.get("type", "bbox")),
+            data=annotation,
+            user_id=current_user.id,
+        )
+        saved += 1
+
+    return SaveResponse(success=True, count=saved)
 
 
 @router.post("/export", response_model=ExportResponse)
-async def export_annotations(body: ExportRequest):
-    """Export annotations in the requested format (stub — returns empty list)."""
-    return ExportResponse(format=body.format, annotations=[])
+async def export_annotations(
+    body: ExportRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export a dataset's annotations in COCO, YOLO or VOC form.
+
+    This returned an empty list for every request, which is indistinguishable
+    from a dataset with no annotations - so an export that silently lost
+    everything looked like an export of nothing. AnnotationService already
+    implements all three formats.
+    """
+    exported = await AnnotationService.export_annotations(
+        db=db,
+        dataset_id=uuid.UUID(body.dataset_id),
+        format=body.format,
+    )
+    # The service returns the format's own document shape; hand back whatever
+    # list it carries so the response stays a list, as the schema promises.
+    if isinstance(exported, dict):
+        payload = exported.get("annotations") or exported.get("images") or [exported]
+    else:
+        payload = exported
+    return ExportResponse(format=body.format, annotations=payload)
