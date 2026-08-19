@@ -401,3 +401,156 @@ async def test_a_workspace_can_still_write_its_own_rows(
     assert await _read_unscoped(model, row_id) is None, (
         f"A could not delete its own {label}"
     )
+
+
+async def test_bulk_write_to_a_child_row_is_scoped_through_its_parent(two_workspaces):
+    """The correlated-subquery case, on the write path.
+
+    AgentMemory has no workspace_id; it is scoped by an IN against its parent
+    Agent. That criteria composes into a SELECT easily enough - whether it
+    survives being attached to an UPDATE or DELETE is the question this asks,
+    and it covers the 23 child classes that have no column of their own.
+    """
+    from sqlalchemy import delete, update
+
+    ws_a, ws_b = two_workspaces
+    async with async_session_factory() as db:
+        with unscoped():
+            agent = Agent(name="child write owner", agent_type="copilot", workspace_id=ws_a)
+            db.add(agent)
+            await db.flush()
+            memory = AgentMemory(agent_id=agent.id, content="tenant A private note")
+            db.add(memory)
+            await db.commit()
+            memory_id = memory.id
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_b)
+        try:
+            await db.execute(
+                update(AgentMemory).where(AgentMemory.id == memory_id)
+                .values(content="MUTATED BY B")
+                .execution_options(synchronize_session=False)
+            )
+            await db.execute(
+                delete(AgentMemory).where(AgentMemory.id == memory_id)
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    survivor = await _read_unscoped(AgentMemory, memory_id)
+    assert survivor is not None, "B's bulk DELETE removed A's agent memory"
+    assert survivor.content == "tenant A private note", (
+        "B's bulk UPDATE rewrote A's agent memory"
+    )
+
+
+async def test_an_exempt_table_is_still_writable(two_workspaces):
+    """audit_logs must stay writable from any context, including none.
+
+    The audit middleware records failed logins, which by definition have no
+    tenant. Scoping writes to audit_logs would silently drop exactly the rows
+    the trail exists to hold.
+    """
+    from sqlalchemy import update
+
+    from app.models.audit_log import AuditLog
+
+    ws_a, ws_b = two_workspaces
+    async with async_session_factory() as db:
+        with unscoped():
+            row = AuditLog(action="http.post", resource="/api/auth/login",
+                           payload={}, workspace_id=None)
+            db.add(row)
+            await db.commit()
+            row_id = row.id
+
+    # Under B's context: audit_logs is exempt, so this must still apply.
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_b)
+        try:
+            await db.execute(
+                update(AuditLog).where(AuditLog.id == row_id)
+                .values(resource="/api/auth/login?checked")
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert (await _read_unscoped(AuditLog, row_id)).resource.endswith("?checked"), (
+        "the write filter reached an exempt table"
+    )
+
+
+async def test_no_tenant_context_leaves_writes_alone(two_workspaces):
+    """Background workers and migrations run with no tenant bound."""
+    from sqlalchemy import update
+
+    ws_a, _ = two_workspaces
+    row_id = await _insert_as(ws_a, lambda ws: Agent(
+        name="worker probe", agent_type="copilot", workspace_id=ws))
+
+    assert current_workspace.get() is None
+    async with async_session_factory() as db:
+        await db.execute(
+            update(Agent).where(Agent.id == row_id).values(name="touched by a worker")
+            .execution_options(synchronize_session=False)
+        )
+        await db.commit()
+
+    assert (await _read_unscoped(Agent, row_id)).name == "touched by a worker", (
+        "a write with no tenant context was filtered"
+    )
+
+
+async def test_unscoped_widens_the_write_path_too(two_workspaces):
+    """The escape hatch has to work for writes or callers will bypass it."""
+    from sqlalchemy import update
+
+    ws_a, ws_b = two_workspaces
+    row_id = await _insert_as(ws_a, lambda ws: Agent(
+        name="unscoped write probe", agent_type="copilot", workspace_id=ws))
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_b)
+        try:
+            with unscoped():  # deliberate cross-tenant sweep
+                await db.execute(
+                    update(Agent).where(Agent.id == row_id).values(name="swept")
+                    .execution_options(synchronize_session=False)
+                )
+                await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert (await _read_unscoped(Agent, row_id)).name == "swept", (
+        "unscoped() did not widen a bulk write"
+    )
+
+
+async def test_orm_unit_of_work_delete_still_works(two_workspaces):
+    """`session.delete(obj)` flushes through core, not an ORM DELETE statement.
+
+    Widening the hook to cover `is_delete` must not break the ordinary
+    load-then-delete path, which is what most handlers here actually do.
+    """
+    ws_a, _ = two_workspaces
+    row_id = await _insert_as(ws_a, lambda ws: Agent(
+        name="uow delete probe", agent_type="copilot", workspace_id=ws))
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_a)
+        try:
+            row = await db.get(Agent, row_id)
+            assert row is not None
+            await db.delete(row)
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert await _read_unscoped(Agent, row_id) is None, (
+        "the ordinary load-then-delete path stopped working"
+    )
