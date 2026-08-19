@@ -9,7 +9,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
-from app.core.deps import get_db
+from sqlalchemy import select
+
+from app.core.deps import get_db, get_workspace_id
+from app.models.model_registry import ModelRecord, ModelStatus
 from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.schemas.common import PaginatedResponse
 from app.schemas.registry import (
@@ -132,17 +135,38 @@ async def rollback_model(
 # ------------------------------------------------------------------
 
 @router.get("/models/available")
-async def list_available_models() -> list[dict[str, str]]:
-    """Return a lightweight list of models available for federated training.
+async def list_available_models(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, str]]:
+    """Models in this workspace that a federated round can train against.
 
-    Stub endpoint — returns demo data until wired to the real registry.
+    This returned the same five invented entries - ResNet-50, YOLOv8, CLIP,
+    Wav2Vec2, EfficientNet - to every workspace, whether or not it had ever
+    registered a model. Picking one started a federation against a model id that
+    did not exist.
     """
+    rows = (
+        await db.execute(
+            select(ModelRecord)
+            .where(
+                ModelRecord.workspace_id == session_workspace,
+                ModelRecord.status.in_(
+                    (ModelStatus.registered, ModelStatus.staging, ModelStatus.production)
+                ),
+            )
+            .order_by(ModelRecord.updated_at.desc())
+        )
+    ).scalars().all()
+
     return [
-        {"id": "resnet50-v2", "name": "ResNet-50", "version": "2.1", "backbone": "resnet50"},
-        {"id": "yolov8-det", "name": "YOLOv8 Detection", "version": "1.0", "backbone": "yolov8n"},
-        {"id": "clip-vit-b32", "name": "CLIP ViT-B/32", "version": "1.2", "backbone": "vit-b-32"},
-        {"id": "wav2vec2-base", "name": "Wav2Vec2 Base", "version": "1.0", "backbone": "wav2vec2"},
-        {"id": "efficientnet-b4", "name": "EfficientNet-B4", "version": "3.0", "backbone": "efficientnet"},
+        {
+            "id": str(m.id),
+            "name": m.name,
+            "version": m.version or "",
+            "backbone": m.backbone or "",
+        }
+        for m in rows
     ]
 
 
@@ -180,13 +204,13 @@ async def update_model_card(
 ):
     """Attach or update the model card for a registered model.
 
-    V1 stub — persists nothing yet but validates and echoes back.
+    V1 stub - persists nothing yet but validates and echoes back.
     """
     return JSONResponse(
         content={
             "status": "ok",
             "model_id": str(model_id),
-            "message": "Model card saved (stub — V2 will persist to DB).",
+            "message": "Model card saved (stub - V2 will persist to DB).",
             "card": body.model_dump(),
         }
     )

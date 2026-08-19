@@ -1,4 +1,4 @@
-"""Settings stub routes — general, security, notifications, team management."""
+"""Settings stub routes - general, security, notifications, team management."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ _notifications: dict[str, Any] = NotificationSettings().model_dump()
 
 
 # ---------------------------------------------------------------------------
-# Routes — General
+# Routes - General
 # ---------------------------------------------------------------------------
 
 @router.get("/general", response_model=GeneralSettings)
@@ -74,7 +74,7 @@ async def update_general(body: GeneralSettings):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Security
+# Routes - Security
 # ---------------------------------------------------------------------------
 
 @router.get("/security", response_model=SecuritySettings)
@@ -91,7 +91,7 @@ async def update_security(body: SecuritySettings):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Notifications
+# Routes - Notifications
 # ---------------------------------------------------------------------------
 
 @router.get("/notifications", response_model=NotificationSettings)
@@ -108,21 +108,7 @@ async def update_notifications(body: NotificationSettings):
 
 
 # ---------------------------------------------------------------------------
-# Routes — Team
-# ---------------------------------------------------------------------------
-
-@router.get("/team", response_model=list[TeamMember])
-async def list_team():
-    """Return mock team members."""
-    return [
-        TeamMember(id="u-1", name="Admin User", email="admin@acme.io", role="admin", status="active", joined_at="2025-01-15T00:00:00Z"),
-        TeamMember(id="u-2", name="Jane Doe", email="jdoe@acme.io", role="editor", status="active", joined_at="2025-03-10T00:00:00Z"),
-        TeamMember(id="u-3", name="Ming Chen", email="mchen@acme.io", role="viewer", status="active", joined_at="2025-06-01T00:00:00Z"),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# Routes — Webhook Delivery Logs (INF19)
+# Routes - Team
 # ---------------------------------------------------------------------------
 
 @router.get("/integrations/webhook/logs")

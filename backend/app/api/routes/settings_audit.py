@@ -1,8 +1,17 @@
-"""Settings Audit Log API — mock audit trail entries."""
+"""Settings Audit Log API - reads the audit_logs table."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from datetime import datetime
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db, get_workspace_id
+from app.models.audit_log import AuditLog
+from app.models.user import User
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -203,34 +212,98 @@ async def get_audit_log(
     action: str = Query("", description="Filter by action type"),
     date_from: str = Query("", description="ISO date lower bound"),
     date_to: str = Query("", description="ISO date upper bound"),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
 ) -> AuditLogResponse:
-    """Return paginated, filterable audit log entries (mock data)."""
-    filtered = list(MOCK_ENTRIES)
+    """Paginated, filterable audit entries from `audit_logs`.
 
-    if search:
-        q = search.lower()
-        filtered = [e for e in filtered if q in e.resource.lower() or q in str(e.details).lower()]
-
-    if user:
-        filtered = [e for e in filtered if e.user_name == user]
+    This served a fixed list of fabricated entries, filtered and paginated in
+    memory - so the compliance screen showed the same invented history to every
+    workspace, and a real action never appeared in it. The AuditMiddleware has
+    been writing genuine rows this whole time.
+    """
+    conditions = [AuditLog.workspace_id == session_workspace]
 
     if action:
-        filtered = [e for e in filtered if e.action == action]
+        conditions.append(AuditLog.action == action)
+    if search:
+        pattern = f"%{search.lower()}%"
+        conditions.append(
+            or_(
+                func.lower(AuditLog.resource).like(pattern),
+                func.lower(AuditLog.action).like(pattern),
+            )
+        )
+    for bound, op in ((date_from, "gte"), (date_to, "lte")):
+        if not bound:
+            continue
+        try:
+            parsed = datetime.fromisoformat(bound.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail=f"Not an ISO date: {bound!r}"
+            ) from None
+        conditions.append(
+            AuditLog.timestamp >= parsed if op == "gte" else AuditLog.timestamp <= parsed
+        )
 
-    if date_from:
-        filtered = [e for e in filtered if e.timestamp >= date_from]
+    # The user filter is by name, but the column is a foreign key, so resolve it
+    # rather than pretending the id is a name.
+    if user:
+        conditions.append(
+            AuditLog.user_id.in_(
+                select(User.id).where(func.lower(User.email).like(f"%{user.lower()}%"))
+            )
+        )
 
-    if date_to:
-        filtered = [e for e in filtered if e.timestamp <= date_to]
+    total = int(
+        (
+            await db.execute(
+                select(func.count()).select_from(AuditLog).where(*conditions)
+            )
+        ).scalar()
+        or 0
+    )
 
-    total = len(filtered)
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_entries = filtered[start:end]
+    rows = (
+        (
+            await db.execute(
+                select(AuditLog, User.email)
+                .join(User, User.id == AuditLog.user_id, isouter=True)
+                .where(*conditions)
+                .order_by(AuditLog.timestamp.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        .all()
+    )
+
+    entries = [
+        AuditLogEntry(
+            id=str(row.AuditLog.id),
+            timestamp=row.AuditLog.timestamp.isoformat() if row.AuditLog.timestamp else "",
+            user_name=row.email or "system",
+            # The console renders initials from this; derive them rather than
+            # inventing an avatar URL that resolves to nothing.
+            user_avatar=(row.email or "system")[:2].upper(),
+            action=row.AuditLog.action,
+            resource=row.AuditLog.resource,
+            details={
+                k: v
+                for k, v in (row.AuditLog.payload or {}).items()
+                if isinstance(v, (str, int, bool)) or v is None
+            },
+            ip_address=str((row.AuditLog.payload or {}).get("ip", "")),
+        )
+        for row in rows
+    ]
 
     return AuditLogResponse(
-        entries=page_entries,
+        entries=entries,
         total=total,
         page=page,
         page_size=page_size,
     )
+
+
