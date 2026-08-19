@@ -98,6 +98,9 @@ class SimulationRunFull(BaseModel):
 # Event type mapping per scenario
 # ---------------------------------------------------------------------------
 
+# Lookup tables, not state: which event types and pipeline a scenario kind
+# implies. Scenarios and runs themselves are rows in simulation_scenarios /
+# simulation_runs.
 _SCENARIO_EVENT_TYPES: dict[str, list[str]] = {
     "intrusion_detection": ["person_detected", "motion_alert", "perimeter_breach", "loitering"],
     "vehicle_tracking": ["vehicle_enter", "vehicle_tracked", "license_plate_read", "speed_violation"],
