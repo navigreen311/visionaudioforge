@@ -42,94 +42,17 @@ def _serialize_update(update: dict) -> dict:
 # Federation lifecycle
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Federation lifecycle
+# ---------------------------------------------------------------------------
 
-@pytest.fixture
-def coordinator():
-    return FederatedCoordinator()
-
-
-@pytest.fixture
-def db():
-    return AsyncMock()
-
-
-@pytest.mark.asyncio
-async def test_create_federation(coordinator, db):
-    result = await coordinator.create_federation(db, WORKSPACE_ID, "test-fed", MODEL_ID)
-    assert result["name"] == "test-fed"
-    assert result["status"] == "created"
-    assert result["federation_id"]
-    assert result["config"]["min_participants"] == 2
-    assert result["config"]["aggregation_method"] == "fedavg"
-
-
-@pytest.mark.asyncio
-async def test_join_federation(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "test-fed", MODEL_ID)
-    fid = fed["federation_id"]
-
-    r1 = await coordinator.join_federation(db, fid, "participant-a", {"org": "A"})
-    assert r1["joined"] is True
-    assert r1["participant_count"] == 1
-
-    r2 = await coordinator.join_federation(db, fid, "participant-b", {"org": "B"})
-    assert r2["joined"] is True
-    assert r2["participant_count"] == 2
-
-    # Duplicate join should fail
-    r3 = await coordinator.join_federation(db, fid, "participant-a")
-    assert r3["joined"] is False
-    assert r3["participant_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_start_round(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "test-fed", MODEL_ID)
-    fid = fed["federation_id"]
-    await coordinator.join_federation(db, fid, "p1")
-    await coordinator.join_federation(db, fid, "p2")
-
-    result = await coordinator.start_round(db, fid)
-    assert result["round_number"] == 1
-    assert result["round_id"]
-    assert result["global_model_version"] == "v1"
-    assert result["instructions"]["action"] == "train_local_model"
-
-
-@pytest.mark.asyncio
-async def test_start_round_insufficient_participants(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "test-fed", MODEL_ID)
-    fid = fed["federation_id"]
-    await coordinator.join_federation(db, fid, "p1")
-
-    with pytest.raises(ValueError, match="Need at least"):
-        await coordinator.start_round(db, fid)
-
-
-@pytest.mark.asyncio
-async def test_submit_and_aggregate_round(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "test-fed", MODEL_ID)
-    fid = fed["federation_id"]
-    await coordinator.join_federation(db, fid, "p1")
-    await coordinator.join_federation(db, fid, "p2")
-    rnd = await coordinator.start_round(db, fid)
-    rid = rnd["round_id"]
-
-    update1 = _serialize_update({"dense": np.array([1.0, 2.0, 3.0])})
-    update2 = _serialize_update({"dense": np.array([3.0, 4.0, 5.0])})
-
-    r1 = await coordinator.submit_update(db, fid, rid, "p1", update1, {"loss": 0.5, "sample_count": 100})
-    assert r1["received"] is True
-    assert r1["updates_so_far"] == 1
-
-    r2 = await coordinator.submit_update(db, fid, rid, "p2", update2, {"loss": 0.3, "sample_count": 100})
-    assert r2["received"] is True
-    assert r2["updates_so_far"] == 2
-
-    agg = await coordinator.aggregate_round(db, fid, rid)
-    assert agg["round_complete"] is True
-    assert agg["participants"] == 2
-    assert "loss" in agg["avg_metrics"]
+# The lifecycle tests that lived here drove the coordinator with an AsyncMock
+# session and a workspace id that was not a UUID, so they passed whether or not
+# anything was written. Now that federations, participants and rounds are rows,
+# they are covered against a real database in tests/test_federated_persistence.py
+# — including round recording, contribution metrics, privacy-budget spend and
+# restart survival. What remains in this file is the aggregation, privacy and
+# secure-aggregation maths, which needs no session.
 
 
 # ---------------------------------------------------------------------------
@@ -267,33 +190,3 @@ def test_secure_aggregation_encrypt_decrypt():
     result = sa.aggregate_encrypted_stub([encrypted, encrypted])
     np.testing.assert_array_almost_equal(result["result"]["dense"], [1.0, 2.0, 3.0])
     assert result["method"] == "simulated_secure_sum"
-
-
-# ---------------------------------------------------------------------------
-# API route smoke tests (using coordinator directly, no HTTP server needed)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_api_create(coordinator, db):
-    result = await coordinator.create_federation(
-        db, WORKSPACE_ID, "api-test", MODEL_ID, {"min_participants": 3}
-    )
-    assert result["config"]["min_participants"] == 3
-
-
-@pytest.mark.asyncio
-async def test_api_join(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "api-test", MODEL_ID)
-    r = await coordinator.join_federation(db, fed["federation_id"], "node-1")
-    assert r["joined"] is True
-
-
-@pytest.mark.asyncio
-async def test_api_status(coordinator, db):
-    fed = await coordinator.create_federation(db, WORKSPACE_ID, "api-test", MODEL_ID)
-    fid = fed["federation_id"]
-    await coordinator.join_federation(db, fid, "node-1")
-    status = await coordinator.get_federation_status(db, fid)
-    assert status["status"] == "created"
-    assert len(status["participants"]) == 1
