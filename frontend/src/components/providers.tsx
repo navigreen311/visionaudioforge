@@ -5,11 +5,21 @@ import { ReactNode, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { ToastProvider } from "@/components/ui/Toast";
 import { ConfirmProvider } from "@/providers/ConfirmProvider";
+import { installAuthedFetch } from "@/lib/authed-fetch";
 import { useAuthStore } from "@/stores/auth";
 
 interface ProvidersProps {
   children: ReactNode;
 }
+
+// At module scope, not in an effect: React runs child effects before parent
+// ones, so a component that fetches on mount would beat an effect here. This
+// runs when the client bundle first evaluates, ahead of any render.
+//
+// 57 places in the console call `fetch("/api/…")` directly rather than through
+// the axios client, and every one was returning 401 once authentication landed.
+// See lib/authed-fetch.ts.
+installAuthedFetch();
 
 const publicPaths = ["/login", "/register"];
 

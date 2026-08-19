@@ -55,15 +55,25 @@ _BASE_CONST = re.compile(
 _INTERPOLATION = re.compile(r"\$\{[^}]*\}")
 
 
+# Files that *reason about* API paths rather than calling any. `authed-fetch.ts`
+# decides whether a URL belongs to our API by testing a "/api" prefix, and the
+# scanner cannot tell a prefix test from a call - it reported the bare prefix as
+# an unmounted endpoint. Keep this list to files that genuinely handle routing,
+# never to silence a path that really is missing.
+_NON_CALLING_SOURCES = frozenset({"authed-fetch.ts"})
+
+
 def _iter_source_files() -> list[Path]:
-    """Return every TypeScript source file in the console."""
+    """Return every TypeScript source file in the console that calls the API."""
     if not FRONTEND_SRC.is_dir():  # pragma: no cover - frontend always present
         return []
     files = [
         p
         for ext in ("*.ts", "*.tsx")
         for p in FRONTEND_SRC.rglob(ext)
-        if ".next" not in p.parts and "node_modules" not in p.parts
+        if ".next" not in p.parts
+        and "node_modules" not in p.parts
+        and p.name not in _NON_CALLING_SOURCES
     ]
     return sorted(files)
 

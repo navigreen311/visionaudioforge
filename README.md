@@ -17,7 +17,7 @@ decorator on a router nobody mounted is correctly not counted.
 | Metric | Value | Counted from |
 |--------|-------|--------------|
 | **Modules** | 40 | rows in the module table below (58 routers are mounted — some modules mount more than one) |
-| **Source Files** | 817 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
+| **Source Files** | 819 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
 | **API Endpoints** | 597 | method + path operations on the mounted router, across 532 distinct `/api` paths |
 | **Vertical Packs** | 7 (Security, Industrial, Retail, Healthcare, Call Centre, Education, Media) | `backend/app/services/verticals/` |
 | **SDKs** | 2 (Python, JavaScript) | `sdk/` |

@@ -11,7 +11,11 @@ jobs:
   e2e:
     name: E2E (chromium against the compose stack)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 45 minutes was not enough and the job was guillotined mid-run: building the
+    # backend image (torch, faiss, transformers, ffmpeg) and the frontend image
+    # took ~40 of them on a cold cache, leaving nothing for the browser. The
+    # tests themselves finish in well under a minute.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +30,22 @@ jobs:
                       /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           sudo docker image prune -af
           echo "after:  $(df -h / | awk 'NR==2 {print $4}') free"
+
+      # Node and the browser first: they are quick and predictable, and a slow
+      # image build should not be what starves them of the job's time budget.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
 
       - uses: docker/setup-buildx-action@v3
 
@@ -48,20 +68,6 @@ jobs:
           load: true
           cache-from: type=gha,scope=vaf-frontend
           cache-to: type=gha,mode=max,scope=vaf-frontend
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci
-
-      - name: Install Chromium
-        working-directory: frontend
-        run: npx playwright install --with-deps chromium
 
       - name: Run the e2e suite
         env:

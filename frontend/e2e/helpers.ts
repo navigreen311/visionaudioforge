@@ -53,11 +53,18 @@ export async function loginThroughUi(page: Page, email: string, password: string
   await page.getByRole("button", { name: /sign in|log in|login/i }).click();
 }
 
-/** A tiny valid PNG, built in-process so the suite carries no binary fixtures. */
+/**
+ * A real 32x32 PNG, built in-process so the suite carries no binary fixtures.
+ *
+ * Big enough to decode: a 16x16 placeholder satisfied an upload, which only
+ * stores bytes, but OpenCV refused it with "Invalid image file" when the vision
+ * endpoint actually tried to read it.
+ *
+ * One unbroken string on purpose. Splitting the base64 across concatenated
+ * lines corrupted it into a libpng "IDAT: CRC error" that looked exactly like a
+ * broken endpoint.
+ */
 export function pngBytes(): Buffer {
-  return Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAKUlEQVR42u3NMQEAAAgDoK" +
-      "Kh/Z+hLwZ4kgAAAAAAAAAAAAAAAAAAgOcCLzYAAWjW2KEAAAAASUVORK5CYII=",
-    "base64",
-  );
+  // prettier-ignore
+  return Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAhklEQVRIDbXBMQEAAAjDsNb5nIMBODhI5Jk8k2fyTJ7JM3kmz2RR4cQwkkWFE8NIFhVODCNZVDgxjGRR4cQwkkWFE8NIFhVODCNZVDgxjGRR4cQwkkWFE8NIFhVODCNZVDgxjGRR4cQwkkWFE8NIFhVODCNZVDgxjOSZPJNn8kyeyTN5Js8aPKwgIYMdLnoAAAAASUVORK5CYII=", "base64");
 }

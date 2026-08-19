@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioaccess"
     MINIO_SECRET_KEY: str = "miniosecret"
     MINIO_BUCKET: str = "visionaudioforge"
+    # Reported by /api/assets/storage-stats as the denominator of the usage bar.
+    # Configuration, not a measurement - MinIO does not enforce a per-workspace
+    # quota, so this is what the console shows people to plan against.
+    STORAGE_QUOTA_GB: int = 50
 
     # Celery
     CELERY_BROKER_URL: str = "redis://redis:6379/0"

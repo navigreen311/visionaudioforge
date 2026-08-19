@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
+from app.core.tenancy import install_workspace_filter
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -17,6 +18,12 @@ async_session_factory = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+# Confine every ORM read to the caller's workspace. Registered here rather than
+# in main.py so that Celery workers and scripts get it too - anything that builds
+# a session from this factory is scoped, not just HTTP requests.
+# See app/core/tenancy.py for what it does and does not cover.
+install_workspace_filter(AsyncSession.sync_session_class)
 
 
 async def get_async_session() -> AsyncSession:
