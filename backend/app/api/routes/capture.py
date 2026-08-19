@@ -1,4 +1,4 @@
-"""Capture API routes — RTSP, multi-cam, recording, snapshots, frame analysis."""
+"""Capture API routes - RTSP, multi-cam, recording, snapshots, frame analysis."""
 
 from __future__ import annotations
 
@@ -231,7 +231,8 @@ async def analyze_frame(body: AnalyzeFrameRequest):
 async def test_rtsp(url: str = Query(..., description="RTSP stream URL to test")):
     """Test connectivity to an RTSP stream and report latency.
 
-    Returns success flag and round-trip latency in milliseconds.
+    Opens the stream for real and reports whether it answered, with the
+    round-trip latency in milliseconds.
     """
     t0 = time.perf_counter()
     reader = RTSPStreamReader(url)

@@ -313,16 +313,17 @@ async def test_search_lifecycle(test_app):
     """Full search lifecycle: index, text search, verify results, stats."""
     asset_id = str(uuid.uuid4())
 
-    # Index an asset (generates embedding and adds to FAISS)
+    # Indexing an asset that does not exist must be refused. This used to assert
+    # the opposite - that posting a random UUID indexed something - which only
+    # held because the endpoint embedded the text of the id and reported success
+    # regardless. Every vector in the index described a hex string.
     r_index = await test_app.post(
         "/api/search/index",
         json={"asset_id": asset_id},
     )
-    assert r_index.status_code != 404, "search/index returned 404"
-
-    if r_index.status_code in OK:
-        data = r_index.json()
-        assert data.get("indexed") is True, "Asset should be indexed"
+    assert r_index.status_code in (401, 403, 404), (
+        f"indexing a nonexistent asset should be refused, got {r_index.status_code}"
+    )
 
     # Search by text
     r_search = await test_app.post(
@@ -342,7 +343,10 @@ async def test_search_lifecycle(test_app):
     if r_stats.status_code == 200:
         stats = r_stats.json()
         assert "total_vectors" in stats, "Stats should include total_vectors"
-        assert stats["total_vectors"] >= 1, "At least one vector should be indexed"
+        # No assertion that the index is non-empty: nothing in this test indexes
+        # a real asset, and the previous expectation was satisfied only by the
+        # endpoint indexing a UUID string.
+        assert stats["total_vectors"] >= 0
 
 
 # ---------------------------------------------------------------------------

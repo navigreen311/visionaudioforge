@@ -1,4 +1,4 @@
-"""Annotation management routes — CRUD, export, import, stats."""
+"""Annotation management routes - CRUD, export, import, stats."""
 
 from __future__ import annotations
 
@@ -6,7 +6,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from app.core.deps import get_db
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db, get_workspace_id
+from app.models.annotation import Annotation
+from app.models.asset import Asset
 from app.schemas.annotation import (
     AnnotationCreate,
     AnnotationImport,
@@ -128,21 +133,46 @@ async def annotation_stats(dataset_id: UUID, db=Depends(get_db)):
 @router.get("/annotate/assets")
 async def get_annotate_assets(
     dataset_id: UUID = Query(...),
-    workspace_id: UUID = Query(...),
+    workspace_id: UUID | None = Query(None),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Return mock asset list for the annotation page thumbnail strip.
+    """Assets in a dataset, for the annotation page's thumbnail strip.
 
-    TODO: Replace with real DB query joining assets to the dataset.
+    This returned twenty invented filenames - image_000.jpg upward - with null
+    thumbnails, so the annotation studio always looked populated and never
+    showed the dataset the operator had opened. The TODO asking for the real
+    query has been in the file since it was written.
     """
-    mock_assets = [
-        {
-            "id": f"a{i:04d}-0000-0000-0000-000000000000",
-            "filename": f"image_{i:03d}.jpg",
-            "path": f"/data/images/image_{i:03d}.jpg",
-            "type": "image",
-            "thumbnail_url": None,
-            "annotation_count": (i * 3) % 5,
-        }
-        for i in range(1, 21)
-    ]
-    return {"items": mock_assets, "total": len(mock_assets)}
+    rows = (
+        await db.execute(
+            select(Asset)
+            .join(Annotation, Annotation.asset_id == Asset.id, isouter=True)
+            .where(
+                Asset.workspace_id == (workspace_id or session_workspace),
+                or_(
+                    Annotation.dataset_id == dataset_id,
+                    Asset.metadata_["dataset_id"].astext == str(dataset_id),
+                ),
+            )
+            .order_by(Asset.created_at.desc())
+            .limit(500)
+            .distinct()
+        )
+    ).scalars().unique().all()
+
+    return {
+        "items": [
+            {
+                "id": str(a.id),
+                "filename": a.filename,
+                "type": getattr(a.type, "value", str(a.type)),
+                "size_bytes": a.size_bytes,
+                "thumbnail_url": f"/api/assets/{a.id}/download",
+            }
+            for a in rows
+        ],
+        "total": len(rows),
+    }
+
+

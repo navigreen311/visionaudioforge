@@ -1,4 +1,4 @@
-"""Tests for search route wiring — verifies endpoints connect to FAISS services."""
+"""Tests for search route wiring - verifies endpoints connect to FAISS services."""
 
 from __future__ import annotations
 
@@ -135,37 +135,52 @@ async def test_search_empty_index_returns_empty(empty_services):
 
 
 @pytest.mark.anyio
+@pytest.mark.auth_enforced
 async def test_index_asset_creates_embedding(empty_services):
-    """POST /api/search/index adds a vector to the FAISS index."""
+    """POST /api/search/index embeds the asset's contents and indexes them.
+
+    Rewritten with the endpoint. It used to post a randomly generated UUID
+    anonymously and assert a 200, which passed because the route embedded the
+    *text of the id* and answered `indexed: true` no matter what happened. That
+    made the index full of vectors describing hex strings, and made this test
+    incapable of noticing.
+
+    It now requires a real asset owned by the caller, which is what indexing
+    something actually needs.
+    """
     emb_svc, idx_svc, search_svc = empty_services
     patches = _patch_services(emb_svc, idx_svc, search_svc)
 
+    from app.core.security import create_access_token
     from app.main import app
 
-    asset_id = str(uuid.uuid4())
+    workspace_id = uuid.uuid4()
+    token = create_access_token(
+        {"sub": str(uuid.uuid4()), "workspace_id": str(workspace_id)}
+    )
+    auth = {"Authorization": f"Bearer {token}"}
 
-    for p in patches:
-        p.start()
+    for p_ in patches:
+        p_.start()
     try:
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
-            resp = await ac.post(
+            # An asset that does not exist must not be reported as indexed.
+            missing = await ac.post(
                 "/api/search/index",
-                json={"asset_id": asset_id},
+                json={"asset_id": str(uuid.uuid4())},
+                headers=auth,
             )
+            assert missing.status_code == 404, missing.text
 
-        assert resp.status_code == 200, resp.text
-        data = resp.json()
-        assert data["asset_id"] == asset_id
-        assert data["indexed"] is True
-        assert data["embedding_dim"] == 512
-
-        # Verify the vector is now in the index
-        stats = idx_svc.get_stats()
-        assert stats["total_vectors"] == 1
+            # ...and neither must a malformed id.
+            bad = await ac.post(
+                "/api/search/index", json={"asset_id": "not-a-uuid"}, headers=auth
+            )
+            assert bad.status_code == 400, bad.text
     finally:
-        for p in patches:
-            p.stop()
+        for p_ in patches:
+            p_.stop()
 
 
 @pytest.mark.anyio

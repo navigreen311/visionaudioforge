@@ -1,4 +1,4 @@
-"""Transform API routes — audio transforms AND video/image transforms.
+"""Transform API routes - audio transforms AND video/image transforms.
 
 Audio endpoints live under /api/transform/audio/...
 Video endpoints live under /api/transform/video/...
@@ -327,27 +327,6 @@ async def audio_chain(
 # ===================================================================
 
 
-@router.post("/video")
-async def video_transform():
-    """Generic video/image transform stub — returns realistic mock response."""
-    return {
-        "output_b64": None,
-        "processing_time_ms": 245,
-        "output_dimensions": [1920, 1080],
-        "output_size_bytes": 524288,
-    }
-
-
-@router.post("/batch")
-async def batch_transform():
-    """Batch transform stub — queues a batch processing job."""
-    return {
-        "job_id": "batch_123",
-        "status": "queued",
-        "total_files": 0,
-    }
-
-
 @router.post("/video/background-remove")
 async def background_remove(
     file: UploadFile = File(...),
@@ -604,7 +583,7 @@ async def video_smart_crop(
 ):
     """Intelligently crop an image to a target size.
 
-    ``target_size`` is "WxH" — one field rather than two, because a crop target
+    ``target_size`` is "WxH" - one field rather than two, because a crop target
     is a single decision and splitting it lets width and height disagree.
     """
     start = time.perf_counter()

@@ -34,9 +34,10 @@ interface DashboardStatsResponse {
 }
 
 interface RuntimeMetrics {
-  gpu: number;
-  cpu: number;
-  storage: number;
+  // null when the host does not report it - see /api/runtime/metrics.
+  gpu: number | null;
+  cpu: number | null;
+  storage: number | null;
 }
 
 type TimeRange = "1d" | "7d" | "30d" | "90d";

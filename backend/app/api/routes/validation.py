@@ -1,4 +1,4 @@
-"""Validation & Trust API routes — calibration, drift, uncertainty,
+"""Validation & Trust API routes - calibration, drift, uncertainty,
 model cards, audit trails, and explainability.
 
 Endpoints that hit external services fall back to realistic mock data
@@ -130,13 +130,20 @@ class UncertaintyRequest(BaseModel):
 
 @router.post("/calibration")
 async def calibration_analysis(body: CalibrationRequest | None = None):
-    """Compute calibration bins, ECE, and MCE from predictions vs ground truth.
+    """Compute calibration bins, ECE and MCE from predictions vs ground truth.
 
-    Accepts an empty or minimal body and returns mock calibration data as a
-    graceful fallback during development.
+    The fixture fallback for an empty body is gone. It meant a caller that sent
+    nothing - or sent the wrong field names - got a plausible calibration curve
+    back and no indication that none of it came from their data.
     """
     if body is None or not body.predictions or not body.ground_truth:
-        return _mock_calibration()
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Calibration needs `predictions` and `ground_truth` arrays of the "
+                "same length."
+            ),
+        )
     try:
         result = await _svc.calibration_analysis(
             body.predictions, body.ground_truth, body.n_bins
@@ -186,11 +193,13 @@ async def explain_prediction(
 ):
     """Upload an image and receive a saliency heatmap plus SHAP values.
 
-    Falls back to mock explainability data when no file is provided or
-    when the service is unavailable.
+    The fixture fallback is gone: an explanation of a prediction nobody made is
+    worse than an error, because it looks exactly like a real one.
     """
     if file is None:
-        return _mock_explain()
+        raise HTTPException(
+            status_code=422, detail="An image file is required to explain a prediction."
+        )
 
     contents = await file.read()
     if not contents:
@@ -243,7 +252,7 @@ async def explain_prediction(
 @router.post("/model-card/export")
 async def export_model_card():
     """Export a model card as plain text (placeholder)."""
-    card_text = """# Model Card — Vision Classifier v2.1
+    card_text = """# Model Card - Vision Classifier v2.1
 
 ## Model Details
 - Architecture: ResNet-50
@@ -276,17 +285,17 @@ General-purpose image classification for surveillance and retail analytics.
 @router.post("/export-report")
 async def export_validation_report():
     """Export a full validation report as plain text (placeholder)."""
-    report_text = """# Validation Report — 2026-03-20
+    report_text = """# Validation Report - 2026-03-20
 
 ## Summary
 Model passed all validation checks with minor calibration drift detected.
 
 ## Calibration
-- ECE: 0.032 (threshold: 0.05) — PASS
-- MCE: 0.071 (threshold: 0.10) — PASS
+- ECE: 0.032 (threshold: 0.05) - PASS
+- MCE: 0.071 (threshold: 0.10) - PASS
 
 ## Data Drift
-- Overall PSI: 0.11 (threshold: 0.25) — PASS
+- Overall PSI: 0.11 (threshold: 0.25) - PASS
 - Drifted features: 2 / 5 (saturation, brightness)
 
 ## Explainability

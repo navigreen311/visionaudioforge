@@ -1,14 +1,18 @@
-"""Alert system routes — rule management, incident lifecycle, evidence, and statistics."""
+"""Alert system routes - rule management, incident lifecycle, evidence, and statistics."""
 
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID, uuid4
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_db
 from app.database import get_async_session
 from app.schemas.alert import (
     AlertRead,
@@ -17,7 +21,9 @@ from app.schemas.alert import (
     AlertRuleUpdate,
     AlertStats,
 )
-from app.core.deps import get_optional_workspace_id
+from app.core.deps import get_optional_workspace_id, get_workspace_id
+from app.models.alert import Alert, AlertSeverity, AlertStatus
+from app.services.integrations.email import EmailIntegration
 from app.services.alerts.actions import AlertActionExecutor
 from app.services.alerts.alert_service import AlertService, UnknownActorError
 from app.services.alerts.auto_clip import AutoClipService
@@ -291,7 +297,7 @@ async def acknowledge_alert(
     try:
         return await AlertService.acknowledge_alert(db, alert_id, user_id)
     except UnknownActorError as exc:
-        # The alert exists; the supplied user does not — a bad argument, not
+        # The alert exists; the supplied user does not - a bad argument, not
         # a missing resource.
         raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
@@ -308,7 +314,7 @@ async def resolve_alert(
     try:
         return await AlertService.resolve_alert(db, alert_id, user_id)
     except UnknownActorError as exc:
-        # The alert exists; the supplied user does not — a bad argument, not
+        # The alert exists; the supplied user does not - a bad argument, not
         # a missing resource.
         raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
@@ -686,22 +692,74 @@ _MOCK_RULES: list[dict[str, Any]] = [
 
 
 @router.get("/stats/summary", response_model=AlertStatsStub)
-async def alert_stats_stub() -> AlertStatsStub:
-    """Return mock alert statistics summary."""
-    return AlertStatsStub(
-        critical=2,
-        warning=5,
-        info=12,
-        acknowledged_today=8,
-        critical_delta=1,
-        warning_delta=-2,
+async def alert_stats_summary(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> AlertStatsStub:
+    """Open alert counts by severity, with a day-on-day delta.
+
+    This returned a fixed 2/5/12 with an acknowledged count of 8 to every
+    workspace, including one with no alerts at all - the numbers on the alerts
+    page were decoration.
+
+    The console's three buckets do not map one-to-one onto the four severities
+    the model stores, so `high` and `medium` are counted as "warning" and `low`
+    as "info". The delta compares the last 24 hours with the 24 before it.
+    """
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    two_days_ago = now - timedelta(days=2)
+
+    open_states = (AlertStatus.new, AlertStatus.acknowledged)
+
+    async def _count(*conditions) -> int:
+        result = await db.execute(
+            select(func.count())
+            .select_from(Alert)
+            .where(Alert.workspace_id == session_workspace, *conditions)
+        )
+        return int(result.scalar() or 0)
+
+    critical = await _count(
+        Alert.severity == AlertSeverity.critical, Alert.status.in_(open_states)
+    )
+    warning = await _count(
+        Alert.severity.in_((AlertSeverity.high, AlertSeverity.medium)),
+        Alert.status.in_(open_states),
+    )
+    info = await _count(
+        Alert.severity == AlertSeverity.low, Alert.status.in_(open_states)
+    )
+    acknowledged_today = await _count(
+        Alert.status == AlertStatus.acknowledged, Alert.updated_at >= day_ago
     )
 
+    critical_today = await _count(
+        Alert.severity == AlertSeverity.critical, Alert.created_at >= day_ago
+    )
+    critical_yesterday = await _count(
+        Alert.severity == AlertSeverity.critical,
+        Alert.created_at >= two_days_ago,
+        Alert.created_at < day_ago,
+    )
+    warning_today = await _count(
+        Alert.severity.in_((AlertSeverity.high, AlertSeverity.medium)),
+        Alert.created_at >= day_ago,
+    )
+    warning_yesterday = await _count(
+        Alert.severity.in_((AlertSeverity.high, AlertSeverity.medium)),
+        Alert.created_at >= two_days_ago,
+        Alert.created_at < day_ago,
+    )
 
-@router.get("/list", response_model=list[AlertItemStub])
-async def list_alerts_stub() -> list[AlertItemStub]:
-    """Return an array of 5 mock alerts."""
-    return [AlertItemStub(**a) for a in _MOCK_ALERTS]
+    return AlertStatsStub(
+        critical=critical,
+        warning=warning,
+        info=info,
+        acknowledged_today=acknowledged_today,
+        critical_delta=critical_today - critical_yesterday,
+        warning_delta=warning_today - warning_yesterday,
+    )
 
 
 @router.patch("/{alert_id}", response_model=AlertItemStub)
@@ -725,12 +783,6 @@ async def patch_alert(
         )
     updated = {**matched, "status": body.status}
     return AlertItemStub(**updated)
-
-
-@router.get("/rules/list", response_model=list[AlertRuleStub])
-async def list_rules_stub() -> list[AlertRuleStub]:
-    """Return an array of 3 mock alert rules."""
-    return [AlertRuleStub(**r) for r in _MOCK_RULES]
 
 
 @router.post("/rules/create", response_model=AlertRuleStub, status_code=201)
@@ -766,9 +818,18 @@ async def create_channel(
 
 
 @router.post("/channels/test", response_model=ChannelTestResult)
-async def test_channel() -> ChannelTestResult:
-    """Test a notification channel. Returns success (mock)."""
-    return ChannelTestResult(success=True, message="Test notification sent successfully")
+async def test_channel(body: ChannelConfig) -> ChannelTestResult:
+    """Actually try to deliver a test notification.
+
+    This took no body at all and always answered "Test notification sent
+    successfully", so an operator could confirm a channel that was never
+    configured and would never fire.
+    """
+    result = await _attempt_delivery(body.type, body.config)
+    return ChannelTestResult(
+        success=result.status == "ok",
+        message=result.note or f"{body.type}: {result.status}",
+    )
 
 
 # ------------------------------------------------------------------
@@ -857,6 +918,89 @@ async def test_rule(rule_id: str, body: RuleTestRequest) -> RuleTestResult:
     return RuleTestResult(triggered=triggered, matched_conditions=matched, details=details)
 
 
+async def _attempt_delivery(channel: str, config: dict[str, Any]) -> DeliveryTestResult:
+    """Send a real test notification and report what actually happened.
+
+    Both test endpoints used to return a hardcoded success - one with an
+    invented 142 ms response time. A channel test that cannot fail is worse than
+    no channel test: it tells an operator their paging works when it does not.
+
+    Webhook and Slack are posted to for real and report the upstream status code
+    and elapsed time. Email is delegated to the integrations service, which
+    reports honestly when no SMTP provider is configured.
+    """
+    supported = {"slack", "email", "webhook", "sms", "pagerduty"}
+    if channel not in supported:
+        return DeliveryTestResult(
+            status="error",
+            note=f"Unsupported channel '{channel}'. Supported: {', '.join(sorted(supported))}.",
+        )
+
+    payload = {"text": "VisionAudioForge test notification"}
+
+    if channel in ("slack", "webhook"):
+        url = config.get("webhook_url") or config.get("post_url") or config.get("url")
+        if not url:
+            return DeliveryTestResult(
+                status="error",
+                note=f"No destination URL configured for {channel}.",
+            )
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload)
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            ok = response.status_code < 400
+            return DeliveryTestResult(
+                status="ok" if ok else "error",
+                note=(
+                    f"Delivered to {channel}."
+                    if ok
+                    else f"{channel} rejected the notification ({response.status_code})."
+                ),
+                status_code=response.status_code,
+                response_time_ms=elapsed_ms,
+            )
+        except Exception as exc:  # noqa: BLE001 - the reason belongs to the operator
+            return DeliveryTestResult(
+                status="error",
+                note=f"Could not reach {channel}: {type(exc).__name__}: {exc}",
+                response_time_ms=round((time.perf_counter() - started) * 1000, 1),
+            )
+
+    if channel == "email":
+        address = config.get("address") or config.get("to")
+        if not address:
+            return DeliveryTestResult(status="error", note="No email address configured.")
+        started = time.perf_counter()
+        result = await EmailIntegration.send_email(
+            to=address,
+            subject="VisionAudioForge test notification",
+            body_html="<p>This is a test notification from the alerts channel settings.</p>",
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        delivered = bool(result.get("sent"))
+        return DeliveryTestResult(
+            status="ok" if delivered else "unavailable",
+            note=(
+                f"Test email sent to {address} via {result.get('method')}."
+                if delivered
+                else result.get("note", "No email provider is configured.")
+            ),
+            response_time_ms=elapsed_ms,
+        )
+
+    # sms and pagerduty have no provider wired up. Say so rather than claim a
+    # delivery that never happened.
+    return DeliveryTestResult(
+        status="unavailable",
+        note=(
+            f"No {channel} provider is configured on this deployment, so no test "
+            "notification was sent."
+        ),
+    )
+
+
 @router.post("/delivery/test", response_model=DeliveryTestResult)
 async def test_delivery_channel(body: DeliveryTestRequest) -> DeliveryTestResult:
     """Send a test notification through a delivery channel."""
@@ -879,9 +1023,4 @@ async def test_delivery_channel(body: DeliveryTestRequest) -> DeliveryTestResult
             note=f"Missing required config field '{required}' for {body.channel}.",
         )
 
-    return DeliveryTestResult(
-        status="ok",
-        note=f"Test notification delivered via {body.channel}.",
-        status_code=200,
-        response_time_ms=142,
-    )
+    return await _attempt_delivery(body.channel, body.config)

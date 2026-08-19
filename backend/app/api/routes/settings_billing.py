@@ -1,9 +1,20 @@
-"""Settings Billing API — plan, usage meters, and billing history."""
+"""Settings Billing API - plan, usage meters, and billing history."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from uuid import UUID
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
+
+from app.config import settings
+from app.core.deps import get_db, get_workspace_id
+from app.models.asset import Asset
+from app.models.model_registry import ModelRecord
+from app.models.user import User
+from app.models.workspace import Workspace
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -180,15 +191,68 @@ _HISTORY: list[BillingHistoryItem] = [
 
 
 @router.get("/billing", response_model=BillingResponse)
-async def get_billing():
-    """Return current plan, usage meters, and billing history.
+async def get_billing(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> BillingResponse:
+    """The workspace's plan and what it has actually consumed.
 
-    Returns mock data — will be wired to Stripe / billing service later.
+    This returned a fixed "starter" plan with invented usage meters and a
+    fabricated payment history, so every workspace saw the same bill regardless
+    of its plan or its usage.
+
+    Plan and usage are now measured. History stays empty: no billing provider is
+    connected, and inventing a payment record is the last thing this endpoint
+    should do. The feature list is a static plan catalogue, which is legitimately
+    static.
     """
-    return BillingResponse(
-        plan="starter",
-        plan_label="Starter",
-        features=_FEATURES,
-        usage=_USAGE,
-        history=_HISTORY,
+    workspace = await db.get(Workspace, session_workspace)
+    plan = getattr(workspace, "plan", None) or "free"
+    plan_name = getattr(plan, "value", str(plan))
+
+    async def _count(model) -> int:
+        result = await db.execute(
+            select(func.count())
+            .select_from(model)
+            .where(model.workspace_id == session_workspace)
+        )
+        return int(result.scalar() or 0)
+
+    stored_bytes = int(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(Asset.size_bytes), 0)).where(
+                    Asset.workspace_id == session_workspace
+                )
+            )
+        ).scalar()
+        or 0
     )
+    stored_gb = round(stored_bytes / 1_000_000_000, 3)
+
+    def _meter(label: str, current: float, limit: float, unit: str) -> UsageMeter:
+        ratio = (current / limit) if limit else 0.0
+        return UsageMeter(
+            label=label,
+            current=current,
+            limit=limit,
+            unit=unit,
+            color="red" if ratio >= 0.9 else "amber" if ratio >= 0.7 else "green",
+            # No billing cycle exists, so there is no reset date to report.
+            reset_date="",
+        )
+
+    return BillingResponse(
+        plan=plan_name,
+        plan_label=plan_name.title(),
+        features=_FEATURES,
+        usage=[
+            _meter("Assets", await _count(Asset), 0, "items"),
+            _meter("Storage", stored_gb, float(settings.STORAGE_QUOTA_GB), "GB"),
+            _meter("Models", await _count(ModelRecord), 0, "items"),
+            _meter("Members", await _count(User), 0, "people"),
+        ],
+        history=[],
+    )
+
+
