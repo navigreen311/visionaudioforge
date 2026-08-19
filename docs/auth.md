@@ -185,11 +185,40 @@ Two mechanisms now close it:
    `datasets` and `assets` do this (`_owned_asset`), returning `404` rather than
    `403` so a miss does not confirm the id exists in another tenant.
 
-**Routes not yet row-checked.** Mechanism 1 protects every route against a
-*named* foreign workspace. Mechanism 2 has been applied to datasets and assets.
-Any other by-id route (`/api/registry/models/{id}`, `/api/experiments/{id}`,
-`/api/pipelines/{id}`, …) is still reachable across tenants by id alone. Adding
-a route there means adding the `_owned_asset`-style check with it.
+**Routes not yet row-checked — this is the largest open gap in the platform.**
+Mechanism 1 protects every route against a *named* foreign workspace. Mechanism 2
+has so far been applied only to datasets and assets.
+
+Counted against the current tree: **185 of the 191 by-id routes have no owner
+check**, so they are reachable across tenants by id alone. That covers alerts and
+their acknowledgement, agents and their memories, annotations, investigation
+cases, incident timelines, evidence bundles and chain-of-custody exports,
+registry models, experiments and pipelines. An id is a UUID and therefore not
+trivially guessable, but "hard to guess" is not an authorization control.
+
+Count them yourself before trusting this number:
+
+```bash
+python - <<'PY'
+import re, pathlib
+scoped = unscoped = 0
+for f in pathlib.Path("backend/app/api/routes").glob("*.py"):
+    for b in re.split(r"(?=@router\.)", f.read_text(encoding="utf-8", errors="replace")):
+        m = re.match(r'@router\.(get|post|put|patch|delete)\("([^"]*)"', b)
+        if not m or "{" not in m.group(2):
+            continue
+        head = b[:2000]
+        if "get_workspace_id" in head or "session_workspace" in head or "_owned" in head:
+            scoped += 1
+        else:
+            unscoped += 1
+print(f"scoped={scoped} unscoped={unscoped}")
+PY
+```
+
+Closing it means giving each route family an `_owned_asset`-style helper over its
+own model. `tests/test_tenant_isolation.py` is where each one gets its proof; add
+the resource there first and watch it fail before fixing the route.
 
 ### What the tests do and do not prove
 
