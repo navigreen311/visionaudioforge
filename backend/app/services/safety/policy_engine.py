@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.safety import VoiceConsent
 
 
 # Built-in policy definitions
@@ -31,8 +37,9 @@ BUILT_IN_POLICIES: dict[str, dict] = {
     },
 }
 
-# In-memory consent store (user_id -> set of voice_owner_ids)
-_consent_records: dict[str, set[str]] = {}
+# Consent lives in voice_consents. It is the record that says cloning someone
+# voice was permitted; losing it on restart turns a granted consent into no
+# consent on file, and there is no way to tell that apart from never asking.
 
 
 class PolicyEngine:
@@ -110,13 +117,20 @@ class PolicyEngine:
         return {"allowed": result["allowed"], "reason": reason}
 
     @staticmethod
-    def check_voice_clone_consent(user_id: str, voice_owner_id: str) -> dict:
+    async def check_voice_clone_consent(
+        db: AsyncSession, user_id: str, voice_owner_id: str
+    ) -> dict:
         """Check if explicit consent exists for voice cloning.
 
         Returns ``{"consent": bool, "note": str}``.
         """
-        consents = _consent_records.get(voice_owner_id, set())
-        if user_id in consents:
+        result = await db.execute(
+            select(VoiceConsent).where(
+                VoiceConsent.voice_owner_id == voice_owner_id,
+                VoiceConsent.user_id == user_id,
+            )
+        )
+        if result.scalar_one_or_none() is not None:
             return {"consent": True, "note": "Explicit consent on file."}
         return {
             "consent": False,
@@ -124,9 +138,27 @@ class PolicyEngine:
         }
 
     @staticmethod
-    def record_voice_consent(user_id: str, voice_owner_id: str) -> None:
-        """Record voice-cloning consent (helper for tests and admin)."""
-        _consent_records.setdefault(voice_owner_id, set()).add(user_id)
+    async def record_voice_consent(
+        db: AsyncSession, user_id: str, voice_owner_id: str
+    ) -> None:
+        """Record voice-cloning consent."""
+        existing = await db.execute(
+            select(VoiceConsent).where(
+                VoiceConsent.voice_owner_id == voice_owner_id,
+                VoiceConsent.user_id == user_id,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return
+
+        db.add(
+            VoiceConsent(
+                id=uuid.uuid4(),
+                voice_owner_id=voice_owner_id,
+                user_id=user_id,
+            )
+        )
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Internal condition evaluator

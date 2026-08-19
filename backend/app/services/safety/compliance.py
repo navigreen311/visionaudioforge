@@ -4,11 +4,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.safety import LegalHold
 
 
-# In-memory legal-hold store
-_legal_holds: dict[str, dict] = {}
+def _as_uuid(value: Any) -> Optional[uuid.UUID]:
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 COMPLIANCE_PACKS: dict[str, dict] = {
     "hipaa": {
@@ -128,30 +138,75 @@ class ComplianceManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def legal_hold(
-        db: Any, asset_ids: list[str], reason: str, user_id: str
+    async def legal_hold(
+        db: AsyncSession,
+        asset_ids: list[str],
+        reason: str,
+        user_id: str,
+        workspace_id: str | None = None,
     ) -> dict:
-        """Place a legal hold on assets, preventing deletion."""
-        hold_id = str(uuid.uuid4())
-        _legal_holds[hold_id] = {
-            "hold_id": hold_id,
-            "asset_ids": list(asset_ids),
-            "reason": reason,
-            "user_id": user_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "released": False,
-        }
-        return {"hold_id": hold_id, "assets_held": len(asset_ids)}
+        """Place a legal hold on assets, preventing deletion.
+
+        A hold is the record that stops an asset being deleted. Held in a dict
+        it disappeared on restart, which does not merely lose the record — it
+        lifts the block without anyone having released it.
+        """
+        hold = LegalHold(
+            id=uuid.uuid4(),
+            workspace_id=_as_uuid(workspace_id),
+            asset_ids=list(asset_ids),
+            reason=reason,
+            placed_by=user_id,
+            released=False,
+        )
+        db.add(hold)
+        await db.commit()
+
+        return {"hold_id": str(hold.id), "assets_held": len(asset_ids)}
 
     @staticmethod
-    def release_hold(db: Any, hold_id: str) -> dict:
+    async def release_hold(
+        db: AsyncSession, hold_id: str, released_by: str = "system"
+    ) -> dict:
         """Release a legal hold."""
-        hold = _legal_holds.get(hold_id)
+        key = _as_uuid(hold_id)
+        hold = None
+        if key is not None:
+            result = await db.execute(select(LegalHold).where(LegalHold.id == key))
+            hold = result.scalar_one_or_none()
+
         if hold is None:
             raise ValueError(f"Hold not found: {hold_id}")
-        count = len(hold["asset_ids"])
-        hold["released"] = True
-        return {"released": count}
+
+        hold.released = True
+        hold.released_at = datetime.now(timezone.utc)
+        hold.released_by = released_by
+        await db.commit()
+
+        return {"released": len(hold.asset_ids or [])}
+
+    @staticmethod
+    async def active_holds(
+        db: AsyncSession, workspace_id: str | None = None
+    ) -> list[dict]:
+        """Holds still in force, which is what "can I delete this?" reads."""
+        query = select(LegalHold).where(LegalHold.released.is_(False))
+        workspace = _as_uuid(workspace_id)
+        if workspace is not None:
+            query = query.where(LegalHold.workspace_id == workspace)
+
+        result = await db.execute(query.order_by(LegalHold.created_at))
+        return [
+            {
+                "hold_id": str(h.id),
+                "asset_ids": h.asset_ids or [],
+                "reason": h.reason,
+                "user_id": h.placed_by,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+                "released": h.released,
+            }
+            for h in result.scalars().all()
+        ]
 
     # ------------------------------------------------------------------
     # Internal rule evaluation

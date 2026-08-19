@@ -3,6 +3,8 @@ plate blur, voice anonymization, policy engine, provenance, and compliance."""
 
 from __future__ import annotations
 
+import uuid
+
 import base64
 import io
 import struct
@@ -22,10 +24,12 @@ from fastapi import (
     UploadFile,
 )
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
 from app.database import get_async_session
+from app.models.safety import SafetyScan
 from app.schemas.safety import (
     ContentSafetyResult,
     RedactRequest,
@@ -53,14 +57,19 @@ _provenance = ProvenanceTracker()
 _compliance = ComplianceManager()
 
 # In-memory scan result store (simple dict keyed by auto-incrementing id)
-_scan_store: dict[str, dict] = {}
-_scan_counter: int = 0
+# Scan results are rows in safety_scans. A scan is a compliance record: held
+# in a dict, "was this asset scanned?" silently became no on every deploy.
+def _as_uuid(value):
+    """Return a UUID or None; callers pass through free-form strings."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
 
 
-def _next_scan_id() -> str:
-    global _scan_counter
-    _scan_counter += 1
-    return str(_scan_counter)
+
 
 
 def _decode_image(data: bytes) -> np.ndarray:
@@ -83,6 +92,9 @@ async def safety_scan(
     file: UploadFile = File(None),
     scan_type: str = Form("image"),
     text: str = Form(None),
+    asset_id: str = Form(None),
+    workspace_id: str = Form(None),
+    db: AsyncSession = Depends(get_async_session),
 ):
     """Scan an uploaded file or text for safety / privacy concerns."""
     if scan_type == "image":
@@ -130,9 +142,19 @@ async def safety_scan(
     else:
         raise HTTPException(status_code=400, detail=f"Unknown scan_type: {scan_type}")
 
-    # Store for later report aggregation
-    scan_id = _next_scan_id()
-    _scan_store[scan_id] = result
+    # Recorded for later report aggregation and export checks.
+    db.add(
+        SafetyScan(
+            id=uuid.uuid4(),
+            workspace_id=_as_uuid(workspace_id),
+            asset_id=asset_id,
+            scan_type=scan_type,
+            faces_detected=result.get("faces_detected", 0),
+            risk_score=result.get("risk_score", 0.0),
+            result=result,
+        )
+    )
+    await db.commit()
 
     return result
 
@@ -166,12 +188,18 @@ async def watermark_image(
 
 
 @router.post("/report", response_model=SafetyReport)
-async def safety_report(body: ReportRequest):
+async def safety_report(
+    body: ReportRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
     """Generate an aggregated safety report from previous scan results."""
+    scan_ids = [sid for sid in (_as_uuid(s) for s in body.scan_ids) if sid]
     results: list[dict] = []
-    for sid in body.scan_ids:
-        if sid in _scan_store:
-            results.append(_scan_store[sid])
+    if scan_ids:
+        rows = await db.execute(
+            select(SafetyScan).where(SafetyScan.id.in_(scan_ids))
+        )
+        results = [row.result for row in rows.scalars().all()]
 
     if not results:
         # If no valid IDs, return empty report
@@ -285,13 +313,26 @@ async def evaluate_policy(body: PolicyEvaluateRequest):
 
 
 @router.post("/policy/check-export")
-async def check_export(body: ExportCheckRequest):
-    """Check whether an asset export is allowed under a policy."""
-    # In a real system we'd load the scan result for the asset; here we
-    # accept the policy name and return based on an empty scan (allowed).
-    scan_result: dict = _scan_store.get(body.asset_id, {
+async def check_export(
+    body: ExportCheckRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Check whether an asset export is allowed under a policy.
+
+    Reads the asset's most recent scan. With the scans in a dict this lookup
+    always missed, so every export was checked against an empty scan and
+    therefore always allowed.
+    """
+    latest = await db.execute(
+        select(SafetyScan)
+        .where(SafetyScan.asset_id == body.asset_id)
+        .order_by(SafetyScan.created_at.desc())
+        .limit(1)
+    )
+    scan = latest.scalar_one_or_none()
+    scan_result: dict = scan.result if scan else {
         "faces_detected": 0, "pii_found": [], "risk_score": 0.0,
-    })
+    }
     return _policy_engine.check_export_allowed(scan_result, body.policy)
 
 
@@ -324,9 +365,15 @@ class LegalHoldRequest(BaseModel):
 
 
 @router.post("/legal-hold")
-async def legal_hold(body: LegalHoldRequest):
+async def legal_hold(
+    body: LegalHoldRequest,
+    workspace_id: str | None = Query(None, description="Owning workspace"),
+    db: AsyncSession = Depends(get_async_session),
+):
     """Place a legal hold on assets."""
-    return _compliance.legal_hold(None, body.asset_ids, body.reason, "system")
+    return await _compliance.legal_hold(
+        db, body.asset_ids, body.reason, "system", workspace_id=workspace_id
+    )
 
 
 # ------------------------------------------------------------------

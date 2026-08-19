@@ -90,3 +90,9 @@ def downgrade() -> None:
     op.drop_table('federation_rounds')
     op.drop_table('federation_participants')
     op.drop_table('federations')
+
+    # create_table creates these enum types implicitly; dropping the tables
+    # does not remove them, and leaving them behind makes a re-upgrade fail
+    # with "type already exists".
+    for enum_name in ("roundstatus", "participantstatus", "federationstatus"):
+        op.execute(f"DROP TYPE IF EXISTS {enum_name}")
