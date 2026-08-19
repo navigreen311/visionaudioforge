@@ -15,23 +15,43 @@ The fix
 -------
 
 A SQLAlchemy ``do_orm_execute`` hook adds ``WHERE workspace_id = :current`` to
-every ORM SELECT touching a model that has a ``workspace_id`` column, driven by a
-context variable the authentication middleware sets. A route that forgets to
-filter now gets an empty result instead of another tenant's row, and a route
-added tomorrow is scoped the moment it queries.
+every ORM SELECT, UPDATE and DELETE touching a model that has a ``workspace_id``
+column, driven by a context variable the authentication middleware sets. A route
+that forgets to filter now gets an empty result instead of another tenant's row,
+a bulk statement that mutates by id alone changes nothing, and a route added
+tomorrow is scoped the moment it queries.
 
 This is the same shape as the auth middleware: enforce once, at the boundary, and
 make the exceptions explicit and few.
 
+Writes
+------
+
+The hook originally covered SELECT only, which left a hole: a
+``delete(Model).where(Model.id == x)`` never loads a row, so a read filter cannot
+see it. Six services and one route issued exactly that shape, and tenant B could
+delete tenant A's row by id.
+
+``with_loader_criteria`` applies to ORM-enabled UPDATE and DELETE as well as
+SELECT, so widening the hook to ``is_update``/``is_delete`` closed all six at
+once - including the child classes scoped through a parent, where the criteria is
+a correlated subquery rather than a column comparison. That is verified against
+Postgres in ``tests/test_session_scoping.py`` rather than assumed.
+
+INSERT is deliberately not covered: there is no existing row to confine, and
+which workspace a new row belongs to is the caller's business.
+
 What it does *not* do
 ---------------------
 
-* It applies to ORM SELECTs. Bulk ``update()``/``delete()`` statements and raw
-  SQL are untouched - a handler that mutates by id without loading the row first
-  is still its own responsibility. Most here load first, which is why this
-  covers the exposure.
-* It is not a substitute for Postgres row-level security. It is enforced in this
-  process, so anything reaching the database another way is unaffected.
+* **Core-level statements.** ``update(Model)`` is ORM-enabled and covered;
+  ``update(Model.__table__)`` is not, and passes through unfiltered. Verified.
+  Use the mapped class.
+* **Raw SQL.** ``text("UPDATE ...")`` bypasses the ORM entirely. Verified. The
+  raw statements in this codebase are audited in ``docs/auth.md``; the
+  tenant-touching ones carry their own predicate.
+* **Anything reaching the database another way.** This is enforced in-process,
+  so it is not a substitute for Postgres row-level security.
 
 Exemptions
 ----------
@@ -189,7 +209,12 @@ def install_workspace_filter(session_class: type[Session] | type = Session) -> N
 
 
 def _apply_workspace_filter(execute_state) -> None:
-    if not execute_state.is_select:
+    # SELECT, UPDATE and DELETE. An INSERT is deliberately absent: there is no
+    # existing row to confine, and the workspace a new row belongs to is the
+    # caller's business. `with_loader_criteria` applies to ORM-enabled UPDATE
+    # and DELETE as well as SELECT, which is what lets one hook cover the read
+    # and the write path rather than six files patched by hand.
+    if not (execute_state.is_select or execute_state.is_update or execute_state.is_delete):
         return
     # A relationship load inherits the criteria already applied to its parent;
     # re-applying would filter the *related* table by the parent's column.

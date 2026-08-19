@@ -185,16 +185,26 @@ Two mechanisms now close it:
    `datasets` and `assets` do this (`_owned_asset`), returning `404` rather than
    `403` so a miss does not confirm the id exists in another tenant.
 
-**Routes not yet row-checked — this is the largest open gap in the platform.**
-Mechanism 1 protects every route against a *named* foreign workspace. Mechanism 2
-has so far been applied only to datasets and assets.
+3. **The session-level filter** (`app/core/tenancy.py`) — installed on the
+   session in `app/database.py`, driven by a context variable the auth
+   middleware binds per request. A `do_orm_execute` hook adds
+   `WHERE workspace_id = :current` to every ORM **SELECT, UPDATE and DELETE**
+   touching a scopable model. This is what closed the by-id gap wholesale: a
+   route that forgets to check ownership now gets an empty result rather than
+   another tenant's row, and a route written tomorrow is scoped the moment it
+   queries.
+
+**Mechanism 3 is the backstop, not an excuse to skip mechanism 2.** A row check
+returns a clean `404`; the filter returns an empty result, which a handler may
+turn into a `500` if it assumes the row exists. Both are worth having.
 
 Counted against the current tree: **185 of the 191 by-id routes have no owner
-check**, so they are reachable across tenants by id alone. That covers alerts and
-their acknowledgement, agents and their memories, annotations, investigation
-cases, incident timelines, evidence bundles and chain-of-custody exports,
-registry models, experiments and pipelines. An id is a UUID and therefore not
-trivially guessable, but "hard to guess" is not an authorization control.
+check of their own** — alerts and their acknowledgement, agents and their
+memories, annotations, investigation cases, incident timelines, evidence
+bundles, registry models, experiments and pipelines. Before mechanism 3 they
+were reachable across tenants by id alone. They are now covered by the session
+filter, which is why this is no longer the largest open gap; adding row checks
+remains worthwhile for the response code, not for the isolation.
 
 Count them yourself before trusting this number:
 
@@ -220,6 +230,47 @@ Closing it means giving each route family an `_owned_asset`-style helper over it
 own model. `tests/test_tenant_isolation.py` is where each one gets its proof; add
 the resource there first and watch it fail before fixing the route.
 
+### What the session filter reaches
+
+Counted, not asserted — `pytest tests/test_tenancy_coverage.py -s` prints this
+and fails if the write filter ever goes missing:
+
+| | Count |
+|---|---|
+| Models scoped by their own `workspace_id` | 46 |
+| Models scoped through a parent's `workspace_id` | 14 |
+| Models exempt by design (`users`, `workspaces`, `audit_logs`) | 3 |
+| Models not scopable — hang off a *user*, or genuinely global | 9 |
+| **Total mapped classes** | **72** |
+
+The 14 scoped through a parent — agent memories, pipeline runs, experiment
+epochs, evidence bundle items, annotations — carry no `workspace_id` column.
+They are scoped by a correlated subquery against the parent that does, which
+avoids a migration and a backfill to restate what the schema already knows. That
+holds for `UPDATE` and `DELETE` as well as `SELECT`.
+
+The 9 unscopable ones are correct: `UserSession`, `UserTwoFactor`,
+`AppearancePreference`, `PushDevice`, `PushPreference`, `LoginEvent`,
+`OperatorActionLog`, `FieldLocation` belong to a *user* rather than a workspace,
+and `ModelCostRate` is global. Nothing filters them, by design.
+
+**Statement forms.** `SELECT`, `UPDATE` and `DELETE` are covered. `INSERT` is
+deliberately not — there is no existing row to confine. Two forms bypass the
+filter entirely, both verified rather than assumed:
+
+* `update(Model.__table__)` is a Core statement and passes through unfiltered.
+  Use the mapped class: `update(Model)` is ORM-enabled and is scoped.
+* Raw `text("UPDATE ...")` bypasses the ORM. Audited: there are **four** real
+  `text()` calls under `app/`, all `SELECT 1` liveness probes
+  (`health.py`, `patrol.py`, `tools.py`, `dashboard.py`). None reads or writes a
+  tenant row. A textual search reports 24 files, almost all false — it also
+  matches `extract_text(`, `search_by_text(`, `write_text(` and
+  `encode_text(`. `test_tenancy_coverage.py` counts the real ones by AST and
+  fails if a non-probe appears.
+
+Neither is a substitute for Postgres row-level security: this is enforced
+in-process, so anything reaching the database another way is unaffected.
+
 ### What the tests do and do not prove
 
 `conftest.py` runs the suite with `AUTH_REQUIRED` **off** unless a test opts in
@@ -230,7 +281,9 @@ boundary — but it means the ~1600 passing tests prove *function*, not
 | File | Proves | Marked |
 |------|--------|--------|
 | `tests/test_auth_enforcement.py` | every registered route challenges an anonymous caller; the allowlist is genuinely open; the workspace comes from the token | yes, per test |
-| `tests/test_tenant_isolation.py` | two real tenants, created through registration, cannot see or mutate each other's datasets, models or assets **through the real routes** | yes, file-wide |
+| `tests/test_tenant_isolation.py` | two real tenants, created through registration, cannot see or mutate each other's datasets, models, assets or API keys **through the real routes** | yes, file-wide |
+| `tests/test_session_scoping.py` | the session filter itself: reads *and* bulk writes, including child models scoped through a parent, exempt tables, `unscoped()` and the no-tenant case | n/a — drives the session directly |
+| `tests/test_tenancy_coverage.py` | the census above, and that the write filter has not been removed | n/a — static |
 
 `test_tenant_isolation.py` is the one to extend when a new workspace-scoped
 resource appears. It drives the HTTP surface rather than a probe route, which is
