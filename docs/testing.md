@@ -113,3 +113,61 @@ make test-coverage   # generates HTML report in htmlcov/
 | `REDIS_HOST`     | `localhost`                                            |
 | `JWT_SECRET_KEY` | `test-secret-key`                                      |
 | `APP_ENV`        | `test`                                                 |
+
+---
+
+## Browser E2E (`frontend/e2e`)
+
+Playwright drives a real browser against the full compose stack through nginx —
+not a dev server, and not a mocked API. Bring the stack up first:
+
+```bash
+HTTP_PORT=8080 FRONTEND_PORT=3001 docker compose up -d
+cd frontend && npx playwright test          # or: scripts/e2e.sh
+```
+
+Two rules this suite holds to:
+
+- **No auth bypass.** `auth.setup.ts` registers a real user through the real
+  form and banks the session. Nothing sets `AUTH_REQUIRED=false` and nothing
+  stubs a token, so if registration breaks the whole suite fails — which is the
+  point.
+- **A broken feature is named, not accommodated.** When a journey cannot pass
+  because the product is broken, it is marked `test.fixme` with the exact error
+  and listed below. Weakening the assertion until it passes would convert a
+  finding into a green tick.
+
+### What each spec covers
+
+| Spec | Covers |
+| --- | --- |
+| `console.spec.ts` | every dashboard page mounts without an error boundary |
+| `auth-guard.anon.spec.ts` | anonymous callers are bounced from protected routes |
+| `journeys.spec.ts` | vision analysis; pipeline template load/save/run |
+| `work-journeys.spec.ts` | search, alerts, investigate, train, annotate, capture, audio, transform |
+| `pipeline-templates.spec.ts` | every shipped template validates against the node registry |
+| `providerless.spec.ts` | endpoints with no provider keep admitting it |
+
+### Open defects these tests name
+
+Each is `test.fixme` with the error in the spec. None is in this workstream's
+files; all reproduce outside the browser.
+
+| Area | Symptom | Cause |
+| --- | --- | --- |
+| Search | `POST /api/search/query` → 500 | `PermissionError: '/home/appuser'` — the image runs as non-root with no writable HOME, so huggingface_hub cannot cache CLIP weights |
+| Audio analyse / transform / translate | 400 "cannot cache function `__o_fold`" | librosa's numba kernels use `cache=True`; site-packages is not writable by that user and `NUMBA_CACHE_DIR` is unset. Verified in-container that setting it to a writable path fixes all three |
+| Pipeline save | `POST /api/pipeline/create` and `/save` → 500 | both pass `description=` to a `Pipeline` model that has no such column, so no pipeline can be persisted by any client |
+| Pipeline templates in the console | save → 422 "missing required param 'image'" | `loadDefinitionToCanvas` drops `from_port`/`to_port` and `buildDefinition` re-emits every edge as `output`→`input`, ports these nodes do not have |
+| Investigate | case creation → 401 | uses the bare `axios` module rather than the configured client, so no Authorization header; also posts straight to `:8000` past nginx and hardcodes a workspace id |
+| Annotate | `GET /api/annotate/assets` → 500 | the query does not match the schema it runs against, so the studio shows "No assets loaded" for a dataset that has an image |
+
+The first two share a root cause: caches that assume a writable home directory
+in an image that does not give the runtime user one.
+
+### Addressing elements
+
+Prefer role and text. Two fields are addressed by placeholder because they have
+no associated label — the search query box, and RuleBuilder's "Rule Name",
+which renders as a bare `<label>` with no `htmlFor` next to an input with no
+`id`. Both are worth fixing for screen readers. No `data-testid` was needed.
