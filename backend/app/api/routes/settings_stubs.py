@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from uuid import UUID
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, Field
+
+from app.core.deps import get_db, get_workspace_id
+from app.models.integration import Webhook, WebhookDelivery
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -112,14 +119,41 @@ async def update_notifications(body: NotificationSettings):
 # ---------------------------------------------------------------------------
 
 @router.get("/integrations/webhook/logs")
-async def get_webhook_logs():
-    """Return mock webhook delivery logs."""
-    return {"logs": [
-        {"id": "del_001", "event": "alert.triggered", "status": "delivered", "response_code": 200, "latency_ms": 120, "timestamp": "2026-04-13T10:00:00Z", "payload": {"alert_id": "alert_001"}},
-        {"id": "del_002", "event": "pipeline.completed", "status": "failed", "response_code": 500, "latency_ms": 3200, "timestamp": "2026-04-13T09:30:00Z", "payload": {"pipeline_id": "pipe_001"}},
-        {"id": "del_003", "event": "asset.uploaded", "status": "delivered", "response_code": 200, "latency_ms": 85, "timestamp": "2026-04-12T14:00:00Z", "payload": {"asset_id": "asset_001"}},
-        {"id": "del_004", "event": "model.trained", "status": "pending", "response_code": None, "latency_ms": None, "timestamp": "2026-04-12T11:00:00Z", "payload": {"model_id": "model_001"}},
-    ]}
+async def get_webhook_logs(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recent webhook delivery attempts for this workspace.
+
+    This returned three fixed entries dated April 2026, so the integrations
+    screen showed deliveries that never happened and hid the ones that did.
+    `webhook_deliveries` has been recording the real attempts.
+    """
+    rows = (
+        await db.execute(
+            select(WebhookDelivery)
+            .join(Webhook, Webhook.id == WebhookDelivery.webhook_id)
+            .where(Webhook.workspace_id == session_workspace)
+            .order_by(WebhookDelivery.id.desc())
+            .limit(100)
+        )
+    ).scalars().all()
+
+    return {
+        "logs": [
+            {
+                "id": str(d.id),
+                "event": d.event_type,
+                "status": "delivered" if d.success else "failed",
+                "response_code": d.status_code,
+                "error": d.error,
+                "timestamp": (
+                    d.delivered_at.isoformat() if getattr(d, "delivered_at", None) else ""
+                ),
+            }
+            for d in rows
+        ]
+    }
 
 
 @router.post("/integrations/webhook/retry")

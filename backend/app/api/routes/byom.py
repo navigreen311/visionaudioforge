@@ -1,4 +1,4 @@
-"""BYOM (Bring Your Own Model) routes — validate, register, list custom models."""
+"""BYOM (Bring Your Own Model) routes - validate, register, list custom models."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class ValidationResponse(BaseModel):
     input_shape: str
     output_shape: str
     framework_detected: str
-    param_count: int
+    param_count: int | None = None
 
 
 # Registered models live in the byom_models table. A registration that
@@ -90,7 +90,11 @@ async def validate_model(
 ) -> ValidationResponse:
     """Validate an uploaded model file.
 
-    Stub: inspects the file extension and returns a mock validation result.
+    Reports only what inspecting the upload can establish: its extension, its
+    size and whether the framework is one we support. Parameter count, input
+    shape and the rest need the file to be loaded by its framework, which this
+    does not do - those come back null rather than as an invented 25.6 million,
+    which is what this returned for every file.
     Real implementation would load the model, inspect graph I/O, and count params.
     """
     filename = file.filename or ""
@@ -129,7 +133,7 @@ async def validate_model(
         input_shape=input_shape,
         output_shape=output_shape,
         framework_detected=framework_map.get(ext, "Unknown"),
-        param_count=25_600_000,  # stub
+        param_count=None,
     )
 
 

@@ -1,4 +1,4 @@
-"""Federated Learning routes — federation management, rounds, aggregation."""
+"""Federated Learning routes - federation management, rounds, aggregation."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class AddParticipantRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Mock data — 3 pre-seeded federations
+# Mock data - 3 pre-seeded federations
 # ---------------------------------------------------------------------------
 
 _mock_participants_1 = [
@@ -143,7 +143,7 @@ def _get_federation(federation_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Endpoints — CRUD
+# Endpoints - CRUD
 # ---------------------------------------------------------------------------
 
 @router.post("/federations")
@@ -193,7 +193,7 @@ async def get_federation(federation_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Endpoints — Join / Start Round (existing)
+# Endpoints - Join / Start Round (existing)
 # ---------------------------------------------------------------------------
 
 @router.post("/federations/{federation_id}/join")
@@ -228,7 +228,7 @@ async def start_round(federation_id: str, body: StartRoundRequest | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Endpoints — Lifecycle (pause / resume / stop / export)
+# Endpoints - Lifecycle (pause / resume / stop / export)
 # ---------------------------------------------------------------------------
 
 @router.post("/{federation_id}/pause")
@@ -268,19 +268,25 @@ async def export_federation(federation_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Endpoints — Rounds
+# Endpoints - Rounds
 # ---------------------------------------------------------------------------
 
 @router.get("/{federation_id}/rounds")
 async def list_rounds(federation_id: str) -> list[dict]:
-    """Return 12 mock training rounds with metrics."""
-    _get_federation(federation_id)  # validate exists
-    return _build_mock_rounds(federation_id, count=12)
+    """Training rounds recorded for a federation.
 
+    This returned twelve fabricated rounds with descending loss curves for any
+    federation id, so the training chart always showed a healthy-looking run
+    that had never happened.
 
-# ---------------------------------------------------------------------------
-# Endpoints — Participants
-# ---------------------------------------------------------------------------
+    Federated training has no persistence behind it yet - the coordinator holds
+    federations in memory and no round is ever recorded - so the honest answer
+    for a federation that has not run is an empty list. When rounds are stored,
+    read them here.
+    """
+    federation = _get_federation(federation_id)
+    return list(federation.get("rounds") or [])
+
 
 @router.post("/{federation_id}/participants")
 async def add_participant(federation_id: str, body: AddParticipantRequest) -> dict[str, Any]:

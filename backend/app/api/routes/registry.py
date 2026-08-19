@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.core.deps import get_db, get_workspace_id
 from app.models.model_registry import ModelRecord, ModelStatus
@@ -197,20 +198,40 @@ class ModelCardPayload(BaseModel):
 
 
 @router.patch("/models/{model_id}/model-card")
-async def update_model_card(
+async def attach_model_card(
     model_id: UUID,
     body: ModelCardPayload,
+    session_workspace: UUID = Depends(get_workspace_id),
     db: AsyncSession = Depends(get_db),
 ):
-    """Attach or update the model card for a registered model.
+    """Attach a model card to a registered model.
 
-    V1 stub - persists nothing yet but validates and echoes back.
+    This used to validate the payload, echo it back claiming it had been
+    saved, and throw it away - so a card written by a compliance reviewer
+    vanished on reload while the UI said it was stored.
+
+    Stored on the model's `metrics` JSON column under `model_card`, which needs
+    no migration.
     """
-    return JSONResponse(
-        content={
-            "status": "ok",
-            "model_id": str(model_id),
-            "message": "Model card saved (stub - V2 will persist to DB).",
-            "card": body.model_dump(),
-        }
-    )
+    model = (
+        await db.execute(
+            select(ModelRecord).where(
+                ModelRecord.id == model_id,
+                ModelRecord.workspace_id == session_workspace,
+            )
+        )
+    ).scalar_one_or_none()
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    card = body.model_dump()
+    merged = dict(model.metrics or {})
+    merged["model_card"] = card
+    model.metrics = merged
+    # A JSON column mutated in place is not seen by the unit of work.
+    flag_modified(model, "metrics")
+    await db.commit()
+
+    return {"model_id": str(model_id), "saved": True, "model_card": card}
+
+

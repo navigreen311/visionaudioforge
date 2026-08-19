@@ -1,4 +1,4 @@
-"""Search API routes — wired to CLIP EmbeddingService + FAISSIndexService."""
+"""Search API routes - wired to CLIP EmbeddingService + FAISSIndexService."""
 
 from __future__ import annotations
 
@@ -9,10 +9,15 @@ from typing import Any
 from uuid import UUID
 
 import numpy as np
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db, get_workspace_id
+from app.services.assets.asset_service import AssetService
+from app.services.data.storage import MinIOStorageService
 from app.services.search.embeddings import EmbeddingService
 from app.services.search.faiss_index import FAISSIndexService
 from app.services.search.search_service import CrossModalSearchService
@@ -144,7 +149,7 @@ async def search_query(body: SearchQueryRequest):
 
     For text queries, the query string is embedded via CLIP and searched
     against the FAISS index.  Image queries should use ``/query`` with a
-    file upload (multipart) — see ``search_query_image``.
+    file upload (multipart) - see ``search_query_image``.
     """
     t0 = time.perf_counter()
 
@@ -217,7 +222,7 @@ async def search_query(body: SearchQueryRequest):
 
 @router.post("/query/upload", response_model=SearchResponse)
 async def search_query_image(file: UploadFile = File(...), k: int = 10):
-    """Search by image upload — embed the image and find similar assets."""
+    """Search by image upload - embed the image and find similar assets."""
     t0 = time.perf_counter()
 
     try:
@@ -256,37 +261,74 @@ async def search_query_image(file: UploadFile = File(...), k: int = 10):
 
 
 @router.post("/index")
-async def index_asset(body: IndexAssetRequest):
-    """Generate an embedding for an asset and add it to the FAISS index.
+async def index_asset(
+    body: IndexAssetRequest,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+    storage: MinIOStorageService = Depends(MinIOStorageService),
+) -> IndexResponse:
+    """Embed an asset's contents and add the vector to the FAISS index.
 
-    In a full implementation this would load the asset from the DB and
-    download the file from storage.  Currently it generates a placeholder
-    embedding so the wiring can be validated end-to-end.
+    Two defects, both of which made cross-modal search impossible:
 
-    Falls back to a simple ``{success: true}`` stub when embedding
-    services are unavailable, so the frontend never gets a 503.
+    1. It embedded `body.asset_id` - the *text of the UUID* - so every vector in
+       the index described a random hex string rather than an image or a sound.
+       A search could never match anything meaningfully, which looks like a
+       ranking problem rather than the wiring problem it was.
+    2. Any failure returned `{"success": true, "indexed": true}` "so the frontend
+       never gets a 503", so an asset that was never indexed reported success and
+       silently stayed unsearchable.
+
+    Now it loads the asset, downloads the bytes and embeds by modality. Failures
+    are reported.
     """
-    # Validate asset_id is a valid UUID
     try:
-        UUID(body.asset_id)
+        asset_uuid = UUID(body.asset_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid asset_id — expected UUID format") from exc
+        raise HTTPException(
+            status_code=400, detail="Invalid asset_id - expected UUID format"
+        ) from exc
 
-    # Try the real indexing path; fall back to stub on any service error.
-    try:
-        search_svc = _get_search_service()
-        embedding_svc = _get_embedding_service()
-        vector = embedding_svc.embed_text(body.asset_id)
-        index_svc = _get_index_service()
-        index_svc.add_vectors(vector.reshape(1, -1), [body.asset_id])
-        return IndexResponse(
-            asset_id=body.asset_id,
-            indexed=True,
-            embedding_dim=512,
+    asset = await AssetService.get_asset(db, asset_uuid)
+    if asset is None or asset.workspace_id != session_workspace:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    data, _filename, _content_type = await AssetService.get_asset_file(
+        db, storage, asset_uuid
+    )
+
+    embedding_svc = _get_embedding_service()
+    asset_type = getattr(asset.type, "value", str(asset.type))
+
+    if asset_type == "image":
+        import cv2
+        import numpy as np
+
+        image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if image is None:
+            raise HTTPException(status_code=422, detail="Asset is not a decodable image")
+        vector = embedding_svc.embed_image(image)
+    elif asset_type == "audio":
+        import librosa
+
+        audio, sr = librosa.load(io.BytesIO(data), sr=None)
+        vector = embedding_svc.embed_audio(audio, sr)
+    else:
+        # Video has no embedder wired up. Say so rather than index something
+        # arbitrary and let it pollute every future search.
+        raise HTTPException(
+            status_code=422,
+            detail=f"No embedder is configured for {asset_type} assets.",
         )
-    except Exception:
-        logger.debug("Embedding services unavailable — returning stub for %s", body.asset_id)
-        return {"success": True, "asset_id": body.asset_id, "indexed": True}
+
+    index_svc = _get_index_service()
+    index_svc.add_vectors(vector.reshape(1, -1), [body.asset_id])
+
+    return IndexResponse(
+        asset_id=body.asset_id,
+        indexed=True,
+        embedding_dim=int(vector.shape[-1]),
+    )
 
 
 @router.get("/stats", response_model=StatsResponse)
@@ -336,7 +378,7 @@ async def similar_assets(asset_id: str, k: int = 10):
     try:
         UUID(asset_id)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid asset_id — expected UUID format") from exc
+        raise HTTPException(status_code=400, detail="Invalid asset_id - expected UUID format") from exc
 
     # Check if asset is in the index
     found = any(aid == asset_id for aid in _get_index_service().id_map.values())
@@ -375,7 +417,7 @@ async def similar_assets(asset_id: str, k: int = 10):
 
 @router.post("/audio-query")
 async def search_audio_query(file: UploadFile = File(...), k: int = 10):
-    """Search by audio upload — embed with CLAP and find similar assets."""
+    """Search by audio upload - embed with CLAP and find similar assets."""
     t0 = time.perf_counter()
 
     audio_data = await file.read()
@@ -578,5 +620,5 @@ def _decode_audio(data: bytes) -> tuple[np.ndarray, int]:
             audio_array = audio_array.mean(axis=1)
         return audio_array.astype(np.float32), sr
     except ImportError:
-        logger.warning("soundfile not available — generating placeholder audio")
+        logger.warning("soundfile not available - generating placeholder audio")
         return np.random.randn(16000).astype(np.float32), 16000

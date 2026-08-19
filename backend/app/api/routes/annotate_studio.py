@@ -9,13 +9,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from uuid import UUID
+
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_current_user, get_db
+from app.core.deps import get_current_user, get_db, get_workspace_id
 from app.models.user import User
+from app.services.assets.asset_service import AssetService
 from app.services.data.annotation import AnnotationService
+from app.services.data.storage import MinIOStorageService
+from app.services.vision.detection import ObjectDetector
 
 router = APIRouter(prefix="/api/annotate", tags=["annotate-studio"])
 
@@ -107,9 +112,48 @@ MOCK_SUGGESTIONS: list[dict[str, Any]] = [
 
 
 @router.post("/auto-label", response_model=AutoLabelResponse)
-async def auto_label(body: AutoLabelRequest):
-    """Run mock auto-labelling on an asset and return suggestions."""
-    return AutoLabelResponse(suggestions=[Suggestion(**s) for s in MOCK_SUGGESTIONS])
+async def auto_label(
+    body: AutoLabelRequest,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+    storage: MinIOStorageService = Depends(MinIOStorageService),
+):
+    """Suggest boxes for an asset by running the object detector on it.
+
+    This returned the same fixed suggestions for every asset, so the studio's
+    "auto-label" button drew identical boxes on unrelated images.
+    """
+    asset_id = uuid.UUID(body.asset_id)
+    asset = await AssetService.get_asset(db, asset_id)
+    if asset is None or asset.workspace_id != session_workspace:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    data, _filename, _content_type = await AssetService.get_asset_file(
+        db, storage, asset_id
+    )
+
+    import cv2
+    import numpy as np
+
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=422, detail="Asset is not a decodable image")
+
+    suggestions = [
+        Suggestion(
+            label=det.get("class_name", "object"),
+            confidence=float(det.get("confidence", 0.0)),
+            bbox=BBox(
+                x=int(det["bbox"][0]),
+                y=int(det["bbox"][1]),
+                width=int(det["bbox"][2] - det["bbox"][0]),
+                height=int(det["bbox"][3] - det["bbox"][1]),
+            ),
+        )
+        for det in ObjectDetector().detect(image)
+        if len(det.get("bbox", [])) == 4
+    ]
+    return AutoLabelResponse(suggestions=suggestions)
 
 
 @router.post("/save", response_model=SaveResponse)

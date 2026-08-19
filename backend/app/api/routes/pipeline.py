@@ -1,4 +1,4 @@
-"""Pipeline API routes — create, list, validate, run, and inspect pipelines."""
+"""Pipeline API routes - create, list, validate, run, and inspect pipelines."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ MOCK_RUNS = [
             {"timestamp": "2026-03-18T10:00:01Z", "node": "load_images", "level": "info", "message": "Loaded 256 images"},
             {"timestamp": "2026-03-18T10:02:00Z", "node": "resize", "level": "info", "message": "Resized to 224x224"},
             {"timestamp": "2026-03-18T10:03:30Z", "node": "color_convert", "level": "info", "message": "Converted BGR to RGB"},
-            {"timestamp": "2026-03-18T10:05:30Z", "node": "clip_embed", "level": "error", "message": "CUDA out of memory — reduce batch size"},
+            {"timestamp": "2026-03-18T10:05:30Z", "node": "clip_embed", "level": "error", "message": "CUDA out of memory - reduce batch size"},
         ],
     },
     {
@@ -162,12 +162,12 @@ MOCK_RUNS = [
 # they shadowed the real implementations further down this file, so the
 # database-backed versions were unreachable dead code. The console reads
 # `data.items ?? data` and ActiveJobs requires the `{items: [...]}` envelope,
-# i.e. it is written against the real handlers — the mocks have been removed.
+# i.e. it is written against the real handlers - the mocks have been removed.
 # MOCK_PIPELINES / MOCK_RUNS remain as fixtures for the endpoints below.
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/nodes — catalogue of available node types
+# GET /api/pipeline/nodes - catalogue of available node types
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/nodes", response_model=list[NodeTypeInfo])
@@ -213,7 +213,7 @@ async def create_pipeline(
     if body.workspace_id is None:
         raise HTTPException(
             status_code=422,
-            detail="workspace_id is required — pipelines are workspace-scoped",
+            detail="workspace_id is required - pipelines are workspace-scoped",
         )
 
     pipeline = Pipeline(
@@ -229,7 +229,7 @@ async def create_pipeline(
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/list — convenience alias for listing saved pipelines
+# GET /api/pipeline/list - convenience alias for listing saved pipelines
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/list", response_model=PaginatedResponse)
@@ -265,7 +265,7 @@ async def list_pipelines_alias(
 
 
 # --------------------------------------------------------------------------
-# POST /api/pipeline/save — save or update a pipeline
+# POST /api/pipeline/save - save or update a pipeline
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/save", response_model=PipelineRead, status_code=201)
@@ -277,7 +277,7 @@ async def save_pipeline(
     if body.workspace_id is None:
         raise HTTPException(
             status_code=422,
-            detail="workspace_id is required — pipelines are workspace-scoped",
+            detail="workspace_id is required - pipelines are workspace-scoped",
         )
 
     pipeline = Pipeline(
@@ -354,7 +354,7 @@ async def run_pipeline(
     pipeline_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Start a pipeline run — dispatches a Celery task."""
+    """Start a pipeline run - dispatches a Celery task."""
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     pipeline = result.scalar_one_or_none()
     if not pipeline:
@@ -415,7 +415,7 @@ async def get_pipeline_run(
 
 
 # --------------------------------------------------------------------------
-# POST /api/pipeline/generate — NL-to-pipeline generation
+# POST /api/pipeline/generate - NL-to-pipeline generation
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/generate")
@@ -426,7 +426,7 @@ async def generate_pipeline(body: GenerateRequest) -> dict:
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/templates — list all templates
+# GET /api/pipeline/templates - list all templates
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/templates")
@@ -436,7 +436,7 @@ async def get_templates() -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/templates/{name} — get specific template
+# GET /api/pipeline/templates/{name} - get specific template
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/templates/{name}")
@@ -449,7 +449,7 @@ async def get_template_by_name(name: str) -> dict:
 
 
 # --------------------------------------------------------------------------
-# POST /api/pipeline/schedule — schedule a pipeline
+# POST /api/pipeline/schedule - schedule a pipeline
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/schedule")
@@ -469,7 +469,7 @@ async def schedule_pipeline(
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/schedules — list all schedules
+# GET /api/pipeline/schedules - list all schedules
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/schedules")
@@ -482,7 +482,7 @@ async def get_schedules(
 
 
 # --------------------------------------------------------------------------
-# POST /api/pipeline/suggest-next — suggest next nodes
+# POST /api/pipeline/suggest-next - suggest next nodes
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/suggest-next")
@@ -493,7 +493,7 @@ async def suggest_next_nodes(body: SuggestNextRequest) -> dict:
 
 
 # --------------------------------------------------------------------------
-# PATCH /api/pipeline/{pipeline_id}/schedule — update schedule for a pipeline
+# PATCH /api/pipeline/{pipeline_id}/schedule - update schedule for a pipeline
 # --------------------------------------------------------------------------
 
 @router.patch("/pipeline/{pipeline_id}/schedule")
@@ -529,7 +529,7 @@ async def update_pipeline_schedule(
 
 
 # --------------------------------------------------------------------------
-# POST /api/pipeline/run — start a pipeline run (accepts body with pipeline_id)
+# POST /api/pipeline/run - start a pipeline run (accepts body with pipeline_id)
 # --------------------------------------------------------------------------
 
 @router.post("/pipeline/run")
@@ -558,7 +558,7 @@ async def start_pipeline_run(
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/runs/{run_id}/status — live run status with per-node states
+# GET /api/pipeline/runs/{run_id}/status - live run status with per-node states
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/runs/{run_id}/status")
@@ -566,7 +566,7 @@ async def get_run_status(
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Return current run status with per-node progress (stub)."""
+    """Return current run status with per-node progress."""
     result = await db.execute(select(PipelineRun).where(PipelineRun.id == run_id))
     run = result.scalar_one_or_none()
     if not run:
@@ -614,7 +614,7 @@ async def get_run_status(
 
 
 # --------------------------------------------------------------------------
-# GET /api/pipeline/runs — list runs, optionally filtered by pipeline_id
+# GET /api/pipeline/runs - list runs, optionally filtered by pipeline_id
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/runs")
@@ -665,7 +665,7 @@ async def list_pipeline_runs(
 
 
 # --------------------------------------------------------------------------
-# Live status summaries — polled by the agent Live Context and Patrol panels
+# Live status summaries - polled by the agent Live Context and Patrol panels
 # --------------------------------------------------------------------------
 
 @router.get("/pipeline/running")

@@ -16,7 +16,9 @@ from sqlalchemy.orm import selectinload
 from app.core.deps import get_db, get_optional_workspace_id
 from app.models.workspace import SYSTEM_WORKSPACE_ID
 from app.database import get_async_session
-from app.models.agent import Agent, AgentMemory
+from app.models.agent import Agent
+from app.models.agent import AgentMemory
+from app.services.agents.patrol import PatrolAgent
 from app.models.conversation import AgentConversation, AgentMessage
 from app.services.agents.conversation import ConversationManager
 from app.services.agents.copilot import CopilotService
@@ -329,38 +331,18 @@ async def create_agent(
 
 @router.post("/patrol")
 async def patrol_all():
-    """Run a quick patrol scan across all streams and return findings.
+    """Run one patrol cycle and return what it actually found.
 
-    Returns mock data so the frontend always gets a usable response.
+    This returned "All streams healthy" and "No new alerts" unconditionally -
+    reassurance generated without looking at anything. PatrolAgent already
+    implements real checks for system health, unacknowledged alerts, model drift
+    and storage growth.
     """
+    findings = await PatrolAgent().run_patrol_cycle()
     return {
-        "findings": [
-            "All streams healthy",
-            "No new alerts",
-        ],
-        "alerts": 0,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Conversations (top-level, mock-safe)
-# ---------------------------------------------------------------------------
-
-async def _conversation_payload(conv) -> dict[str, Any]:
-    """Render a conversation with its messages in the shape the console expects."""
-    return {
-        "id": str(conv.id),
-        "title": conv.title,
-        "agent_id": conv.agent_id,
-        "created_at": conv.created_at.isoformat() if conv.created_at else None,
-        "messages": [
-            {
-                "role": m.role,
-                "content": m.content,
-                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-            }
-            for m in conv.messages
-        ],
+        "findings": [f.get("message", str(f)) for f in findings],
+        "detail": findings,
+        "alerts": sum(1 for f in findings if f.get("status") in ("warning", "critical")),
     }
 
 
@@ -418,6 +400,24 @@ async def get_conversation(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return await _conversation_payload(conv)
+
+
+async def _conversation_payload(conv) -> dict[str, Any]:
+    """Render a conversation with its messages in the shape the console expects."""
+    return {
+        "id": str(conv.id),
+        "title": conv.title,
+        "agent_id": conv.agent_id,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "messages": [
+            {
+                "role": m.role,
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
+            }
+            for m in conv.messages
+        ],
+    }
 
 
 @router.post("/conversations", status_code=201)
