@@ -3,8 +3,9 @@
 import React from "react";
 
 interface CircularGaugeProps {
-  /** Percentage value between 0 and 100. */
-  value: number;
+  /** Percentage value between 0 and 100, or null when the host does not
+   *  report it. Null renders as an em dash rather than a plausible zero. */
+  value: number | null | undefined;
   /** Label displayed below the gauge. */
   label: string;
   /** Optional secondary label (e.g. "2.4 / 50 GB") shown below the percentage. */
@@ -28,7 +29,8 @@ export default function CircularGauge({
   label,
   maxLabel,
 }: CircularGaugeProps) {
-  const clamped = Math.min(Math.max(value, 0), 100);
+  const known = typeof value === "number" && Number.isFinite(value);
+  const clamped = known ? Math.min(Math.max(value as number, 0), 100) : 0;
   const color = getGaugeColor(clamped);
   const dashOffset = CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
   const center = SIZE / 2;
@@ -41,7 +43,7 @@ export default function CircularGauge({
           height={SIZE}
           viewBox={`0 0 ${SIZE} ${SIZE}`}
           className="transform -rotate-90"
-          aria-label={`${label}: ${Math.round(clamped)}%`}
+          aria-label={`${label}: ${known ? `${Math.round(clamped)}%` : "not measured"}`}
           role="img"
         >
           {/* Background track */}
@@ -72,7 +74,7 @@ export default function CircularGauge({
         {/* Center text overlay */}
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="text-lg font-semibold text-gray-900">
-            {Math.round(clamped)}%
+            {known ? `${Math.round(clamped)}%` : "—"}
           </span>
           {maxLabel && (
             <span className="text-[10px] leading-tight text-gray-500">

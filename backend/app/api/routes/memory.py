@@ -1,4 +1,4 @@
-"""Memory page API routes — CRUD, search, decay, promote, timeline, conflicts.
+"""Memory page API routes - CRUD, search, decay, promote, timeline, conflicts.
 
 Serves the Semantic Memory dashboard at /api/memory/*.
 Existing /api/semantic-memory/* routes remain untouched.
@@ -10,7 +10,17 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from uuid import UUID
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db, get_workspace_id
+from app.models.semantic_memory import SemanticMemory
+from app.services.memory.promotion_rules import MemoryPromotionEngine
+from app.services.memory.semantic_memory import SemanticMemoryService
+
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
@@ -138,8 +148,31 @@ def _record_decay(memory_id: str, before: float, after: float, trigger: str) -> 
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory  — create
+# POST /api/memory  - create
 # ---------------------------------------------------------------------------
+
+_memory_service = SemanticMemoryService()
+_promotion_engine = MemoryPromotionEngine()
+
+
+def _serialise_memory(memory: SemanticMemory) -> dict[str, Any]:
+    """The shape the console's memory views already expect."""
+    return {
+        "id": str(memory.id),
+        "content": memory.content,
+        "category": memory.category,
+        "scope": memory.scope,
+        "importance": memory.importance,
+        "importance_score": memory.importance_score,
+        "freshness_score": memory.freshness_score,
+        "access_count": memory.access_count,
+        "source": memory.source,
+        "source_type": memory.source_type,
+        "confidence": memory.confidence,
+        "created_at": memory.created_at.isoformat() if memory.created_at else "",
+        "updated_at": memory.updated_at.isoformat() if memory.updated_at else "",
+    }
+
 
 @router.post("")
 async def create_memory(body: MemoryCreate) -> dict[str, Any]:
@@ -163,7 +196,7 @@ async def create_memory(body: MemoryCreate) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/store  — alias used by frontend
+# POST /api/memory/store  - alias used by frontend
 # ---------------------------------------------------------------------------
 
 @router.post("/store")
@@ -173,7 +206,7 @@ async def store_memory(body: MemoryCreate) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/recall  — search via POST (frontend uses this)
+# POST /api/memory/recall  - search via POST (frontend uses this)
 # ---------------------------------------------------------------------------
 
 @router.post("/recall")
@@ -197,7 +230,7 @@ async def recall_memories(body: MemoryRecall) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# GET /api/memory/search  — search via GET query params
+# GET /api/memory/search  - search via GET query params
 # ---------------------------------------------------------------------------
 
 @router.get("/search")
@@ -206,26 +239,27 @@ async def search_memories(
     scope: str = Query("all"),
     category: str = Query("all"),
     min_importance: float = Query(0.0, ge=0.0, le=1.0),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """Search memories via query parameters — returns up to 5 mock results."""
-    results = []
-    for mem in _memories.values():
-        if scope != "all" and mem["scope"] != scope:
-            continue
-        if category != "all" and mem["category"] != category:
-            continue
-        if mem["importance_score"] < min_importance:
-            continue
-        if q and q.lower() not in mem["content"].lower():
-            continue
-        results.append(mem)
-    results.sort(key=lambda m: m["importance_score"], reverse=True)
-    return results[:5]
+    """Search this workspace's stored memories.
 
+    This filtered a module-level dictionary seeded with five fixed memories, so
+    every workspace searched the same invented corpus and nothing an agent had
+    actually stored was findable. `SemanticMemoryService.recall` and the
+    `semantic_memories` table were already there.
+    """
+    memories = await _memory_service.recall(
+        db=db,
+        workspace_id=session_workspace,
+        query=q,
+        scope=None if scope == "all" else scope,
+        category=None if category == "all" else category,
+        k=50,
+        min_importance=min_importance,
+    )
+    return [_serialise_memory(m) for m in memories]
 
-# ---------------------------------------------------------------------------
-# GET /api/memory/summary
-# ---------------------------------------------------------------------------
 
 @router.get("/summary")
 async def get_summary() -> dict[str, Any]:
@@ -281,63 +315,83 @@ async def get_summary() -> dict[str, Any]:
 async def get_timeline(
     start: str = Query("", description="ISO start date"),
     end: str = Query("", description="ISO end date"),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    """Return 10 mock timeline events."""
+    """A timeline derived from the memories themselves.
+
+    This generated ten events by cycling through the strings "created",
+    "accessed", "promoted", "decayed", "updated" - a shape, not a history.
+
+    There is no event log for memories, so rather than invent one this reports
+    what the rows genuinely record: when each memory was created, when it was
+    last updated (if that differs), and its access count. If a real event table
+    is added later this should read from it instead.
+    """
+    conditions = [SemanticMemory.workspace_id == session_workspace]
+    for bound, column_op in ((start, "gte"), (end, "lte")):
+        if not bound:
+            continue
+        try:
+            parsed = datetime.fromisoformat(bound.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=422, detail=f"Not an ISO date: {bound!r}"
+            ) from None
+        conditions.append(
+            SemanticMemory.created_at >= parsed
+            if column_op == "gte"
+            else SemanticMemory.created_at <= parsed
+        )
+
+    rows = (
+        await db.execute(
+            select(SemanticMemory)
+            .where(*conditions)
+            .order_by(SemanticMemory.created_at.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+
     events: list[dict[str, Any]] = []
-    for i in range(10):
-        events.append({
-            "id": f"evt-{i+1:03d}",
-            "memory_id": f"mem-{(i % len(SEED_MEMORIES)) + 1:03d}",
-            "event_type": ["created", "accessed", "promoted", "decayed", "updated"][i % 5],
-            "content": SEED_MEMORIES[i % len(SEED_MEMORIES)]["content"],
-            "category": SEED_MEMORIES[i % len(SEED_MEMORIES)]["category"],
-            "importance_score": SEED_MEMORIES[i % len(SEED_MEMORIES)]["importance_score"],
-            "freshness_score": SEED_MEMORIES[i % len(SEED_MEMORIES)]["freshness_score"],
-            "scope": SEED_MEMORIES[i % len(SEED_MEMORIES)]["scope"],
-            "is_private": False,
-            "source": "conversation",
-            "source_type": "conversation",
-            "confidence": 0.8,
-            "access_count": i + 1,
-            "tags": SEED_MEMORIES[i % len(SEED_MEMORIES)]["tags"],
-            "created_at": _ts(10 - i),
-            "timestamp": _ts(10 - i),
-        })
+    for memory in rows:
+        events.append(
+            {
+                "id": f"{memory.id}-created",
+                "memory_id": str(memory.id),
+                "event_type": "created",
+                "timestamp": memory.created_at.isoformat() if memory.created_at else "",
+                "detail": memory.content[:120],
+            }
+        )
+        if memory.updated_at and memory.created_at and memory.updated_at > memory.created_at:
+            events.append(
+                {
+                    "id": f"{memory.id}-updated",
+                    "memory_id": str(memory.id),
+                    "event_type": "updated",
+                    "timestamp": memory.updated_at.isoformat(),
+                    "detail": f"access count {memory.access_count}",
+                }
+            )
+
+    events.sort(key=lambda e: e["timestamp"], reverse=True)
     return events
 
 
-# ---------------------------------------------------------------------------
-# GET /api/memory/conflicts
-# ---------------------------------------------------------------------------
-
 @router.get("/conflicts")
-async def get_conflicts() -> list[dict[str, Any]]:
-    """Return 2 mock memory conflicts."""
-    return [
-        {
-            "id": "conflict-001",
-            "memory_a": _memories.get("mem-001", SEED_MEMORIES[0]),
-            "memory_b": _memories.get("mem-003", SEED_MEMORIES[2]),
-            "conflict_type": "contradictory",
-            "description": "Both memories reference the primary vision model but disagree on architecture",
-            "severity": "high",
-            "created_at": _ts(1),
-        },
-        {
-            "id": "conflict-002",
-            "memory_a": _memories.get("mem-004", SEED_MEMORIES[3]),
-            "memory_b": _memories.get("mem-008", SEED_MEMORIES[5]),
-            "conflict_type": "outdated",
-            "description": "Infrastructure memory may be stale after recent migration",
-            "severity": "medium",
-            "created_at": _ts(3),
-        },
-    ]
+async def get_conflicts(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Contradictions the promotion engine finds between stored memories.
 
+    This returned the same two hand-written conflicts between two seed memories,
+    so the conflicts panel showed a problem that did not exist and never showed
+    one that did. `MemoryPromotionEngine.check_conflicts` does the real work.
+    """
+    return await _promotion_engine.check_conflicts(db=db, workspace_id=session_workspace)
 
-# ---------------------------------------------------------------------------
-# POST /api/memory/conflicts/{id}/resolve
-# ---------------------------------------------------------------------------
 
 @router.post("/conflicts/{conflict_id}/resolve")
 async def resolve_conflict_by_id(conflict_id: str) -> dict[str, Any]:
@@ -346,7 +400,7 @@ async def resolve_conflict_by_id(conflict_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/resolve-conflict  — frontend compat
+# POST /api/memory/resolve-conflict  - frontend compat
 # ---------------------------------------------------------------------------
 
 @router.post("/resolve-conflict")
@@ -383,7 +437,7 @@ async def decay_all() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/decay  — frontend compat (body variant)
+# POST /api/memory/decay  - frontend compat (body variant)
 # ---------------------------------------------------------------------------
 
 @router.post("/decay")
@@ -423,7 +477,7 @@ async def apply_rules() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/export  — frontend compat
+# POST /api/memory/export  - frontend compat
 # ---------------------------------------------------------------------------
 
 @router.post("/export")
@@ -511,7 +565,7 @@ async def promote_single(memory_id: str, body: PromoteDemoteBody | None = None) 
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/promote/{id}  — frontend compat (old path style)
+# POST /api/memory/promote/{id}  - frontend compat (old path style)
 # ---------------------------------------------------------------------------
 
 @router.post("/promote/{memory_id}")
@@ -521,7 +575,7 @@ async def promote_memory_compat(memory_id: str, body: PromoteDemoteBody | None =
 
 
 # ---------------------------------------------------------------------------
-# POST /api/memory/demote/{id}  — frontend compat
+# POST /api/memory/demote/{id}  - frontend compat
 # ---------------------------------------------------------------------------
 
 @router.post("/demote/{memory_id}")

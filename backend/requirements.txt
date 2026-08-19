@@ -126,3 +126,7 @@ httpx==0.26.0
 pytest==9.1.1
 pytest-asyncio==1.4.0
 pytest-cov==7.1.0
+
+# Host telemetry for /api/runtime/metrics. Previously undeclared, so that
+# endpoint always took its hardcoded fallback path.
+psutil==5.9.8

@@ -1,4 +1,4 @@
-"""Agent API routes — chat, CRUD, memory, conversation history, and patrol."""
+"""Agent API routes - chat, CRUD, memory, conversation history, and patrol."""
 
 import json
 import logging
@@ -134,7 +134,7 @@ async def _resolve_chat_agent(db: AsyncSession, agent_id: str | None) -> Agent |
     A missing agent_id used to become `str(uuid.uuid4())`. `agent_memories`
     has a foreign key to `agents`, so storing the reply then failed on the
     constraint and took the whole request down. Chat without an agent is a
-    legitimate thing to do — it just has nowhere to keep memories, so it keeps
+    legitimate thing to do - it just has nowhere to keep memories, so it keeps
     none.
     """
     if not agent_id:
@@ -161,7 +161,7 @@ async def agent_chat(
     agent_id = str(agent.id) if agent else None
     workspace_id = str(agent.workspace_id) if agent else str(SYSTEM_WORKSPACE_ID)
 
-    # Recall relevant memories — only an existing agent has any.
+    # Recall relevant memories - only an existing agent has any.
     memories_list = (
         await memory_service.recall(db, agent_id, query=body.message, k=5) if agent else []
     )
@@ -275,7 +275,7 @@ async def list_agents(
 
 
 # NOTE: GET /{agent_id} used to be declared here. Registered ahead of the
-# literal routes below, it swallowed GET /conversations — the console's
+# literal routes below, it swallowed GET /conversations - the console's
 # conversation list was answered by an agent lookup and always 404'd. The
 # single-agent handler now lives after the literal routes; see below.
 
@@ -490,35 +490,31 @@ async def get_agent(
     agent_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieve a single agent by ID. Falls back to mock data on DB failure."""
+    """Retrieve a single agent by ID.
+
+    The fallback that returned a fabricated agent "on DB failure" is gone. It
+    meant a missing agent, a malformed id and a broken database all produced a
+    plausible-looking record, so the console could show an agent that does not
+    exist and let an operator act on it.
+    """
     try:
-        stmt = select(Agent).where(Agent.id == agent_id)
-        result = await db.execute(stmt)
-        agent = result.scalar_one_or_none()
-        if agent:
-            return {
-                "id": str(agent.id),
-                "name": agent.name,
-                "agent_type": agent.agent_type,
-                "status": agent.status,
-                "created_at": agent.created_at.isoformat() if agent.created_at else "",
-            }
-    except Exception:
-        logger.debug("DB lookup failed for agent %s — returning mock", agent_id)
+        agent_uuid = uuid.UUID(agent_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Agent not found") from None
 
-    # Mock fallback
+    agent = (
+        await db.execute(select(Agent).where(Agent.id == agent_uuid))
+    ).scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     return {
-        "id": agent_id,
-        "name": f"Agent {agent_id[:8]}",
-        "agent_type": "copilot",
-        "status": "idle",
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "id": str(agent.id),
+        "name": agent.name,
+        "agent_type": agent.agent_type,
+        "status": agent.status,
+        "created_at": agent.created_at.isoformat() if agent.created_at else None,
     }
-
-
-# ---------------------------------------------------------------------------
-# Memory management
-# ---------------------------------------------------------------------------
 
 
 @router.get("/{agent_id}/memory")
@@ -647,6 +643,6 @@ class PatrolCheckResponse(BaseModel):
     alerts: int
 
 
-# NOTE: a second POST /patrol was declared here. It could never be reached —
-# the handler near the top of this file is registered first — so it was
+# NOTE: a second POST /patrol was declared here. It could never be reached -
+# the handler near the top of this file is registered first - so it was
 # removed rather than left as dead code.

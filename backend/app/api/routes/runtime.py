@@ -1,6 +1,8 @@
-"""Runtime Orchestrator API routes — GPU, routing, cost, quota, and caching."""
+"""Runtime Orchestrator API routes - GPU, routing, cost, quota, and caching."""
 
 from __future__ import annotations
+
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -8,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
 from app.services.runtime.router import ModelRouter, ModelRouteConfig
+
+logger = logging.getLogger(__name__)
 from app.services.runtime.gpu_scheduler import GPUScheduler
 from app.services.runtime.cost_control import CostController
 from app.services.runtime.cache import InferenceCache
@@ -128,36 +132,40 @@ async def current_schedule():
 class RuntimeMetricsResponse(BaseModel):
     """Resource-usage percentages (0-100) consumed by the dashboard gauges."""
 
-    gpu: float = Field(ge=0, le=100, description="GPU utilisation %")
-    cpu: float = Field(ge=0, le=100, description="CPU utilisation %")
-    storage: float = Field(ge=0, le=100, description="Storage utilisation %")
+    # Optional on purpose: null means "not measured on this host", which the
+    # console renders as unknown. A gauge showing a plausible number nobody
+    # measured is worse than a blank one.
+    gpu: float | None = Field(default=None, ge=0, le=100, description="GPU utilisation %")
+    cpu: float | None = Field(default=None, ge=0, le=100, description="CPU utilisation %")
+    storage: float | None = Field(default=None, ge=0, le=100, description="Storage utilisation %")
 
 
 @router.get("/metrics", response_model=RuntimeMetricsResponse)
 async def runtime_metrics():
-    """Return system resource utilisation metrics as percentages (0-100).
+    """Host CPU, GPU and disk utilisation as percentages.
 
-    Uses *psutil* for real CPU / disk metrics when available; falls back to
-    hard-coded stub values so the endpoint always returns a valid response.
+    The fallback used to be a hardcoded 12% CPU and 4.8% storage - the latter
+    derived from the same invented "2.4 GB of 50" the assets page used to show.
+    `psutil` was never a declared dependency, so that fallback was not an edge
+    case: it was the only path this endpoint ever took.
+
+    psutil is now a real requirement. If it is genuinely unavailable the values
+    are reported as null, which the console can render as "unknown" - a gauge
+    showing a plausible number nobody measured is worse than a blank one.
     """
-    cpu_pct: float = 12.0
-    storage_pct: float = 4.8  # fallback: 2.4 / 50 * 100
-
     try:
-        import psutil  # noqa: WPS433 — optional runtime import
-
-        cpu_pct = psutil.cpu_percent(interval=0.1)
-
-        disk = psutil.disk_usage("/")
-        storage_pct = round(disk.percent, 1)
+        import psutil
     except ImportError:
-        pass
+        logger.warning("psutil is unavailable; reporting unknown utilisation")
+        return RuntimeMetricsResponse(cpu=None, gpu=None, storage=None)
 
-    # GPU: requires pynvml or similar — stub until integrated.
-    gpu_pct: float = 0.0
+    cpu_pct = psutil.cpu_percent(interval=0.1)
+    disk = psutil.disk_usage("/")
+    storage_pct = round(disk.used / disk.total * 100, 1) if disk.total else None
 
+    # No GPU telemetry is wired up. None, not zero: zero means "idle".
     return RuntimeMetricsResponse(
-        gpu=round(gpu_pct, 1),
-        cpu=round(cpu_pct, 1),
-        storage=round(storage_pct, 1),
+        cpu=round(cpu_pct, 1), gpu=None, storage=storage_pct
     )
+
+

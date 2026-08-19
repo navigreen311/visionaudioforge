@@ -26,6 +26,7 @@ from app.schemas.common import PaginatedResponse
 from app.models.asset import Asset, AssetType
 from app.services.assets.asset_service import AssetService
 from app.services.data.storage import MinIOStorageService
+from app.services.vision.detection import ObjectDetector
 
 logger = logging.getLogger(__name__)
 
@@ -303,10 +304,7 @@ async def patch_asset(
     session_workspace: UUID = Depends(get_workspace_id),
     db=Depends(get_db),
 ):
-    """Partially update an asset (tags and/or metadata).
-
-    Falls back to a mock acknowledgement when the service layer is unavailable.
-    """
+    """Partially update an asset (tags and/or metadata)."""
     try:
         asset = await AssetService.update_asset(
             db=db,
@@ -369,6 +367,56 @@ async def download_asset(
 
 
 @router.post("/{asset_id}/auto-tag")
-async def auto_tag_asset(asset_id: str):
-    """Return AI-generated tags for an asset (stub)."""
-    return {"tags": ["person", "outdoor", "zone-b", "daytime"]}
+async def auto_tag_asset(
+    asset_id: UUID,
+    confidence: float = Query(0.35, ge=0.0, le=1.0),
+    session_workspace: UUID = Depends(get_workspace_id),
+    db=Depends(get_db),
+    storage: MinIOStorageService = Depends(_get_storage),
+):
+    """Tag an image asset from what an object detector actually sees.
+
+    This returned the same four words - "person", "outdoor", "zone-b",
+    "daytime" - for every asset, including audio files. The detector it should
+    have been calling has been in the tree the whole time.
+
+    Non-image assets get an empty list and a reason rather than invented tags.
+    """
+    asset = await _owned_asset(db, asset_id, session_workspace)
+
+    asset_type = getattr(asset.type, "value", str(asset.type))
+    if asset_type != "image":
+        return {
+            "tags": [],
+            "detections": [],
+            "note": f"Auto-tagging supports images; this asset is {asset_type}.",
+        }
+
+    data, _filename, _content_type = await AssetService.get_asset_file(
+        db, storage, asset_id
+    )
+
+    import cv2
+    import numpy as np
+
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        raise HTTPException(status_code=422, detail="Asset is not a decodable image")
+
+    detections = ObjectDetector().detect(image, confidence=confidence)
+
+    # One tag per distinct label, most confident first, so the list is useful
+    # rather than a repetition of "person" once per person.
+    best: dict[str, float] = {}
+    for det in detections:
+        label = det.get("class_name") or "object"
+        score = float(det.get("confidence", 0.0))
+        best[label] = max(best.get(label, 0.0), score)
+
+    return {
+        "tags": [label for label, _ in sorted(best.items(), key=lambda kv: -kv[1])],
+        "detections": detections,
+        "model": "yolov8n",
+    }
+
+
