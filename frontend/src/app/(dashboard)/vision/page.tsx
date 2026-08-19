@@ -46,22 +46,23 @@ function PreprocessingTab() {
       setLoading(true);
       setError(null);
       try {
-        // Convert OperationParams to the flat Record<string, unknown> the API expects
-        const operations: Record<string, unknown> = {};
-        for (const step of params.operations) {
-          operations[step.op] = step.params;
-        }
-        operations.output_format = params.outputFormat;
-        operations.jpeg_quality = params.jpegQuality;
-        operations.include_stats = params.includeStats;
-
-        const res = await analyzeImage(file, operations);
+        // POST /api/vision/analyze takes a JSON *array* of {op, params} steps -
+        // its own docstring says so, and it 400s on anything else. This used to
+        // flatten the steps into an object keyed by op name, under a comment
+        // claiming that was "the flat Record the API expects", so every analysis
+        // from the console came back
+        // `{"error": "operations must be a JSON array"}`. Found by the browser
+        // e2e suite; nothing else exercised this path.
+        const res = await analyzeImage(file, params.operations);
         setResult(res);
 
         // Save to processing history
         const thumbnail =
-          res.processed_image
-            ? `data:image/png;base64,${res.processed_image}`
+          // The endpoint returns the base64 under `image`. The console read
+          // `processed_image`, which is never present, so a successful analysis
+          // rendered no picture at all.
+          res.image ?? res.processed_image
+            ? `data:image/png;base64,${res.image ?? res.processed_image}`
             : originalPreview ?? "";
         saveToHistory({
           id: `preprocess-${Date.now()}`,

@@ -49,8 +49,11 @@ export default function PipelinePage() {
 
   const [showScheduleModal, setShowScheduleModal] = useState(false);
 
-  // Pipeline ID (for schedule & runs — uses saved pipeline id when available)
-  const currentPipelineId = "00000000-0000-0000-0000-000000000000";
+  // The id of the pipeline this canvas was last saved as. It was a hardcoded
+  // nil UUID with a comment claiming it "uses saved pipeline id when available",
+  // which it never did: Run always posted the nil id, so it either ran nothing
+  // or ran whatever the nil id happened to match. Save now records the real one.
+  const [currentPipelineId, setCurrentPipelineId] = useState<string | null>(null);
 
   // Build definition from React Flow state
   const buildDefinition = useCallback(() => {
@@ -178,10 +181,11 @@ export default function PipelinePage() {
         body: JSON.stringify({
           name: pipelineName,
           definition: buildDefinition(),
-          workspace_id: "00000000-0000-0000-0000-000000000000",
         }),
       });
       if (resp.ok) {
+        const saved = await resp.json();
+        if (saved?.id) setCurrentPipelineId(String(saved.id));
         setValidationMsg("Pipeline saved!");
       } else {
         const err = await resp.json();
@@ -194,6 +198,13 @@ export default function PipelinePage() {
   };
 
   const handleRun = async () => {
+    if (!currentPipelineId) {
+      // Better than posting a nil id and reporting "run started" for a run that
+      // never existed.
+      setValidationMsg("Save the pipeline before running it.");
+      setTimeout(() => setValidationMsg(null), 5000);
+      return;
+    }
     setValidationMsg("Running pipeline...");
     try {
       const resp = await fetch("/api/pipeline/run", {
@@ -380,7 +391,7 @@ export default function PipelinePage() {
 
       {/* Schedule Modal */}
       <ScheduleModal
-        pipelineId={currentPipelineId}
+        pipelineId={currentPipelineId ?? ""}
         open={showScheduleModal}
         onClose={() => setShowScheduleModal(false)}
         onSaved={() => setValidationMsg("Schedule saved!")}
@@ -398,7 +409,7 @@ export default function PipelinePage() {
         <div className="px-4 py-2 border-b border-gray-100">
           <h4 className="text-sm font-semibold text-gray-600">Run History</h4>
         </div>
-        <RunHistory pipelineId={currentPipelineId} runs={runs.length > 0 ? runs : undefined} />
+        <RunHistory pipelineId={currentPipelineId ?? ""} runs={runs.length > 0 ? runs : undefined} />
       </div>
     </div>
   );
