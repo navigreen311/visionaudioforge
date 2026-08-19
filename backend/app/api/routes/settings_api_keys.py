@@ -11,8 +11,10 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_current_user
 from app.database import get_async_session
 from app.models.api_key import APIKey
+from app.models.user import User
 
 router = APIRouter(prefix="/api/settings/api-keys", tags=["settings-api-keys"])
 
@@ -110,6 +112,7 @@ async def list_api_keys(
 async def create_api_key(
     body: APIKeyCreate,
     workspace_id: UUID = Query(..., description="Workspace ID"),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ) -> APIKeyCreated:
     """Create a new API key. The full key is returned only once."""
@@ -124,7 +127,11 @@ async def create_api_key(
     new_key = APIKey(
         id=uuid4(),
         workspace_id=workspace_id,
-        user_id=UUID("00000000-0000-0000-0000-000000000001"),  # placeholder
+        # The authenticated caller, not a placeholder. api_keys.user_id is a
+        # foreign key to users, and the hardcoded nil-ish UUID that used to sit
+        # here matches no row — so every create violated the constraint and API
+        # key creation had never once succeeded.
+        user_id=current_user.id,
         name=body.name,
         key_hash=key_hash,
         key_prefix=prefix_display,
