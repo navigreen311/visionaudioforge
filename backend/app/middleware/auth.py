@@ -27,6 +27,7 @@ from app.config import settings
 from app.core.auth_policy import is_public
 from app.core.identity import AuthError, Identity, resolve_identity
 from app.core.logging_config import user_id_ctx, workspace_id_ctx
+from app.core.tenancy import reset_current_workspace, set_current_workspace
 
 # Sent on an unauthenticated WebSocket handshake. 1008 = policy violation.
 WS_POLICY_VIOLATION = 1008
@@ -112,12 +113,16 @@ class AuthenticationMiddleware:
             workspace_id_ctx.set(
                 str(identity.workspace_id) if identity.workspace_id else ""
             ),
+            # Not just for logs: this one confines every ORM read for the rest of
+            # the request to the caller's workspace. See app/core/tenancy.py.
+            set_current_workspace(identity.workspace_id),
         )
         try:
             await self.app(scope, receive, send)
         finally:
             user_id_ctx.reset(tokens[0])
             workspace_id_ctx.reset(tokens[1])
+            reset_current_workspace(tokens[2])
 
     async def _deny(
         self, scope: Scope, receive: Receive, send: Send, exc: AuthError
