@@ -245,3 +245,159 @@ def test_the_exemptions_are_the_ones_we_meant():
     pinned, and widening it means changing this test on purpose.
     """
     assert EXEMPT_TABLES == frozenset({"users", "workspaces", "audit_logs"})
+
+
+# ---------------------------------------------------------------------------
+# The write path
+# ---------------------------------------------------------------------------
+#
+# Everything above proves a read cannot cross tenants. A bulk `update()` or
+# `delete()` never loads a row, so none of it applies: the filter above hangs
+# off `execute_state.is_select`. A statement that mutates by id alone reached
+# the database with nothing standing in front of it.
+#
+# Same shape as the read tests, deliberately: if the mechanism covers writes
+# then these are a verification of it rather than six hand-patched files.
+
+
+def _write_probes():
+    """(label, model, builder, column, new value) for bulk-write probes.
+
+    Separate from `_row_factories()` rather than an extra tuple element, so the
+    read tests above keep their shape and their ids.
+    """
+    return [
+        ("alert rule", AlertRule,
+         lambda ws: AlertRule(name="write probe", conditions={}, actions={}, workspace_id=ws),
+         "name", "MUTATED BY TENANT B"),
+        ("agent", Agent,
+         lambda ws: Agent(name="write probe", agent_type="copilot", workspace_id=ws),
+         "name", "MUTATED BY TENANT B"),
+        ("dataset", Dataset,
+         lambda ws: Dataset(name="write probe", modality="image", workspace_id=ws),
+         "name", "MUTATED BY TENANT B"),
+        ("asset", Asset,
+         lambda ws: Asset(type="image", path="write/probe.png", filename="probe.png",
+                          size_bytes=1, workspace_id=ws),
+         "filename", "mutated-by-b.png"),
+    ]
+
+
+_WRITE_IDS = [p[0] for p in _write_probes()]
+
+
+async def _insert_as(ws, build):
+    async with async_session_factory() as db:
+        with unscoped():  # setup, not the statement under test
+            row = build(ws)
+            db.add(row)
+            await db.commit()
+            return row.id
+
+
+async def _read_unscoped(model, row_id):
+    async with async_session_factory() as db:
+        with unscoped():
+            return await db.get(model, row_id)
+
+
+@pytest.mark.parametrize("label,model,build,column,new_value", _write_probes(), ids=_WRITE_IDS)
+async def test_bulk_update_cannot_touch_another_workspace(
+    two_workspaces, label, model, build, column, new_value
+):
+    """Tenant B issuing `update().where(id == A's id)` must change nothing."""
+    from sqlalchemy import update
+
+    ws_a, ws_b = two_workspaces
+    row_id = await _insert_as(ws_a, build)
+    original = getattr(await _read_unscoped(model, row_id), column)
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_b)
+        try:
+            await db.execute(
+                update(model)
+                .where(model.id == row_id)
+                .values(**{column: new_value})
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    after = getattr(await _read_unscoped(model, row_id), column)
+    assert after == original, (
+        f"tenant isolation breached: B's bulk UPDATE rewrote A's {label} "
+        f"({original!r} -> {after!r})"
+    )
+
+
+@pytest.mark.parametrize("label,model,build,column,new_value", _write_probes(), ids=_WRITE_IDS)
+async def test_bulk_delete_cannot_touch_another_workspace(
+    two_workspaces, label, model, build, column, new_value
+):
+    """Tenant B issuing `delete().where(id == A's id)` must delete nothing."""
+    from sqlalchemy import delete
+
+    ws_a, ws_b = two_workspaces
+    row_id = await _insert_as(ws_a, build)
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_b)
+        try:
+            await db.execute(
+                delete(model)
+                .where(model.id == row_id)
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert await _read_unscoped(model, row_id) is not None, (
+        f"tenant isolation breached: B's bulk DELETE removed A's {label}"
+    )
+
+
+@pytest.mark.parametrize("label,model,build,column,new_value", _write_probes(), ids=_WRITE_IDS)
+async def test_a_workspace_can_still_write_its_own_rows(
+    two_workspaces, label, model, build, column, new_value
+):
+    """The other half. A filter that blocks everything is not isolation."""
+    from sqlalchemy import delete, update
+
+    ws_a, _ = two_workspaces
+    row_id = await _insert_as(ws_a, build)
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_a)
+        try:
+            await db.execute(
+                update(model)
+                .where(model.id == row_id)
+                .values(**{column: new_value})
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert getattr(await _read_unscoped(model, row_id), column) == new_value, (
+        f"A could not update its own {label}"
+    )
+
+    async with async_session_factory() as db:
+        token = set_current_workspace(ws_a)
+        try:
+            await db.execute(
+                delete(model)
+                .where(model.id == row_id)
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+        finally:
+            reset_current_workspace(token)
+
+    assert await _read_unscoped(model, row_id) is None, (
+        f"A could not delete its own {label}"
+    )
