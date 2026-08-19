@@ -283,3 +283,81 @@ async def test_upload_needs_no_workspace_field_from_the_browser(client, tenants)
     if created.status_code not in (200, 201):
         pytest.skip(f"asset upload unavailable in this environment: {created.status_code}")
     assert str(created.json()["workspace_id"]) == ws_a
+
+
+# ---------------------------------------------------------------------------
+# API keys — the one bulk-write path with a route in front of it
+# ---------------------------------------------------------------------------
+
+
+async def _create_api_key(client, token: str, workspace_id: str, name: str):
+    return await client.post(
+        f"/api/settings/api-keys?workspace_id={workspace_id}",
+        headers=_auth(token),
+        json={"name": name, "scopes": []},
+    )
+
+
+async def test_an_api_key_cannot_be_revoked_by_another_tenant(client, tenants):
+    """Revocation at the HTTP surface, where an attacker actually stands.
+
+    Note what this does and does not prove. `revoke_api_key` loads the row with
+    an explicit workspace predicate before issuing
+    `update(APIKey).where(APIKey.id == key_id)`, so it 404s on that first check
+    and this test passes with or without the session-level write filter —
+    verified by reverting the filter and re-running.
+
+    It is still worth having: it is the regression net for that route guard, and
+    the second assertion (the key is still listed afterwards) would catch a
+    revoke that 404s the caller while deactivating the row anyway. The write
+    filter itself is proved directly in test_session_scoping.py, which does not
+    go through a route that guards itself.
+    """
+    token_a, ws_a = tenants["a"]
+    token_b, ws_b = tenants["b"]
+
+    created = await _create_api_key(client, token_a, ws_a, "tenant-a-key")
+    if created.status_code != 201:
+        pytest.skip(f"api key creation unavailable here: {created.status_code} {created.text}")
+    key_id = created.json()["id"]
+
+    # B naming its own workspace but A's key id: the id is the only thing the
+    # tenant guard cannot check for itself.
+    revoked = await client.delete(
+        f"/api/settings/api-keys/{key_id}?workspace_id={ws_b}", headers=_auth(token_b)
+    )
+    assert revoked.status_code == 404, (
+        f"tenant isolation breached: B revoked A's API key ({revoked.status_code})"
+    )
+
+    # And the key is still usable by its owner — a 404 that happened to have
+    # deactivated the row anyway would be the same bug wearing a hat.
+    listed = await client.get(
+        f"/api/settings/api-keys?workspace_id={ws_a}", headers=_auth(token_a)
+    )
+    assert listed.status_code == 200
+    assert any(k["id"] == key_id for k in listed.json()), (
+        "tenant isolation breached: B's revoke deactivated A's key despite the 404"
+    )
+
+
+async def test_a_tenant_can_still_revoke_its_own_api_key(client, tenants):
+    """The other half: scoping writes must not break the legitimate path."""
+    token_a, ws_a = tenants["a"]
+
+    created = await _create_api_key(client, token_a, ws_a, "tenant-a-own-key")
+    if created.status_code != 201:
+        pytest.skip(f"api key creation unavailable here: {created.status_code}")
+    key_id = created.json()["id"]
+
+    revoked = await client.delete(
+        f"/api/settings/api-keys/{key_id}?workspace_id={ws_a}", headers=_auth(token_a)
+    )
+    assert revoked.status_code == 204, f"A could not revoke its own key: {revoked.text}"
+
+    listed = await client.get(
+        f"/api/settings/api-keys?workspace_id={ws_a}", headers=_auth(token_a)
+    )
+    assert not any(k["id"] == key_id for k in listed.json()), (
+        "the key is still listed as active after its owner revoked it"
+    )
