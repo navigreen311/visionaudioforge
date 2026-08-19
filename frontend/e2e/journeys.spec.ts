@@ -54,14 +54,30 @@ test.describe("vision analysis", () => {
 });
 
 test.describe("pipeline", () => {
-  // The shipped templates do not validate against the backend's own node
-  // registry. Loading "Image Detection Pipeline" and saving it returns 422:
-  //   Node 'normalize_1' (normalize) missing required param 'image'
-  //   Node 'detect_1' (detect_objects) missing required param 'image'
-  //   Node 'output_1' (save_asset) missing required param 'data'
-  // The nodes carry no wiring between them, so every template is unsaveable as
-  // shipped. That is a real defect in the templates, not in this test, and it is
-  // left failing-by-name rather than weakened into a pass.
+  // Still fixme, but no longer for the reason it was: the templates now
+  // validate. `templates.py` wires each required input to the nearest earlier
+  // node that publishes a port of that name, and pipeline-templates.spec.ts
+  // guards that for all ten.
+  //
+  // Two defects behind this one now, neither in this suite's reach:
+  //
+  // 1. The console throws the wiring away and makes up new wiring.
+  //    `loadDefinitionToCanvas` maps each edge to {id, source, target},
+  //    dropping from_port/to_port, and `buildDefinition` then re-emits every
+  //    edge as from_port "output" -> to_port "input". Those port names do not
+  //    exist on these nodes, so saving a freshly loaded template returns:
+  //      422 Node 'normalize_1' (normalize) missing required param 'image'
+  //    which is the original error arriving from a new cause. The fix belongs
+  //    in app/(dashboard)/pipeline/page.tsx, which this workstream does not own.
+  //
+  // 2. Saving is broken underneath that anyway. Both persistence routes build
+  //    the ORM object with a column the model does not have:
+  //      500 TypeError: 'description' is an invalid keyword argument for Pipeline
+  //    A one-node definition with a real workspace_id reproduces it on
+  //    /api/pipeline/create and /api/pipeline/save alike, so no pipeline can be
+  //    persisted by any client.
+  //
+  // Fixing 1 alone would move this test from 422 to 500, not to green.
   test.fixme("a template can be loaded, saved and run", async ({ page }) => {
     await page.goto("/pipeline");
 
