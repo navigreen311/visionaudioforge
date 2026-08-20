@@ -1102,6 +1102,51 @@ export async function listIncidents(windowMinutes = 30): Promise<{
   return data;
 }
 
+export interface EvidenceBundleAsset {
+  asset_id: string;
+  added_at: string;
+  type?: string;
+}
+
+export interface EvidenceBundle {
+  bundle_id: string;
+  alert_id: string;
+  case_id: string | null;
+  created_at: string;
+  clips: EvidenceBundleAsset[];
+  snapshots: EvidenceBundleAsset[];
+  events: EvidenceBundleAsset[];
+}
+
+/** Evidence bundles in the current workspace. */
+export async function listEvidenceBundles(): Promise<EvidenceBundle[]> {
+  const { data } = await api.get("/api/alerts/bundles", {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+export interface CustodyEntry {
+  timestamp: string;
+  user: string;
+  action: string;
+  details: string | null;
+}
+
+export interface CustodyReport {
+  asset_id: string;
+  chain: CustodyEntry[];
+  integrity: { intact: boolean; hash: string | null; note: string };
+  access_count: number;
+  unique_users: number;
+}
+
+/** The chain-of-custody report for one alert. */
+export async function getChainOfCustody(alertId: string): Promise<CustodyReport> {
+  const { data } = await api.get(`/api/alerts/${alertId}/custody`);
+  return data;
+}
+
 export async function getIncidentTimeline(
   incidentId: string,
 ): Promise<{ incident_id: string; timeline: AlertIncidentTimelineEntry[] }> {

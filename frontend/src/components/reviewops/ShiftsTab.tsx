@@ -11,40 +11,36 @@ import ShiftScheduleGrid from './ShiftScheduleGrid';
 
 type TimeSlotPreset = 'Morning' | 'Afternoon' | 'Night' | 'Custom';
 
+// A shift is a reviewer and a window. `zone`, `slot` and `accuracy` were on
+// these types and on no table: zones are not a concept the platform has, the
+// slot is derivable from the start time rather than stored, and per-shift
+// accuracy needs ground-truth labels nothing records. They were only ever
+// populated from the constants at the top of this file.
 interface ActiveShift {
   shift_id: string;
   reviewer_name: string;
   reviewer_avatar: string;
-  zone: string;
   started_at: string;
   tasks_completed: number;
-  tasks_remaining: number;
-  accuracy: number;
 }
 
 interface ShiftHistoryRow {
   shift_id: string;
   reviewer_name: string;
-  zone: string;
   date: string;
-  slot: string;
   tasks_completed: number;
-  accuracy: number;
   duration_h: number;
 }
 
 interface ShiftPayload {
   shift_id: string;
-  reviewer_id: string;
+  reviewer_id: string | null;
   reviewer_name: string;
-  zone: string;
-  date: string;
-  time_slot: string;
   start_time: string;
   end_time: string;
   active: boolean;
   tasks_completed: number;
-  accuracy: number;
+  accuracy: number | null;
 }
 
 interface CreateShiftForm {
@@ -62,41 +58,14 @@ interface CreateShiftForm {
 
 const API = '/api/reviewops';
 
-const MOCK_REVIEWERS = [
-  { id: 'r-001', name: 'Alice M.' },
-  { id: 'r-002', name: 'Brian K.' },
-  { id: 'r-003', name: 'Carla S.' },
-  { id: 'r-004', name: 'David L.' },
-  { id: 'r-005', name: 'Eva R.' },
-];
-
-// ------------------------------------------------------------------
-// Mock data (used when API returns empty)
-// ------------------------------------------------------------------
-
-const MOCK_ACTIVE: ActiveShift = {
-  shift_id: 's-active-001',
-  reviewer_name: 'Alice M.',
-  reviewer_avatar: 'AM',
-  zone: 'Zone A',
-  started_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
-  tasks_completed: 14,
-  tasks_remaining: 6,
-  accuracy: 94.2,
-};
-
-const MOCK_HISTORY: ShiftHistoryRow[] = [
-  { shift_id: 'sh-1', reviewer_name: 'Brian K.', zone: 'Zone B', date: '2026-03-20', slot: 'Morning', tasks_completed: 22, accuracy: 96.1, duration_h: 8 },
-  { shift_id: 'sh-2', reviewer_name: 'Alice M.', zone: 'Zone A', date: '2026-03-20', slot: 'Afternoon', tasks_completed: 18, accuracy: 93.4, duration_h: 8 },
-  { shift_id: 'sh-3', reviewer_name: 'Carla S.', zone: 'Zone C', date: '2026-03-19', slot: 'Morning', tasks_completed: 25, accuracy: 97.8, duration_h: 8 },
-  { shift_id: 'sh-4', reviewer_name: 'David L.', zone: 'Zone A', date: '2026-03-19', slot: 'Night', tasks_completed: 12, accuracy: 91.0, duration_h: 8 },
-  { shift_id: 'sh-5', reviewer_name: 'Eva R.', zone: 'Zone B', date: '2026-03-18', slot: 'Afternoon', tasks_completed: 20, accuracy: 95.5, duration_h: 8 },
-  { shift_id: 'sh-6', reviewer_name: 'Brian K.', zone: 'Zone A', date: '2026-03-18', slot: 'Morning', tasks_completed: 19, accuracy: 94.0, duration_h: 8 },
-  { shift_id: 'sh-7', reviewer_name: 'Alice M.', zone: 'Zone C', date: '2026-03-17', slot: 'Afternoon', tasks_completed: 23, accuracy: 96.3, duration_h: 8 },
-  { shift_id: 'sh-8', reviewer_name: 'Carla S.', zone: 'Zone B', date: '2026-03-17', slot: 'Morning', tasks_completed: 17, accuracy: 92.8, duration_h: 8 },
-  { shift_id: 'sh-9', reviewer_name: 'David L.', zone: 'Zone A', date: '2026-03-16', slot: 'Night', tasks_completed: 15, accuracy: 90.2, duration_h: 8 },
-  { shift_id: 'sh-10', reviewer_name: 'Eva R.', zone: 'Zone C', date: '2026-03-16', slot: 'Morning', tasks_completed: 21, accuracy: 95.0, duration_h: 8 },
-];
+// Reviewers and shift history both come from /api/reviewops.
+//
+// This file used to define five people ("Alice M.", "Brian K."...), one active
+// shift and ten history rows with accuracy percentages, and seed its state with
+// them. It did call /shifts - but only overwrote the fakes when the response
+// happened to contain matching rows, so an empty queue displayed ten invented
+// shifts, and a real row would have thrown: the payload had no `reviewer_name`
+// and this read `.split(' ')` off it.
 
 // ------------------------------------------------------------------
 // Elapsed Timer Hook
@@ -140,7 +109,6 @@ function ActiveShiftPanel({ shift, onEnd }: { shift: ActiveShift; onEnd: () => v
           </div>
           <div>
             <p className="text-sm font-semibold text-gray-900">{shift.reviewer_name}</p>
-            <p className="text-xs text-gray-500">{shift.zone}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -152,7 +120,11 @@ function ActiveShiftPanel({ shift, onEnd }: { shift: ActiveShift; onEnd: () => v
         </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+      {/* "Remaining" and "Accuracy" were here. Neither exists: a shift carries
+          no task quota to count down from, and per-shift accuracy needs
+          ground-truth labels nothing records. Both were read from the invented
+          constants this file used to define. */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
         <div>
           <p className="text-[10px] uppercase tracking-wider text-gray-500">Elapsed</p>
           <p className="text-lg font-mono font-bold text-gray-900">{elapsed}</p>
@@ -160,14 +132,6 @@ function ActiveShiftPanel({ shift, onEnd }: { shift: ActiveShift; onEnd: () => v
         <div>
           <p className="text-[10px] uppercase tracking-wider text-gray-500">Tasks Done</p>
           <p className="text-lg font-bold text-gray-900">{shift.tasks_completed}</p>
-        </div>
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-gray-500">Remaining</p>
-          <p className="text-lg font-bold text-gray-900">{shift.tasks_remaining}</p>
-        </div>
-        <div>
-          <p className="text-[10px] uppercase tracking-wider text-gray-500">Accuracy</p>
-          <p className="text-lg font-bold text-gray-900">{shift.accuracy.toFixed(1)}%</p>
         </div>
       </div>
 
@@ -188,9 +152,11 @@ function ActiveShiftPanel({ shift, onEnd }: { shift: ActiveShift; onEnd: () => v
 interface CreateShiftModalProps {
   onSave: (form: CreateShiftForm) => void;
   onClose: () => void;
+  /** From /api/reviewops/reviewers - people who actually hold review tasks. */
+  reviewers: { id: string; name: string }[];
 }
 
-function CreateShiftModal({ onSave, onClose }: CreateShiftModalProps) {
+function CreateShiftModal({ onSave, onClose, reviewers }: CreateShiftModalProps) {
   const [form, setForm] = useState<CreateShiftForm>({
     reviewer_id: '',
     zone: 'Zone A',
@@ -224,7 +190,7 @@ function CreateShiftModal({ onSave, onClose }: CreateShiftModalProps) {
               className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
             >
               <option value="">Select reviewer...</option>
-              {MOCK_REVIEWERS.map((r) => (
+              {reviewers.map((r) => (
                 <option key={r.id} value={r.id}>{r.name}</option>
               ))}
             </select>
@@ -334,13 +300,13 @@ function ShiftHistoryTable({ rows }: { rows: ShiftHistoryRow[] }) {
       <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200 text-sm">
           <thead className="bg-gray-50">
+            {/* Zone, Slot and Accuracy columns were removed: the shift table
+                stores a reviewer and a window, and nothing else. Their values
+                came from the ten invented rows this file used to define. */}
             <tr>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Reviewer</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Zone</th>
               <th className="px-4 py-3 text-left font-medium text-gray-500">Date</th>
-              <th className="px-4 py-3 text-left font-medium text-gray-500">Slot</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500">Tasks</th>
-              <th className="px-4 py-3 text-right font-medium text-gray-500">Accuracy</th>
               <th className="px-4 py-3 text-right font-medium text-gray-500">Duration</th>
             </tr>
           </thead>
@@ -348,29 +314,14 @@ function ShiftHistoryTable({ rows }: { rows: ShiftHistoryRow[] }) {
             {rows.map((r) => (
               <tr key={r.shift_id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium text-gray-800">{r.reviewer_name}</td>
-                <td className="px-4 py-3 text-gray-600">{r.zone}</td>
                 <td className="px-4 py-3 text-gray-600 font-mono text-xs">{r.date}</td>
-                <td className="px-4 py-3">
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${
-                    r.slot === 'Morning' ? 'bg-amber-100 text-amber-800' :
-                    r.slot === 'Afternoon' ? 'bg-sky-100 text-sky-800' :
-                    'bg-indigo-100 text-indigo-800'
-                  }`}>
-                    {r.slot}
-                  </span>
-                </td>
                 <td className="px-4 py-3 text-right text-gray-600">{r.tasks_completed}</td>
-                <td className="px-4 py-3 text-right">
-                  <span className={`font-medium ${r.accuracy >= 95 ? 'text-green-600' : r.accuracy >= 90 ? 'text-yellow-600' : 'text-red-600'}`}>
-                    {r.accuracy.toFixed(1)}%
-                  </span>
-                </td>
                 <td className="px-4 py-3 text-right text-gray-600">{r.duration_h}h</td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-8 text-gray-400">No shift history</td>
+                <td colSpan={4} className="text-center py-8 text-gray-400">No shift history</td>
               </tr>
             )}
           </tbody>
@@ -385,53 +336,73 @@ function ShiftHistoryTable({ rows }: { rows: ShiftHistoryRow[] }) {
 // ------------------------------------------------------------------
 
 export default function ShiftsTab() {
-  const [activeShift, setActiveShift] = useState<ActiveShift | null>(MOCK_ACTIVE);
-  const [history, setHistory] = useState<ShiftHistoryRow[]>(MOCK_HISTORY);
+  const [activeShift, setActiveShift] = useState<ActiveShift | null>(null);
+  const [history, setHistory] = useState<ShiftHistoryRow[]>([]);
+  const [reviewers, setReviewers] = useState<{ id: string; name: string }[]>([]);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchShifts = useCallback(async () => {
+    // The mapping below is the payload /api/reviewops/shifts actually returns.
+    // The previous one read `zone`, `date` and `time_slot` off it - fields the
+    // shift table has never had - and `accuracy`, which needs ground-truth
+    // labels nothing records. Those columns are gone rather than filled with
+    // numbers nobody measured.
     try {
-      const res = await fetch(`${API}/shifts?workspace_id=${readWorkspaceId()}`);
-      if (res.ok) {
-        const data: ShiftPayload[] = await res.json();
-        // Map API response into active shift + history
+      const [shiftRes, reviewerRes] = await Promise.all([
+        fetch(`${API}/shifts?workspace_id=${readWorkspaceId()}`),
+        fetch(`${API}/reviewers?workspace_id=${readWorkspaceId()}`),
+      ]);
+
+      if (reviewerRes.ok) {
+        const people: { id: string; name: string }[] = await reviewerRes.json();
+        setReviewers(people);
+      }
+
+      if (shiftRes.ok) {
+        const data: ShiftPayload[] = await shiftRes.json();
+
         const active = data.find((s) => s.active);
-        if (active) {
-          setActiveShift({
-            shift_id: active.shift_id,
-            reviewer_name: active.reviewer_name,
-            reviewer_avatar: active.reviewer_name
-              .split(' ')
-              .map((w) => w[0])
-              .join('')
-              .slice(0, 2),
-            zone: active.zone,
-            started_at: active.start_time,
-            tasks_completed: active.tasks_completed,
-            tasks_remaining: 20 - active.tasks_completed,
-            accuracy: active.accuracy,
-          });
-        }
-        const historyData: ShiftHistoryRow[] = data
-          .filter((s) => !s.active)
-          .slice(0, 10)
-          .map((s) => ({
-            shift_id: s.shift_id,
-            reviewer_name: s.reviewer_name,
-            zone: s.zone,
-            date: s.date,
-            slot: s.time_slot,
-            tasks_completed: s.tasks_completed,
-            accuracy: s.accuracy,
-            duration_h: Math.round(
-              (new Date(s.end_time).getTime() - new Date(s.start_time).getTime()) / 3600000
-            ),
-          }));
-        if (historyData.length > 0) setHistory(historyData);
+        setActiveShift(
+          active
+            ? {
+                shift_id: active.shift_id,
+                reviewer_name: active.reviewer_name,
+                reviewer_avatar: (active.reviewer_name || "?")
+                  .split(/[\s@.]+/)
+                  .map((w) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase(),
+                started_at: active.start_time,
+                tasks_completed: active.tasks_completed,
+              }
+            : null,
+        );
+
+        setHistory(
+          data
+            .filter((s) => !s.active)
+            .slice(0, 10)
+            .map((s) => ({
+              shift_id: s.shift_id,
+              reviewer_name: s.reviewer_name,
+              date: s.start_time ? s.start_time.slice(0, 10) : '',
+              tasks_completed: s.tasks_completed,
+              duration_h:
+                s.start_time && s.end_time
+                  ? Math.round(
+                      (new Date(s.end_time).getTime() -
+                        new Date(s.start_time).getTime()) /
+                        3600000,
+                    )
+                  : 0,
+            })),
+        );
       }
     } catch {
-      /* use mock data on failure */
+      // Leave the lists empty. Showing invented shifts on a failed request is
+      // what this component used to do.
     } finally {
       setLoading(false);
     }
@@ -512,6 +483,7 @@ export default function ShiftsTab() {
       {/* Create Shift Modal */}
       {showCreateModal && (
         <CreateShiftModal
+          reviewers={reviewers}
           onSave={handleCreateShift}
           onClose={() => setShowCreateModal(false)}
         />

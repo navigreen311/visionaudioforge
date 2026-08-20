@@ -216,6 +216,10 @@ class EvaluationService:
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
             f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
             accuracy = (tp + tn) / n if n > 0 else 0.0
+            # False-positive rate is the x axis of an ROC curve. It was not
+            # reported here, so /threshold-curves could not draw one without
+            # recomputing the same confusion matrix a second time.
+            fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
 
             results.append(
                 {
@@ -224,6 +228,7 @@ class EvaluationService:
                     "recall": round(recall, 4),
                     "f1": round(f1, 4),
                     "accuracy": round(accuracy, 4),
+                    "fpr": round(fpr, 4),
                 }
             )
 

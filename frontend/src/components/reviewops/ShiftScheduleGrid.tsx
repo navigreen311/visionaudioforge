@@ -1,6 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+
+import { readWorkspaceId } from '@/lib/session';
 
 // ------------------------------------------------------------------
 // Types
@@ -14,7 +16,6 @@ interface Reviewer {
 
 interface SlotAssignment {
   reviewer: Reviewer;
-  zone: string;
 }
 
 type TimeSlot = 'Morning' | 'Afternoon' | 'Night';
@@ -37,142 +38,98 @@ const SLOT_COLORS: Record<TimeSlot, string> = {
 };
 
 // ------------------------------------------------------------------
-// Mock data for the schedule grid
+// Deriving the week from real shifts
 // ------------------------------------------------------------------
+//
+// This grid used to be four invented reviewers ("Alice M.", "Brian K."...) and
+// seven hardcoded assignments, with an Assign modal that wrote into local state
+// and nowhere else - so the schedule shown had never come from anywhere and the
+// edits made to it went nowhere.
+//
+// The platform stores a shift as a reviewer plus a start and end time. It has no
+// notion of a day-slot or a zone, so the grid derives the first from each
+// shift's start time and no longer offers the second.
 
-const MOCK_REVIEWERS: Reviewer[] = [
-  { id: 'r1', name: 'Alice M.', avatar: 'AM' },
-  { id: 'r2', name: 'Brian K.', avatar: 'BK' },
-  { id: 'r3', name: 'Carla S.', avatar: 'CS' },
-  { id: 'r4', name: 'David L.', avatar: 'DL' },
-];
+interface ShiftPayload {
+  shift_id: string;
+  reviewer_id: string | null;
+  reviewer_name: string;
+  start_time: string;
+  end_time: string;
+  active: boolean;
+}
 
-function buildInitialSchedule(): Record<string, SlotAssignment | null> {
+const DAY_INDEX: Record<number, Day> = {
+  1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri', 6: 'Sat', 0: 'Sun',
+};
+
+/** Which slot a shift belongs to, from the hour it starts. */
+function slotFor(startedAt: string): TimeSlot {
+  const hour = new Date(startedAt).getHours();
+  if (hour >= 6 && hour < 14) return 'Morning';
+  if (hour >= 14 && hour < 22) return 'Afternoon';
+  return 'Night';
+}
+
+function initials(name: string): string {
+  return (name || '?')
+    .split(/[\s@.]+/)
+    .map((part) => part[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function scheduleFrom(shifts: ShiftPayload[]): Record<string, SlotAssignment | null> {
   const schedule: Record<string, SlotAssignment | null> = {};
   for (const day of DAYS) {
-    for (const slot of TIME_SLOTS) {
-      schedule[`${day}-${slot}`] = null;
-    }
+    for (const slot of TIME_SLOTS) schedule[`${day}-${slot}`] = null;
   }
-  // Pre-fill some slots
-  schedule['Mon-Morning'] = { reviewer: MOCK_REVIEWERS[0], zone: 'Zone A' };
-  schedule['Mon-Afternoon'] = { reviewer: MOCK_REVIEWERS[1], zone: 'Zone B' };
-  schedule['Tue-Morning'] = { reviewer: MOCK_REVIEWERS[2], zone: 'Zone A' };
-  schedule['Wed-Night'] = { reviewer: MOCK_REVIEWERS[3], zone: 'Zone C' };
-  schedule['Thu-Afternoon'] = { reviewer: MOCK_REVIEWERS[0], zone: 'Zone B' };
-  schedule['Fri-Morning'] = { reviewer: MOCK_REVIEWERS[1], zone: 'Zone A' };
-  schedule['Sat-Morning'] = { reviewer: MOCK_REVIEWERS[2], zone: 'Zone C' };
+
+  for (const shift of shifts) {
+    if (!shift.start_time) continue;
+    const day = DAY_INDEX[new Date(shift.start_time).getDay()];
+    if (!day) continue;
+    schedule[`${day}-${slotFor(shift.start_time)}`] = {
+      reviewer: {
+        id: shift.reviewer_id ?? shift.shift_id,
+        name: shift.reviewer_name,
+        avatar: initials(shift.reviewer_name),
+      },
+    };
+  }
+
   return schedule;
 }
 
 // ------------------------------------------------------------------
-// Assign Modal
-// ------------------------------------------------------------------
-
-interface AssignModalProps {
-  day: Day;
-  slot: TimeSlot;
-  reviewers: Reviewer[];
-  onAssign: (reviewerId: string, zone: string) => void;
-  onClose: () => void;
-}
-
-function AssignModal({ day, slot, reviewers, onAssign, onClose }: AssignModalProps) {
-  const [selectedReviewer, setSelectedReviewer] = useState('');
-  const [zone, setZone] = useState('Zone A');
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="w-full max-w-sm rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          Assign Slot
-        </h3>
-        <p className="text-sm text-gray-500 mb-4">
-          {day} &middot; {slot} ({SLOT_TIMES[slot]})
-        </p>
-
-        <div className="space-y-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Reviewer</label>
-            <select
-              value={selectedReviewer}
-              onChange={(e) => setSelectedReviewer(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-            >
-              <option value="">Select reviewer...</option>
-              {reviewers.map((r) => (
-                <option key={r.id} value={r.id}>{r.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Zone</label>
-            <select
-              value={zone}
-              onChange={(e) => setZone(e.target.value)}
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-            >
-              <option value="Zone A">Zone A</option>
-              <option value="Zone B">Zone B</option>
-              <option value="Zone C">Zone C</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex justify-end gap-2 mt-5">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => {
-              if (selectedReviewer) {
-                onAssign(selectedReviewer, zone);
-              }
-            }}
-            disabled={!selectedReviewer}
-            className="rounded-lg bg-brand-600 px-4 py-1.5 text-sm text-white hover:bg-brand-700 disabled:opacity-40"
-          >
-            Assign
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------
-// Grid Cell
+// Grid cell
 // ------------------------------------------------------------------
 
 interface GridCellProps {
   assignment: SlotAssignment | null;
   slot: TimeSlot;
-  onClick: () => void;
 }
 
-function GridCell({ assignment, slot, onClick }: GridCellProps) {
+function GridCell({ assignment, slot }: GridCellProps) {
+  // These were buttons opening an Assign modal that only wrote to local state.
+  // A cell now reports what is scheduled and nothing else, because that is all
+  // this component can truthfully do without a shift-assignment endpoint.
   if (!assignment) {
     return (
-      <button
-        onClick={onClick}
-        className={`w-full h-full min-h-[72px] rounded-lg border-2 border-dashed border-gray-300
-          flex items-center justify-center text-xs text-gray-400 hover:border-brand-400
-          hover:text-brand-500 transition-colors cursor-pointer`}
+      <div
+        className="w-full h-full min-h-[72px] rounded-lg border-2 border-dashed border-gray-300
+          flex items-center justify-center text-xs text-gray-400"
       >
         Unassigned
-      </button>
+      </div>
     );
   }
 
   return (
-    <button
-      onClick={onClick}
+    <div
       className={`w-full h-full min-h-[72px] rounded-lg border ${SLOT_COLORS[slot]}
-        p-2 flex flex-col items-center justify-center gap-1 hover:shadow-md transition-shadow cursor-pointer`}
+        p-2 flex flex-col items-center justify-center gap-1`}
     >
       <div className="w-7 h-7 rounded-full bg-brand-600 text-white text-[10px] font-bold flex items-center justify-center">
         {assignment.reviewer.avatar}
@@ -180,8 +137,7 @@ function GridCell({ assignment, slot, onClick }: GridCellProps) {
       <span className="text-xs font-medium text-gray-800 truncate max-w-full">
         {assignment.reviewer.name}
       </span>
-      <span className="text-[10px] text-gray-500">{assignment.zone}</span>
-    </button>
+    </div>
   );
 }
 
@@ -190,17 +146,25 @@ function GridCell({ assignment, slot, onClick }: GridCellProps) {
 // ------------------------------------------------------------------
 
 export default function ShiftScheduleGrid() {
-  const [schedule, setSchedule] = useState<Record<string, SlotAssignment | null>>(buildInitialSchedule);
-  const [assignTarget, setAssignTarget] = useState<{ day: Day; slot: TimeSlot } | null>(null);
+  const [schedule, setSchedule] = useState<Record<string, SlotAssignment | null>>(
+    () => scheduleFrom([]),
+  );
+  const [loading, setLoading] = useState(true);
 
-  const handleAssign = (reviewerId: string, zone: string) => {
-    if (!assignTarget) return;
-    const reviewer = MOCK_REVIEWERS.find((r) => r.id === reviewerId);
-    if (!reviewer) return;
-    const key = `${assignTarget.day}-${assignTarget.slot}`;
-    setSchedule((prev) => ({ ...prev, [key]: { reviewer, zone } }));
-    setAssignTarget(null);
-  };
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/api/reviewops/shifts?workspace_id=${readWorkspaceId()}`,
+        );
+        if (res.ok) setSchedule(scheduleFrom(await res.json()));
+      } catch {
+        // An empty grid is the honest answer to a failed request.
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
   return (
     <div className="space-y-3">
@@ -228,12 +192,7 @@ export default function ShiftScheduleGrid() {
               {DAYS.map((day) => {
                 const key = `${day}-${slot}`;
                 return (
-                  <GridCell
-                    key={key}
-                    assignment={schedule[key]}
-                    slot={slot}
-                    onClick={() => setAssignTarget({ day, slot })}
-                  />
+                  <GridCell key={key} assignment={schedule[key]} slot={slot} />
                 );
               })}
             </div>
@@ -241,16 +200,15 @@ export default function ShiftScheduleGrid() {
         </div>
       </div>
 
-      {/* Assign modal */}
-      {assignTarget && (
-        <AssignModal
-          day={assignTarget.day}
-          slot={assignTarget.slot}
-          reviewers={MOCK_REVIEWERS}
-          onAssign={handleAssign}
-          onClose={() => setAssignTarget(null)}
-        />
+      {/* The Assign modal that used to sit here only ever wrote to this
+          component's own state. Shifts are created through "Create Shift"
+          above, which posts to /api/reviewops/shifts. */}
+      {!loading && Object.values(schedule).every((slot) => slot === null) && (
+        <p className="text-sm text-gray-500">
+          No shifts scheduled this week.
+        </p>
       )}
+
     </div>
   );
 }

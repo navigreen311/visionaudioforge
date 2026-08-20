@@ -1,26 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Badge from "@/components/ui/Badge";
-
-interface CustodyEntry {
-  timestamp: string;
-  user: string;
-  action: string;
-  details: string | null;
-}
-
-interface CustodyReport {
-  asset_id: string;
-  chain: CustodyEntry[];
-  integrity: {
-    intact: boolean;
-    hash: string | null;
-    note: string;
-  };
-  access_count: number;
-  unique_users: number;
-}
+import {
+  getChainOfCustody,
+  listAlerts,
+  type Alert,
+  type CustodyReport,
+} from "@/lib/api";
 
 const actionVariant: Record<string, "error" | "warning" | "info" | "success" | "neutral"> = {
   viewed: "info",
@@ -40,46 +27,60 @@ const actionIcon: Record<string, string> = {
   deleted: "M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16",
 };
 
-/** Placeholder data — wired to API in production. */
-const MOCK_REPORT: CustodyReport = {
-  asset_id: "asset-001",
-  chain: [
-    {
-      timestamp: new Date(Date.now() - 7200000).toISOString(),
-      user: "user-001",
-      action: "viewed",
-      details: "Initial review from dashboard",
-    },
-    {
-      timestamp: new Date(Date.now() - 3600000).toISOString(),
-      user: "user-002",
-      action: "downloaded",
-      details: "Downloaded for analysis",
-    },
-    {
-      timestamp: new Date(Date.now() - 1800000).toISOString(),
-      user: "user-001",
-      action: "exported",
-      details: "Exported to evidence bundle CASE-100",
-    },
-    {
-      timestamp: new Date(Date.now() - 900000).toISOString(),
-      user: "user-003",
-      action: "shared",
-      details: "Shared with legal team",
-    },
-  ],
-  integrity: {
-    intact: true,
-    hash: "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456",
-    note: "Hash matches stored record",
-  },
-  access_count: 4,
-  unique_users: 3,
-};
-
 export default function ChainOfCustodyDisplay() {
-  const [report] = useState<CustodyReport>(MOCK_REPORT);
+  // This rendered an invented chain - four accesses by "user-001".."user-003",
+  // a hash that matched nothing, and "Shared with legal team" - on an
+  // evidentiary screen, while GET /api/alerts/{id}/custody served the real
+  // report the whole time. Of everything on this page that was fabricated,
+  // this is the one someone might have relied on.
+  //
+  // The report is per-asset and this panel had no way to name one, which is
+  // presumably why it was never wired. It picks from the workspace's alerts.
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [report, setReport] = useState<CustodyReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { items } = await listAlerts({ limit: 50 });
+        setAlerts(items);
+        setSelected((current) => current ?? items[0]?.id ?? null);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not load alerts.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const load = useCallback(async (alertId: string) => {
+    setError(null);
+    try {
+      setReport(await getChainOfCustody(alertId));
+    } catch (err) {
+      setReport(null);
+      setError(err instanceof Error ? err.message : "Could not load the report.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selected) void load(selected);
+  }, [selected, load]);
+
+  if (loading) {
+    return <p className="text-sm text-gray-500">Loading&hellip;</p>;
+  }
+
+  if (alerts.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No alerts in this workspace, so there is no evidence to trace.
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -89,6 +90,31 @@ export default function ChainOfCustodyDisplay() {
           Track who accessed and modified evidence
         </p>
       </div>
+
+      <label className="block">
+        <span className="text-xs uppercase tracking-wider text-gray-500">Alert</span>
+        <select
+          value={selected ?? ""}
+          onChange={(e) => setSelected(e.target.value)}
+          className="mt-1 block w-full rounded border-gray-300 text-sm"
+        >
+          {alerts.map((alert) => (
+            <option key={alert.id} value={alert.id}>
+              {alert.rule_name ?? alert.message ?? alert.id}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {!report ? (
+        <p className="text-sm text-gray-500">
+          No custody record for this alert. Entries are written when evidence is
+          viewed, downloaded, exported or shared.
+        </p>
+      ) : (
+      <>
 
       {/* Summary stats */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -177,6 +203,8 @@ export default function ChainOfCustodyDisplay() {
         <div className="text-center py-12 text-gray-500">
           <p>No custody records found for this asset.</p>
         </div>
+      )}
+      </>
       )}
     </div>
   );

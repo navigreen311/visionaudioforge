@@ -6,6 +6,14 @@ calls them, but ``app/api/router.py`` never includes the router — so the paths
 
 The test walks ``frontend/src``, extracts every ``/api/...`` string literal it
 can see, and asserts each one unifies with a mounted FastAPI route.
+
+"Can see" is the load-bearing phrase, and it was wrong for a long time. The
+extractor only recognised a path written as a bare ``"/api/..."`` literal or as
+``${SOME_BASE}/rest`` where the base itself held a path. The console mostly
+calls the API as ``fetch(`${API}/api/thing`)`` with an *origin* in ``API`` -
+neither form - so 38 of ~152 paths were invisible, including one that 404'd on
+every page load. ``test_the_extractor_sees_each_way_the_console_calls_the_api``
+below pins each calling convention so the net cannot quietly narrow again.
 """
 
 from __future__ import annotations
@@ -44,12 +52,29 @@ WILDCARD = "\x00"
 # Extraction
 # --------------------------------------------------------------------------
 
-# Any single/double/backtick-quoted string. Backtick strings may contain ${...}.
-_STRING_LITERAL = re.compile(r"""(['"`])((?:\\.|(?!\1).)*?)\1""", re.DOTALL)
+# Any quoted string. Only a template literal may span lines - '' and ""
+# strings cannot in JavaScript, and letting them do so here made the pattern
+# swallow whole blocks of code: a literal would open at a quote, run past its
+# closing quote through several lines, and surface as a "path" such as
+#   /api/alerts/incidents", {
+# Each of those was a false unmounted route sitting on top of the real ones,
+# which is the fastest way to make a guard's output ignorable.
+_SQ = r"'((?:\\.|[^'\n])*?)'"
+_DQ = r'"((?:\\.|[^"\n])*?)"'
+_BQ = r"`((?:\\.|[^`])*?)`"
+_STRING_LITERAL = re.compile(f"(?:{_SQ}|{_DQ}|{_BQ})", re.DOTALL)
 
 # `const API_BASE = '/api/marketplace/byom';` — components build paths off these.
+#
+# The origin may be interpolated: ``const API = `${API_BASE_URL}/api/federated` ``
+# is the same declaration with a host in front, and it is the shape most of the
+# console uses. Without the optional prefix here that const is not recognised as
+# a base, and the "read from the first /api/" rule below then reports
+# `/api/federated` as an endpoint the console calls — which it does not; it calls
+# `${API}/federations`.
 _BASE_CONST = re.compile(
-    r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"`](/api/[^'"`$]*)['"`]"""
+    r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"`]"""
+    r"""(?:\$\{[^}]*\})?(/api/[^'"`$]*)['"`]"""
 )
 
 _INTERPOLATION = re.compile(r"\$\{[^}]*\}")
@@ -73,6 +98,8 @@ def _iter_source_files() -> list[Path]:
         for p in FRONTEND_SRC.rglob(ext)
         if ".next" not in p.parts
         and "node_modules" not in p.parts
+        and "__tests__" not in p.parts
+        and not p.name.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"))
         and p.name not in _NON_CALLING_SOURCES
     ]
     return sorted(files)
@@ -86,6 +113,19 @@ def _normalise(raw: str) -> tuple[str, ...] | None:
     """
     path = raw.split("?", 1)[0].split("#", 1)[0]
     if not path.startswith("/api/") and path != "/api":
+        return None
+
+    # Reading from the first "/api/" of any literal is what let this scanner
+    # finally see `${API}/api/thing`. It also means prose gets read: a comment
+    # explaining "/api/… was a page asking for someone else" is a string
+    # literal too, and a multi-line template can span into ordinary code.
+    #
+    # A URL path has no spaces, quotes, brackets or ellipses. Rejecting those
+    # keeps the widening without the noise - and rejecting is safe here because
+    # a real path never contains them, so nothing genuine is being hidden.
+    if any(ch in path for ch in ' \t\n"\'`()[]{}<>,;') and "${" not in path:
+        return None
+    if "\u2026" in path or "..." in path:
         return None
 
     # A segment containing any interpolation is treated as a single wildcard.
@@ -110,8 +150,19 @@ def _extract_from_source(text: str) -> set[str]:
         value for name, value in bases.items() if "${" + name + "}/" in text
     }
 
-    for _quote, body in _STRING_LITERAL.findall(text):
-        if "/api/" not in body and not body.startswith("/api"):
+    # findall yields one group per quote style; take whichever matched.
+    for groups in _STRING_LITERAL.findall(text):
+        body = next((g for g in groups if g), "")
+        # `${BASE}/validate` contains no "/api/" of its own - the path lives in
+        # BASE. This early skip fired first and dropped it, so the substitution
+        # branch below could never run: the convention it was written for had
+        # never actually worked. A literal that opens with an interpolation gets
+        # through to be resolved.
+        if (
+            "/api/" not in body
+            and not body.startswith("/api")
+            and not body.startswith("${")
+        ):
             continue
 
         if body.startswith("/api"):
@@ -123,6 +174,32 @@ def _extract_from_source(text: str) -> set[str]:
         match = re.match(r"^\$\{([A-Za-z_$][\w$]*)\}(/.*)?$", body)
         if match and match.group(1) in bases:
             found.add(bases[match.group(1)] + (match.group(2) or ""))
+            continue
+
+        # `${API}/api/observability/dashboard` — an absolute URL built from a
+        # host constant. This is the single largest way the console calls the
+        # API and this scanner could not see any of it: the literal does not
+        # start with "/api", and `API` holds an origin rather than a path so it
+        # is not in `bases` either. Both branches above miss, and the path was
+        # silently dropped.
+        #
+        # That is not hypothetical. /api/observability/latency-history was
+        # called on every load of the observability page and mounted nowhere,
+        # 404ing for as long as the page existed, while this test - written to
+        # catch exactly that - passed. It saw 114 of the console's ~152 paths.
+        #
+        # Anything from the first "/api/" onwards is the path, whatever precedes
+        # it. A prose mention of a path in a comment or message would also be
+        # picked up; that is the right side to err on for a guard, and
+        # IGNORED_PATHS exists for the exceptions.
+        index = body.find("/api/")
+        if index > 0:
+            candidate = body[index:]
+            # A base const declares its own path; the endpoints are the literals
+            # other call sites append to it. Reporting the base itself fails this
+            # test for a route nothing ever requests.
+            if candidate not in prefix_only:
+                found.add(candidate)
 
     return found
 
@@ -221,6 +298,104 @@ def test_api_client_paths_are_mounted():
     assert not unresolved, (
         "frontend/src/lib/api.ts calls API paths that no mounted router "
         "serves:\n  " + "\n  ".join(unresolved)
+    )
+
+
+CALLING_CONVENTIONS = [
+    # (source snippet, the path it must yield)
+    ('api.get("/api/alerts")', "/api/alerts"),
+    ("api.get('/api/alerts')", "/api/alerts"),
+    ("api.get(`/api/alerts/${id}`)", "/api/alerts/\x00"),
+    # The one this scanner could not see. An origin in `API`, the path after it.
+    ("fetch(`${API}/api/observability/dashboard`)", "/api/observability/dashboard"),
+    ("fetch(`${API_BASE}/api/edge/devices/${id}/logs`)", "/api/edge/devices/\x00/logs"),
+    # A query string is not part of the path.
+    ("fetch(`${API}/api/observability/sla?tier=standard`)", "/api/observability/sla"),
+    # A declared base that itself holds a path.
+    ('const B = "/api/marketplace/byom";\nfetch(`${B}/validate`)',
+     "/api/marketplace/byom/validate"),
+    # The same with the origin interpolated in front - the console's most common
+    # shape, and the one that broke this test the first time it was widened.
+    ('const API = `${API_BASE_URL}/api/federated`;\nfetch(`${API}/federations`)',
+     "/api/federated/federations"),
+]
+
+
+@pytest.mark.parametrize("snippet,expected", CALLING_CONVENTIONS,
+                         ids=[c[1] for c in CALLING_CONVENTIONS])
+def test_the_extractor_sees_each_way_the_console_calls_the_api(snippet, expected):
+    """Each calling style, pinned.
+
+    This test exists because the net narrowed silently. The extractor handled a
+    bare "/api/..." literal and `${BASE}/rest`, and the console overwhelmingly
+    writes `fetch(`${API}/api/...`)` - which matched neither. 38 of ~152 paths
+    were invisible, one of them a route that 404'd on every load of the
+    observability page while this file passed.
+
+    A guard that covers three quarters of its subject reads exactly like one
+    that covers all of it. Adding a convention here is how the difference stays
+    visible.
+    """
+    found = _extract_from_source(snippet)
+    normalised = {_normalise(raw) for raw in found}
+    normalised.discard(None)
+
+    expected_segments = tuple(
+        seg for seg in expected.strip("/").split("/") if seg
+    )
+    assert expected_segments in normalised, (
+        f"the extractor did not see {expected!r} in {snippet!r} - "
+        f"it found {sorted(found)}"
+    )
+
+
+def test_a_base_const_is_not_itself_reported_as_an_endpoint():
+    """``const API = `${HOST}/api/federated``` declares a prefix, not a route.
+
+    The console calls `${API}/federations`. Reporting `/api/federated` as an
+    unmounted path fails the suite for a route nothing requests — which is
+    exactly what happened the first time this extractor was widened, on the very
+    change that widened it.
+    """
+    source = (
+        "const API = `${API_BASE_URL}/api/federated`;\n"
+        "fetch(`${API}/federations`);\n"
+    )
+    found = _extract_from_source(source)
+
+    assert "/api/federated/federations" in found
+    assert "/api/federated" not in found, (
+        "the base const was reported as an endpoint in its own right"
+    )
+
+
+def test_a_string_literal_does_not_run_past_its_own_quote():
+    """A quoted string cannot span lines, and neither may the pattern.
+
+    When it could, one literal swallowed the code after it and produced paths
+    like `/api/alerts/incidents", {` - false unmounted routes stacked on top of
+    the real ones, which is how a guard's output becomes something people skip.
+    """
+    source = 'api.post("/api/alerts/incidents", {\n  body: JSON.stringify(x),\n});'
+    found = _extract_from_source(source)
+
+    assert found == {"/api/alerts/incidents"}, (
+        f"expected exactly the one path, got {sorted(found)}"
+    )
+
+
+def test_the_extractor_still_sees_most_of_the_console():
+    """A floor, so a future narrowing shows up as a failure rather than silence.
+
+    At the time of writing it sees 207 distinct paths. The floor is deliberately
+    below that - this guards against collapse, not against ordinary churn.
+    """
+    count = len(collect_frontend_paths())
+    assert count >= 180, (
+        f"the extractor now sees only {count} API paths, down from 207. "
+        "Something about how the console writes paths has changed and the "
+        "scanner no longer recognises it - add the new convention to "
+        "CALLING_CONVENTIONS above."
     )
 
 

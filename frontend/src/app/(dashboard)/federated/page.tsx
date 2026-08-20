@@ -1,13 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import ParticipantTable from "@/components/federated/ParticipantTable";
 import AddParticipantModal from "@/components/federated/AddParticipantModal";
 import type { FLParticipant } from "@/components/federated/ParticipantTable";
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
+const API = `${API_BASE_URL}/api/federated`;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+//
+// This page used to render `MOCK_FEDERATION`: a "Cross-Site Object Detection"
+// run at round 12 of 50, three named sites with sample counts and accuracies,
+// and a spent privacy budget of 0.24. All of it invented, all of it on screen,
+// while /api/federated served the real thing. The four handlers below carried
+// comments naming the endpoints they would call "in production" - each of those
+// endpoints existed.
 
 interface RoundMetric {
   round: number;
@@ -16,80 +27,58 @@ interface RoundMetric {
   participants: number;
 }
 
-interface Federation {
+interface ParticipantPayload {
+  site: string;
+  name: string;
+  data_size: number;
+  status: string;
+  rounds_contributed: number;
+  samples_contributed: number;
+}
+
+interface FederationPayload {
   id: string;
   name: string;
-  status: "created" | "training" | "stopped";
-  currentRound: number;
-  maxRounds: number;
-  aggregationMethod: string;
-  epsilonSpent: number;
-  epsilonBudget: number;
-  participants: FLParticipant[];
-  metricsHistory: RoundMetric[];
+  model_id: string;
+  aggregation_strategy: string;
+  min_participants: number;
+  total_rounds: number;
+  current_round: number;
+  status: string;
+  privacy_budget: number;
+  privacy_epsilon_spent: number;
+  participants: ParticipantPayload[] | number;
+}
+
+interface RoundPayload {
+  round_number?: number;
+  round?: number;
+  accuracy?: number | null;
+  loss?: number | null;
+  participants?: number | null;
+}
+
+/**
+ * The participant table's shape, from the server's.
+ *
+ * `localAccuracy` and `dataQuality` are not returned by anything and are not
+ * recorded anywhere - they were columns invented alongside the mock rows. They
+ * are dropped rather than filled in. `contributionPct` is real: a site's share
+ * of the samples contributed so far.
+ */
+function toParticipants(payload: ParticipantPayload[]): FLParticipant[] {
+  const total = payload.reduce((sum, p) => sum + (p.samples_contributed || 0), 0);
+  return payload.map((p) => ({
+    id: p.site,
+    name: p.name,
+    status: (p.status as FLParticipant["status"]) ?? "active",
+    samples: p.samples_contributed || p.data_size || 0,
+    contributionPct: total ? Math.round((1000 * p.samples_contributed) / total) / 10 : 0,
+  }));
 }
 
 // ---------------------------------------------------------------------------
-// Mock data
-// ---------------------------------------------------------------------------
-
-const MOCK_FEDERATION: Federation = {
-  id: "fed-001",
-  name: "Cross-Site Object Detection",
-  status: "training",
-  currentRound: 12,
-  maxRounds: 50,
-  aggregationMethod: "fedavg",
-  epsilonSpent: 0.24,
-  epsilonBudget: 1.0,
-  participants: [
-    {
-      id: "site-alpha",
-      name: "Alpha Campus",
-      status: "active",
-      samples: 12400,
-      contributionPct: 40.5,
-      localAccuracy: 0.912,
-      dataQuality: 0.95,
-    },
-    {
-      id: "site-beta",
-      name: "Beta Research Lab",
-      status: "active",
-      samples: 8900,
-      contributionPct: 29.1,
-      localAccuracy: 0.887,
-      dataQuality: 0.91,
-    },
-    {
-      id: "site-gamma",
-      name: "Gamma Clinic",
-      status: "idle",
-      samples: 6200,
-      contributionPct: 20.3,
-      localAccuracy: 0.845,
-      dataQuality: 0.78,
-    },
-    {
-      id: "site-delta",
-      name: "Delta Edge Node",
-      status: "disconnected",
-      samples: 3100,
-      contributionPct: 10.1,
-      localAccuracy: 0.791,
-      dataQuality: 0.62,
-    },
-  ],
-  metricsHistory: Array.from({ length: 12 }, (_, i) => ({
-    round: i + 1,
-    accuracy: 0.52 + i * 0.035 + Math.random() * 0.01,
-    loss: 1.8 - i * 0.12 + Math.random() * 0.05,
-    participants: i < 3 ? 2 : i < 8 ? 3 : 4,
-  })),
-};
-
-// ---------------------------------------------------------------------------
-// Sub-components
+// Charts
 // ---------------------------------------------------------------------------
 
 function PrivacyGauge({ spent, budget }: { spent: number; budget: number }) {
@@ -148,40 +137,111 @@ function MetricsChart({ metrics }: { metrics: RoundMetric[] }) {
 // ---------------------------------------------------------------------------
 
 export default function FederatedPage() {
-  const [fed, setFed] = useState<Federation>(MOCK_FEDERATION);
+  const [fed, setFed] = useState<FederationPayload | null>(null);
+  const [rounds, setRounds] = useState<RoundMetric[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [formName, setFormName] = useState("");
   const [formModel, setFormModel] = useState("");
   const [formMethod, setFormMethod] = useState("fedavg");
   const [showAddModal, setShowAddModal] = useState(false);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const load = useCallback(async () => {
+    setError(null);
+    try {
+      const listRes = await fetch(
+        `${API}/federations?workspace_id=${readWorkspaceId()}`,
+      );
+      if (!listRes.ok) throw new Error(`HTTP ${listRes.status}`);
+      const list: FederationPayload[] = await listRes.json();
+
+      if (list.length === 0) {
+        setFed(null);
+        setRounds([]);
+        return;
+      }
+
+      // The page shows one federation. Until it has a selector, that is the
+      // most recent one rather than an invented one.
+      const detailRes = await fetch(`${API}/federations/${list[list.length - 1].id}`);
+      if (!detailRes.ok) throw new Error(`HTTP ${detailRes.status}`);
+      const detail: FederationPayload = await detailRes.json();
+      setFed(detail);
+
+      const roundsRes = await fetch(`${API}/federations/${detail.id}/rounds`);
+      if (roundsRes.ok) {
+        const raw: RoundPayload[] = await roundsRes.json();
+        setRounds(
+          raw.map((r, index) => ({
+            round: r.round_number ?? r.round ?? index + 1,
+            accuracy: r.accuracy ?? 0,
+            loss: r.loss ?? 0,
+            participants: r.participants ?? 0,
+          })),
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load federations.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    // In production: POST /api/federated/create
-    alert(`Would create federation "${formName}" with model ${formModel}`);
+    // Was `alert("Would create federation ...")`. POST /federations is real.
+    setError(null);
+    try {
+      const res = await fetch(`${API}/federations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          workspace_id: readWorkspaceId(),
+          name: formName,
+          model_id: formModel,
+          aggregation_strategy: formMethod,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      setFormName("");
+      setFormModel("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the federation.");
+    }
   };
 
-  const handleRetry = (siteId: string) => {
-    // In production: POST /api/federated/federations/{id}/participants/{site}/reconnect
-    setFed((prev) => ({
-      ...prev,
-      participants: prev.participants.map((p) =>
-        p.id === siteId ? { ...p, status: "active" as const } : p
-      ),
-    }));
+  const handleRetry = async (siteId: string) => {
+    if (!fed) return;
+    try {
+      await fetch(`${API}/federations/${fed.id}/participants/${siteId}/reconnect`, {
+        method: "POST",
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not reconnect the site.");
+    }
   };
 
-  const handleRemove = (siteId: string) => {
-    // In production: DELETE /api/federated/federations/{id}/participants/{site}
-    setFed((prev) => ({
-      ...prev,
-      participants: prev.participants.filter((p) => p.id !== siteId),
-    }));
+  const handleRemove = async (siteId: string) => {
+    if (!fed) return;
+    try {
+      await fetch(`${API}/federations/${fed.id}/participants/${siteId}`, {
+        method: "DELETE",
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove the site.");
+    }
   };
 
-  const handleViewLogs = (siteId: string) => {
-    // In production: navigate to log viewer
-    alert(`View logs for ${siteId}`);
-  };
+  const participants = Array.isArray(fed?.participants)
+    ? toParticipants(fed.participants)
+    : [];
 
   return (
     <div className="space-y-6">
@@ -238,57 +298,74 @@ export default function FederatedPage() {
         </form>
       </div>
 
-      {/* Status Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="rounded-lg border p-4">
-          <p className="text-xs text-gray-500">Status</p>
-          <p className="text-lg font-bold capitalize">{fed.status}</p>
-        </div>
-        <div className="rounded-lg border p-4">
-          <p className="text-xs text-gray-500">Round</p>
-          <p className="text-lg font-bold">
-            {fed.currentRound} / {fed.maxRounds}
-          </p>
-        </div>
-        <div className="rounded-lg border p-4">
-          <p className="text-xs text-gray-500">Participants</p>
-          <p className="text-lg font-bold">{fed.participants.length}</p>
-        </div>
-        <div className="rounded-lg border p-4">
-          <p className="text-xs text-gray-500">Aggregation</p>
-          <p className="text-lg font-bold uppercase">{fed.aggregationMethod}</p>
-        </div>
-      </div>
+      {error && <p className="text-sm text-red-600">{error}</p>}
 
-      {/* Privacy + Metrics row */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <PrivacyGauge spent={fed.epsilonSpent} budget={fed.epsilonBudget} />
-        <MetricsChart metrics={fed.metricsHistory} />
-      </div>
+      {loading && <p className="text-sm text-gray-500">Loading federations&hellip;</p>}
 
-      {/* Participants — enhanced table */}
-      <div>
-        <h2 className="font-semibold mb-3">Participant Health</h2>
-        <ParticipantTable
-          federationId={fed.id}
-          participants={fed.participants}
-          onAddParticipant={() => setShowAddModal(true)}
-          onRetry={handleRetry}
-          onRemove={handleRemove}
-          onViewLogs={handleViewLogs}
-        />
-      </div>
+      {!loading && !fed && (
+        <p className="text-sm text-gray-500">
+          No federations in this workspace yet. Create one above to begin
+          cross-site training.
+        </p>
+      )}
 
-      {/* Add Participant Modal */}
-      <AddParticipantModal
-        isOpen={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        federationId={fed.id}
-        onParticipantAdded={() => {
-          // In production: re-fetch participants
-          setShowAddModal(false);
-        }}
-      />
+      {fed && (
+        <>
+          {/* Status Overview */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="rounded-lg border p-4">
+              <p className="text-xs text-gray-500">Status</p>
+              <p className="text-lg font-bold capitalize">{fed.status}</p>
+            </div>
+            <div className="rounded-lg border p-4">
+              <p className="text-xs text-gray-500">Round</p>
+              <p className="text-lg font-bold">
+                {fed.current_round} / {fed.total_rounds}
+              </p>
+            </div>
+            <div className="rounded-lg border p-4">
+              <p className="text-xs text-gray-500">Participants</p>
+              <p className="text-lg font-bold">{participants.length}</p>
+            </div>
+            <div className="rounded-lg border p-4">
+              <p className="text-xs text-gray-500">Aggregation</p>
+              <p className="text-lg font-bold uppercase">{fed.aggregation_strategy}</p>
+            </div>
+          </div>
+
+          {/* Privacy + Metrics row */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <PrivacyGauge
+              spent={fed.privacy_epsilon_spent}
+              budget={fed.privacy_budget}
+            />
+            <MetricsChart metrics={rounds} />
+          </div>
+
+          {/* Participants */}
+          <div>
+            <h2 className="font-semibold mb-3">Participant Health</h2>
+            <ParticipantTable
+              federationId={fed.id}
+              participants={participants}
+              onAddParticipant={() => setShowAddModal(true)}
+              onRetry={handleRetry}
+              onRemove={handleRemove}
+            />
+          </div>
+
+          {/* Add Participant Modal */}
+          <AddParticipantModal
+            isOpen={showAddModal}
+            onClose={() => setShowAddModal(false)}
+            federationId={fed.id}
+            onParticipantAdded={() => {
+              setShowAddModal(false);
+              void load();
+            }}
+          />
+        </>
+      )}
     </div>
   );
 }

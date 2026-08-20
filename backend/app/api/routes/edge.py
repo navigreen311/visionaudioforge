@@ -8,14 +8,15 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
 from app.models.edge_export import EdgeBenchmark, ModelExport
-from app.models.edge_fleet import EdgeDevice, OfflinePackage
+from app.models.edge_fleet import DeviceMetric, EdgeDevice, OfflinePackage
 from app.services.edge.export_pipeline import ExportPipeline
 
 router = APIRouter(prefix="/api/edge", tags=["edge"])
@@ -238,6 +239,161 @@ async def get_export(
     if row is None:
         raise HTTPException(status_code=404, detail="Export not found")
     return _serialise_export(row)
+
+
+@router.delete("/exports/{export_id}", status_code=204)
+async def delete_export(
+    export_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> Response:
+    """Remove an export record.
+
+    `ExportHistory`'s delete button has always sent this and there has never
+    been a handler: FastAPI answered 405, the component reported "Delete
+    failed", and the row stayed. The route-wiring guard did not see it either -
+    it compares paths and not methods, so this DELETE matched the GET at the
+    same path and looked mounted.
+    """
+    row = (
+        await db.execute(
+            select(ModelExport).where(
+                ModelExport.id == _uuid_or_404(export_id, "Export")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    await db.delete(row)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/exports/{export_id}/download")
+async def download_export(
+    export_id: str,
+    format: str | None = Query(None, description="Ignored; kept for the console's link"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """Download an exported model artifact.
+
+    The console renders this as a plain `<a href>`, so a missing route was a
+    404 page rather than an error the operator could interpret.
+
+    An export row records where the pipeline wrote the artifact. When that
+    location is a URL this redirects to it; when the exporter never recorded
+    one there is nothing to serve, and saying so with a 409 is better than a
+    zero-byte file named like a model.
+    """
+    row = (
+        await db.execute(
+            select(ModelExport).where(
+                ModelExport.id == _uuid_or_404(export_id, "Export")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Export not found")
+
+    if row.status != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Export is {row.status}; there is nothing to download yet.",
+        )
+
+    if not row.download_url:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This export has no stored artifact. It was recorded without a "
+                "download location, so there is no file to serve."
+            ),
+        )
+
+    return RedirectResponse(url=row.download_url, status_code=307)
+
+
+# ---------------------------------------------------------------------------
+# Device detail
+# ---------------------------------------------------------------------------
+
+
+@router.delete("/devices/{device_id}", status_code=204)
+async def remove_edge_device(
+    device_id: str,
+    db: AsyncSession = Depends(get_async_session),
+) -> Response:
+    """Deregister a device.
+
+    `DeviceFleet`'s Remove button called this and got a 405. It optimistically
+    dropped the row from its local list first, so the device appeared to be
+    removed until the page was reloaded and it came back.
+    """
+    row = (
+        await db.execute(
+            select(EdgeDevice).where(
+                EdgeDevice.id == _uuid_or_404(device_id, "Device")
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    await db.delete(row)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/devices/{device_id}/logs")
+async def edge_device_logs(
+    device_id: str,
+    limit: int = Query(200, ge=1, le=2000),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Recent telemetry for one device, newest first.
+
+    The console opens this in a new tab, so a 404 was a browser error page.
+
+    These are the heartbeats the device actually sent - `device_metrics` rows -
+    not an application log, and the response says so rather than implying a log
+    stream the fleet does not collect.
+    """
+    device = (
+        await db.execute(
+            select(EdgeDevice).where(
+                EdgeDevice.id == _uuid_or_404(device_id, "Device")
+            )
+        )
+    ).scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    rows = (
+        await db.execute(
+            select(DeviceMetric)
+            .where(DeviceMetric.device_id == device.id)
+            .order_by(DeviceMetric.timestamp.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "device_id": str(device.id),
+        "device_name": device.device_name,
+        "source": "device_metrics",
+        "note": (
+            "Heartbeat telemetry reported by the device. The fleet does not "
+            "collect application logs."
+        ),
+        "count": len(rows),
+        "entries": [
+            {
+                "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+                "payload": r.payload,
+            }
+            for r in rows
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

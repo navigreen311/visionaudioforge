@@ -1,56 +1,57 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-
-interface BundleAsset {
-  asset_id: string;
-  added_at: string;
-  type?: string;
-}
-
-interface EvidenceBundle {
-  bundle_id: string;
-  alert_id: string;
-  case_id: string | null;
-  created_at: string;
-  clips: BundleAsset[];
-  snapshots: BundleAsset[];
-  events: BundleAsset[];
-}
-
-/** Placeholder data — wired to API in production. */
-const MOCK_BUNDLES: EvidenceBundle[] = [
-  {
-    bundle_id: "bundle-001",
-    alert_id: "alert-001",
-    case_id: "CASE-100",
-    created_at: new Date(Date.now() - 1800000).toISOString(),
-    clips: [
-      { asset_id: "clip-001", added_at: new Date(Date.now() - 1700000).toISOString() },
-    ],
-    snapshots: [
-      { asset_id: "snap-001", added_at: new Date(Date.now() - 1750000).toISOString() },
-    ],
-    events: [
-      { asset_id: "event-001", added_at: new Date(Date.now() - 1600000).toISOString() },
-    ],
-  },
-];
+import {
+  exportEvidenceBundle,
+  listEvidenceBundles,
+  type EvidenceBundle,
+} from "@/lib/api";
 
 export default function EvidenceBundleViewer() {
-  const [bundles] = useState<EvidenceBundle[]>(MOCK_BUNDLES);
+  // This listed one invented bundle - "bundle-001", a clip, a snapshot and an
+  // event, all made up - on the alerts page's Evidence tab, while
+  // GET /api/alerts/bundles was already serving the real ones.
+  const [bundles, setBundles] = useState<EvidenceBundle[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedBundle, setExpandedBundle] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      setBundles(await listEvidenceBundles());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load bundles.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const toggleExpand = (bundleId: string) => {
     setExpandedBundle(expandedBundle === bundleId ? null : bundleId);
   };
 
-  const handleExport = (bundleId: string, format: string) => {
-    // In production: GET /api/alerts/incidents/{id}/bundle?format=json
-    alert(`Exporting bundle ${bundleId} as ${format}`);
+  const handleExport = async (bundleId: string) => {
+    // Was `alert("Exporting bundle ... as ...")` - a dialog describing a
+    // download that never started. The endpoint serves the file directly.
+    setError(null);
+    try {
+      await exportEvidenceBundle(bundleId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not export the bundle.");
+    }
   };
+
+  if (loading) {
+    return <p className="text-sm text-gray-500">Loading evidence bundles&hellip;</p>;
+  }
 
   return (
     <div className="space-y-4">
@@ -60,6 +61,15 @@ export default function EvidenceBundleViewer() {
           Collected evidence for alert investigations
         </p>
       </div>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {bundles.length === 0 && !error && (
+        <p className="text-sm text-gray-500">
+          No evidence bundles yet. One is created when an incident is bundled
+          from the Incidents tab.
+        </p>
+      )}
 
       <div className="space-y-3">
         {bundles.map((bundle) => (
@@ -191,17 +201,17 @@ export default function EvidenceBundleViewer() {
                   <Button
                     variant="primary"
                     size="sm"
-                    onClick={() => handleExport(bundle.bundle_id, "json")}
+                    onClick={() => void handleExport(bundle.bundle_id)}
                   >
                     Export JSON
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleExport(bundle.bundle_id, "pdf_stub")}
-                  >
-                    Export PDF (stub)
-                  </Button>
+                  {/* "Export PDF (stub)" used to sit here. The endpoint's
+                      pdf_stub format returns JSON bytes with a metadata header
+                      and the response is sent as application/json with a .json
+                      filename - there is no PDF renderer anywhere in the
+                      platform. A button labelled Export PDF that hands over a
+                      JSON file is the same defect as a panel of invented
+                      records: it describes something the system does not do. */}
                 </div>
               </div>
             )}

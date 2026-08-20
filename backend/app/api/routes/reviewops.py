@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_async_session
+from app.models.user import User
 from app.models.review import (
     Review,
     ReviewShift,
@@ -518,6 +519,105 @@ async def get_quality(
     }
 
 
+@router.get("/agreement")
+async def get_agreement(
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Inter-reviewer agreement over tasks more than one person reviewed.
+
+    The Quality tab has called this since it shipped and nothing answered, so
+    the agreement cards never rendered at all - `{agreement && ...}` is false
+    for a failed fetch, and a card that is absent looks like a card that was
+    never designed rather than one that is broken.
+
+    Unlike accuracy, this needs no ground truth: it asks whether the reviewers
+    who saw the same task reached the same decision. A task reviewed once says
+    nothing about agreement and is excluded rather than counted as agreeing,
+    which would push the rate towards 100% on a queue nobody double-reviews.
+    """
+    rows = (await db.execute(select(Review.task_id, Review.decision))).all()
+
+    decisions: dict[Any, set[str]] = {}
+    reviews_per_task: dict[Any, int] = {}
+    for task_id, decision in rows:
+        value = decision.value if hasattr(decision, "value") else str(decision)
+        decisions.setdefault(task_id, set()).add(value)
+        reviews_per_task[task_id] = reviews_per_task.get(task_id, 0) + 1
+
+    double_reviewed = [t for t, n in reviews_per_task.items() if n > 1]
+    disagreements = sum(1 for t in double_reviewed if len(decisions[t]) > 1)
+    total = len(double_reviewed)
+
+    return {
+        "agreement_rate": round(100.0 * (total - disagreements) / total, 2)
+        if total
+        else 0.0,
+        "total_double_reviewed": total,
+        "disagreements": disagreements,
+        "detail": (
+            "Share of multiply-reviewed tasks where every reviewer chose the "
+            "same decision. Tasks with a single review are excluded."
+        ),
+    }
+
+
+@router.get("/quality-trends")
+async def get_quality_trends(
+    days: int = Query(14, ge=1, le=180),
+    workspace_id: str | None = Query(None),
+    db: AsyncSession = Depends(get_async_session),
+) -> list[dict[str, Any]]:
+    """Review volume and average score per day, oldest first.
+
+    `avg_score` is the reviewers' own 1-5 score, which is recorded. It is not an
+    accuracy and this endpoint does not present it as one.
+
+    `sla_compliance` is 0.0 with `sla_measured: false`. Review tasks carry an SLA
+    deadline, but completion time is not stored against it, so compliance cannot
+    be computed from what exists. Returning a plausible percentage instead is
+    the exact habit that put invented numbers on six other panels.
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (
+        await db.execute(
+            select(Review.created_at, Review.score).where(Review.created_at >= since)
+        )
+    ).all()
+
+    counts: dict[str, int] = {}
+    scores: dict[str, list[int]] = {}
+    for created_at, score in rows:
+        if created_at is None:
+            continue
+        day = created_at.date().isoformat()
+        counts[day] = counts.get(day, 0) + 1
+        if score is not None:
+            scores.setdefault(day, []).append(int(score))
+
+    # Every day in the window is emitted, so a quiet stretch reads as quiet
+    # rather than as the series having stopped.
+    today = datetime.now(timezone.utc).date()
+    series = []
+    for offset in range(days, -1, -1):
+        day = (today - timedelta(days=offset)).isoformat()
+        day_scores = scores.get(day, [])
+        series.append(
+            {
+                "period": day,
+                "avg_score": round(sum(day_scores) / len(day_scores), 2)
+                if day_scores
+                else 0.0,
+                "review_count": counts.get(day, 0),
+                "sla_compliance": 0.0,
+                "sla_measured": False,
+            }
+        )
+
+    return series
+
+
 # ---------------------------------------------------------------------------
 # Shifts
 # ---------------------------------------------------------------------------
@@ -533,15 +633,57 @@ async def list_shifts(
         stmt = stmt.where(ReviewShift.workspace_id == uuid.UUID(str(workspace_id)))
     rows = (await db.execute(stmt.order_by(ReviewShift.start_time))).scalars().all()
 
+    # `ShiftsTab` needs a name to show and a count to show; both are derivable
+    # and neither was returned, so the tab could not have rendered a real shift
+    # even when one existed - it read `reviewer_name` off the payload and split
+    # it, which would have thrown on undefined. It never got that far because it
+    # seeded itself with ten invented rows and kept them.
+    reviewer_ids = {s.reviewer_id for s in rows if s.reviewer_id}
+    names: dict[Any, str] = {}
+    if reviewer_ids:
+        # Email, because that is the only human-readable identifier the user
+        # table carries - there is no display-name column.
+        for user_id, email in (
+            await db.execute(
+                select(User.id, User.email).where(User.id.in_(reviewer_ids))
+            )
+        ).all():
+            names[user_id] = email
+
+    completed: dict[Any, int] = {}
+    for shift in rows:
+        if not (shift.reviewer_id and shift.start_time and shift.end_time):
+            continue
+        completed[shift.id] = (
+            await db.execute(
+                select(func.count())
+                .select_from(Review)
+                .where(
+                    Review.reviewer_id == shift.reviewer_id,
+                    Review.created_at >= shift.start_time,
+                    Review.created_at <= shift.end_time,
+                )
+            )
+        ).scalar() or 0
+
     return [
         {
             "id": str(s.id),
+            "shift_id": str(s.id),
             "name": s.notes,
-            "reviewer_ids": [str(s.reviewer_id)],
+            "reviewer_id": str(s.reviewer_id) if s.reviewer_id else None,
+            "reviewer_ids": [str(s.reviewer_id)] if s.reviewer_id else [],
+            "reviewer_name": names.get(s.reviewer_id) or "Unassigned",
             "start_time": s.start_time.isoformat() if s.start_time else None,
             "end_time": s.end_time.isoformat() if s.end_time else None,
             "review_types": s.review_types or [],
             "active": s.active,
+            # Reviews this person submitted inside the shift window.
+            "tasks_completed": completed.get(s.id, 0),
+            # Per-shift accuracy needs ground-truth labels, which are not
+            # recorded anywhere. The console used to print invented percentages
+            # in this column; null is the true value.
+            "accuracy": None,
         }
         for s in rows
     ]
