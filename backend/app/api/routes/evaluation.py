@@ -72,6 +72,9 @@ class ThresholdPoint(BaseModel):
     recall: float
     f1: float
     accuracy: float
+    # The ROC curve's x axis. Optional so an older caller that never sent it
+    # still validates.
+    fpr: float | None = None
 
 
 class ScorecardOut(BaseModel):
@@ -151,6 +154,78 @@ async def threshold_analysis(body: ThresholdRequest) -> list[ThresholdPoint]:
         body.predictions, body.ground_truth, body.thresholds
     )
     return [ThresholdPoint(**r) for r in results]
+
+
+@router.post("/threshold-curves")
+async def threshold_curves(body: ThresholdRequest) -> dict:
+    """PR and ROC curves with their areas, plus the three optimal thresholds.
+
+    `ThresholdTuningTab` has posted here since it shipped and nothing answered:
+    the module offers `/threshold-analysis`, which returns a flat list of
+    per-threshold stats, and the tab needs curves, areas and optima. It is not a
+    rename - the shapes are different - so the tab's "Analyze" button 404'd and
+    reported the status code.
+
+    Everything here is derived from the same confusion-matrix sweep that
+    `/threshold-analysis` already performs, at a finer step so the curves have
+    enough points to draw. Areas use the trapezoid rule over the swept points,
+    which is what the curves show; no smoothing or extrapolation is applied,
+    because a drawn curve and a reported area disagreeing is worse than either
+    being coarse.
+    """
+    if len(body.predictions) != len(body.ground_truth):
+        raise HTTPException(
+            status_code=400,
+            detail="predictions and ground_truth must have the same length",
+        )
+    if not body.predictions:
+        raise HTTPException(status_code=400, detail="no predictions were supplied")
+
+    thresholds = body.thresholds or [round(i / 100.0, 2) for i in range(0, 101)]
+    points = await EvaluationService.threshold_analysis(
+        body.predictions, body.ground_truth, thresholds
+    )
+
+    def _area(xs: list[float], ys: list[float]) -> float:
+        """Trapezoid rule over points sorted by x."""
+        pairs = sorted(zip(xs, ys))
+        return round(
+            sum(
+                (pairs[i + 1][0] - pairs[i][0]) * (pairs[i + 1][1] + pairs[i][1]) / 2.0
+                for i in range(len(pairs) - 1)
+            ),
+            6,
+        )
+
+    pr_curve = [
+        {
+            "threshold": p["threshold"],
+            "precision": p["precision"],
+            "recall": p["recall"],
+        }
+        for p in points
+    ]
+    roc_curve = [
+        {"threshold": p["threshold"], "fpr": p["fpr"], "tpr": p["recall"]}
+        for p in points
+    ]
+
+    def _best(key: str) -> float:
+        # Ties go to the lower threshold: of two settings that score the same,
+        # the more permissive one is the one an operator can reason about.
+        best = max(points, key=lambda p: (p[key], -p["threshold"]))
+        return best["threshold"]
+
+    return {
+        "pr_curve": pr_curve,
+        "roc_curve": roc_curve,
+        "auc_pr": _area([p["recall"] for p in points], [p["precision"] for p in points]),
+        "auc_roc": _area([p["fpr"] for p in points], [p["recall"] for p in points]),
+        "threshold_stats": points,
+        "optimal_f1_threshold": _best("f1"),
+        "optimal_precision_threshold": _best("precision"),
+        "optimal_recall_threshold": _best("recall"),
+    }
 
 
 @router.get("/scorecard/{model_id}", response_model=ScorecardOut)

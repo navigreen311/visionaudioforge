@@ -14,8 +14,17 @@ export interface FLParticipant {
   status: ParticipantStatus;
   samples: number;
   contributionPct: number;
-  localAccuracy: number;
-  dataQuality: number;
+  /**
+   * Neither of these is recorded anywhere.
+   *
+   * They were columns invented alongside the page's mock participants -
+   * "Alpha Campus, 91.2% local accuracy, 0.95 data quality" - and the
+   * federation service tracks sample counts and round participation, not
+   * per-site accuracy or a quality score. Optional so the table can render a
+   * dash rather than a number nobody measured.
+   */
+  localAccuracy?: number;
+  dataQuality?: number;
   location?: string;
   connectionUrl?: string;
 }
@@ -68,19 +77,6 @@ function ContributionBar({ pct }: { pct: number }) {
   );
 }
 
-function QualityIndicator({ score }: { score: number }) {
-  const color =
-    score >= 0.9
-      ? "text-green-600"
-      : score >= 0.7
-        ? "text-amber-600"
-        : "text-red-600";
-  return (
-    <span className={`text-sm font-medium tabular-nums ${color}`}>
-      {(score * 100).toFixed(0)}%
-    </span>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -164,12 +160,6 @@ export default function ParticipantTable({
               <th className="text-left px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">
                 Contribution
               </th>
-              <th className="text-right px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">
-                Local Acc.
-              </th>
-              <th className="text-right px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider">
-                Data Quality
-              </th>
               <th className="text-right px-4 py-2.5 font-medium text-gray-500 text-xs uppercase tracking-wider w-32">
                 Actions
               </th>
@@ -179,7 +169,7 @@ export default function ParticipantTable({
             {participants.length === 0 && (
               <tr>
                 <td
-                  colSpan={7}
+                  colSpan={5}
                   className="px-4 py-8 text-center text-sm text-gray-400"
                 >
                   No participants yet. Click &quot;Add Participant&quot; to
@@ -227,15 +217,11 @@ export default function ParticipantTable({
                   <ContributionBar pct={p.contributionPct} />
                 </td>
 
-                {/* Local Accuracy */}
-                <td className="px-4 py-2.5 text-right tabular-nums text-gray-700">
-                  {(p.localAccuracy * 100).toFixed(1)}%
-                </td>
-
-                {/* Data Quality */}
-                <td className="px-4 py-2.5 text-right">
-                  <QualityIndicator score={p.dataQuality} />
-                </td>
+                {/* Local Accuracy and Data Quality columns were here. Neither
+                    is recorded: the federation service tracks sample counts and
+                    round participation, and per-site accuracy needs an
+                    evaluation the coordinator does not run. Their values came
+                    from the page's invented participants. */}
 
                 {/* Hover actions */}
                 <td className="px-4 py-2.5 text-right">
