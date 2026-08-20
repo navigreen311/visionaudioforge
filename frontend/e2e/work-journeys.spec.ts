@@ -48,7 +48,7 @@ test.describe("search", () => {
   // home directory in an image that does not give the runtime user one. The
   // fix is an env var (HF_HOME) and a writable path in the image, which this
   // workstream does not own.
-  test.fixme("a query returns results or an explicit empty state", async ({ page }) => {
+  test("a query returns results or an explicit empty state", async ({ page }) => {
     await page.goto("/search");
     await expect(page.getByRole("heading", { name: /cross-modal search/i })).toBeVisible();
 
@@ -227,7 +227,7 @@ test.describe("audio", () => {
   // NUMBA_CACHE_DIR pointed at a writable path, librosa decodes normally. The
   // fix is one env var in the image; this workstream owns no backend or Docker
   // file, so both journeys stay named rather than weakened.
-  test.fixme("an uploaded clip comes back analysed", async ({ page }) => {
+  test("an uploaded clip comes back analysed", async ({ page }) => {
     await page.goto("/audio");
     await expect(page.getByRole("heading", { name: /audio analysis/i })).toBeVisible();
 
@@ -240,11 +240,29 @@ test.describe("audio", () => {
     ).toBeVisible({ timeout: 60_000 });
   });
 
+  // The product defect this found is fixed in this branch: the studio built
+  // its operations as `{ name, params }` while AudioTransformService reads
+  // `step.get("op")`, so every transform the console sent arrived with no
+  // operation and failed with 500 "Unknown transform op: ". The interface
+  // declared `name` too, which is why the code looked right. Verified against
+  // the API that `{ op: "denoise" }` returns 200 with audio.
+  //
+  // Still fixme because this test does not yet reach the control: "Noise
+  // Reduction" sits inside a collapsed section, and buildOperations() returns
+  // an empty list until something is enabled, so the studio sends nothing. A
+  // gap in the test, not in the product — named rather than deleted, so the
+  // coverage owed here stays visible.
   test.fixme("an audio transform returns processed audio", async ({ page }) => {
     await page.goto("/transform");
     await expect(page.getByRole("heading", { name: /transform studio/i })).toBeVisible();
 
     await upload(page, "e2e-transform.wav", "audio/wav", wavBytes());
+
+    // An operation has to be chosen first: buildOperations() returns an empty
+    // list otherwise and the studio refuses to send anything, so a test that
+    // only clicks Transform proves nothing.
+    await page.getByText(/noise reduction/i).first().click();
+
     await page.getByRole("button", { name: /apply|transform|run/i }).first().click();
 
     await expect(

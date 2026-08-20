@@ -8,7 +8,13 @@ import api from '@/lib/api';
 // ---------------------------------------------------------------------------
 
 interface TransformOperation {
-  name: string;
+  /**
+   * The key the backend reads: `AudioTransformService` does `step.get("op")`.
+   * This said `name`, so every operation the studio sent arrived with no `op`
+   * and the whole chain failed with 500 "Unknown transform op: ". The type
+   * agreeing with the code is what made it look right.
+   */
+  op: string;
   params?: Record<string, unknown>;
 }
 
@@ -422,47 +428,47 @@ export default function AudioTransformStudio() {
 
     // Cleanup
     if (cleanup.noiseReduction) {
-      ops.push({ name: 'denoise', params: { strength: cleanup.noiseStrength } });
+      ops.push({ op: 'denoise', params: { strength: cleanup.noiseStrength } });
     }
     if (cleanup.dereverb) {
-      ops.push({ name: 'dereverb', params: { room_size: cleanup.roomSize } });
+      ops.push({ op: 'dereverb', params: { room_size: cleanup.roomSize } });
     }
     if (cleanup.silenceRemoval) {
-      ops.push({ name: 'silence_remove', params: { threshold_db: cleanup.silenceThresholdDb } });
+      ops.push({ op: 'silence_remove', params: { threshold_db: cleanup.silenceThresholdDb } });
     }
 
     // Pitch & Tempo
     if (pitchTempo.pitchShift !== 0) {
-      ops.push({ name: 'pitch_shift', params: { semitones: pitchTempo.pitchShift } });
+      ops.push({ op: 'pitch_shift', params: { semitones: pitchTempo.pitchShift } });
     }
     if (pitchTempo.formantShift !== 0) {
-      ops.push({ name: 'formant_shift', params: { semitones: pitchTempo.formantShift } });
+      ops.push({ op: 'formant_shift', params: { semitones: pitchTempo.formantShift } });
     }
     if (pitchTempo.timeStretch !== 1.0) {
       ops.push({
-        name: 'time_stretch',
+        op: 'time_stretch',
         params: { rate: pitchTempo.timeStretch, preserve_pitch: pitchTempo.preservePitch },
       });
     }
 
     // Voice & Speech
     if (voiceSpeech.sourceSeparation) {
-      ops.push({ name: 'source_separation', params: { target: voiceSpeech.separationTarget } });
+      ops.push({ op: 'source_separation', params: { target: voiceSpeech.separationTarget } });
     }
     if (voiceSpeech.voiceConversion) {
-      ops.push({ name: 'voice_convert', params: { target_voice: voiceSpeech.voiceTarget } });
+      ops.push({ op: 'voice_convert', params: { target_voice: voiceSpeech.voiceTarget } });
     }
 
     // Mastering
     if (mastering.loudnessNorm) {
-      ops.push({ name: 'loudness', params: { target_lufs: mastering.lufs } });
+      ops.push({ op: 'loudness', params: { target_lufs: mastering.lufs } });
     }
     if (mastering.eqPreset !== 'flat') {
-      ops.push({ name: 'eq', params: { preset: mastering.eqPreset } });
+      ops.push({ op: 'eq', params: { preset: mastering.eqPreset } });
     }
     if (mastering.compression) {
       const ratio = parseFloat(mastering.compressionRatio.replace(':1', ''));
-      ops.push({ name: 'compress', params: { ratio } });
+      ops.push({ op: 'compress', params: { ratio } });
     }
 
     return ops;
