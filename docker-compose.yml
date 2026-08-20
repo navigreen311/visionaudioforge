@@ -113,7 +113,22 @@ services:
   # One-shot: bring the schema up to head before anything talks to the
   # database. Six migrations existed and nothing ever ran them.
   migrate:
-    image: vaf-backend:local
+  # Image tags carry the compose project name so that several checkouts of this
+  # repository on one machine do not overwrite each other's images. The project
+  # name defaults to the directory, so this needs no configuration; Compose
+  # resolves ${COMPOSE_PROJECT_NAME} even when it is unset in the environment.
+  #
+  # It used to be a bare `vaf-backend:local`, shared by api, migrate and
+  # celery_worker. Three services sharing one tag is deliberate — one build serves
+  # all three, and CI can key a layer cache off a stable name — but three
+  # *worktrees* sharing it is not: whichever built last won, and the loser's stack
+  # then failed with
+  #
+  #     migrate: Can't locate revision identified by '026'
+  #
+  # because it was running someone else's image. That takes a while to recognise
+  # as an image problem rather than a migration one.
+    image: ${COMPOSE_PROJECT_NAME}-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -126,7 +141,7 @@ services:
     restart: "no"
 
   api:
-    image: vaf-backend:local
+    image: ${COMPOSE_PROJECT_NAME}-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -155,7 +170,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: vaf-frontend:local
+    image: ${COMPOSE_PROJECT_NAME}-frontend:local
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -202,7 +217,7 @@ services:
     restart: unless-stopped
 
   celery_worker:
-    image: vaf-backend:local
+    image: ${COMPOSE_PROJECT_NAME}-backend:local
     build:
       context: ./backend
       dockerfile: Dockerfile

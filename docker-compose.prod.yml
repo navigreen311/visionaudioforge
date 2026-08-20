@@ -39,7 +39,7 @@ services:
   # production stack had no migration step at all — deploy.md told operators to
   # run alembic by hand, so a forgotten step meant an API against a stale schema.
   migrate:
-    image: vaf-backend:prod
+    image: ${COMPOSE_PROJECT_NAME}-backend:prod
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -74,7 +74,7 @@ services:
       - data-net
 
   api:
-    image: vaf-backend:prod
+    image: ${COMPOSE_PROJECT_NAME}-backend:prod
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -109,7 +109,7 @@ services:
       - frontend-net
 
   frontend:
-    image: vaf-frontend:prod
+    image: ${COMPOSE_PROJECT_NAME}-frontend:prod
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -234,7 +234,7 @@ services:
       - frontend-net
 
   celery_worker:
-    image: vaf-backend:prod
+    image: ${COMPOSE_PROJECT_NAME}-backend:prod
     build:
       context: ./backend
       dockerfile: Dockerfile
