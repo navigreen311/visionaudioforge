@@ -265,11 +265,11 @@ test.describe("audio", () => {
   // 500 "Unknown transform op: ".
   //
   // The earlier version of this test could not reach a control because it was
-  // driving the wrong component. `AudioTransformStudio` - the rich panel with
-  // "Noise Reduction", "De-reverb" and collapsible sections - is imported with
-  // `dynamic()` in app/(dashboard)/transform/page.tsx and never rendered. The
-  // Audio tab renders an inline panel with its own mode buttons instead, so the
-  // controls the old comment described are not on the page at all.
+  // driving a component that was never on the page: `AudioTransformStudio`, a
+  // 1,020-line panel with "Noise Reduction", "De-reverb" and collapsible
+  // sections, was imported with `dynamic()` and never rendered. It has since
+  // been deleted. The Audio tab renders an inline panel with its own mode
+  // buttons, which is what this drives.
   //
   // This drives what the page really shows: pick the Audio tab, choose Denoise,
   // upload, and assert the endpoint answers.

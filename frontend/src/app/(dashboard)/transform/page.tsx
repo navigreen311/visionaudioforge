@@ -17,10 +17,6 @@ const ProcessingProgress = dynamic(
   () => import("@/components/transform/ProcessingProgress"),
   { loading: () => null, ssr: false },
 );
-const AudioTransformStudio = dynamic(
-  () => import("@/components/transform/AudioTransformStudio"),
-  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
-);
 const BatchTransformTab = dynamic(
   () => import("@/components/transform/BatchTransformTab"),
   { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
