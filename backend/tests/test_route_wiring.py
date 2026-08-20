@@ -65,8 +65,16 @@ _BQ = r"`((?:\\.|[^`])*?)`"
 _STRING_LITERAL = re.compile(f"(?:{_SQ}|{_DQ}|{_BQ})", re.DOTALL)
 
 # `const API_BASE = '/api/marketplace/byom';` — components build paths off these.
+#
+# The origin may be interpolated: ``const API = `${API_BASE_URL}/api/federated` ``
+# is the same declaration with a host in front, and it is the shape most of the
+# console uses. Without the optional prefix here that const is not recognised as
+# a base, and the "read from the first /api/" rule below then reports
+# `/api/federated` as an endpoint the console calls — which it does not; it calls
+# `${API}/federations`.
 _BASE_CONST = re.compile(
-    r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"`](/api/[^'"`$]*)['"`]"""
+    r"""(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*['"`]"""
+    r"""(?:\$\{[^}]*\})?(/api/[^'"`$]*)['"`]"""
 )
 
 _INTERPOLATION = re.compile(r"\$\{[^}]*\}")
@@ -186,7 +194,12 @@ def _extract_from_source(text: str) -> set[str]:
         # IGNORED_PATHS exists for the exceptions.
         index = body.find("/api/")
         if index > 0:
-            found.add(body[index:])
+            candidate = body[index:]
+            # A base const declares its own path; the endpoints are the literals
+            # other call sites append to it. Reporting the base itself fails this
+            # test for a route nothing ever requests.
+            if candidate not in prefix_only:
+                found.add(candidate)
 
     return found
 
@@ -301,6 +314,10 @@ CALLING_CONVENTIONS = [
     # A declared base that itself holds a path.
     ('const B = "/api/marketplace/byom";\nfetch(`${B}/validate`)',
      "/api/marketplace/byom/validate"),
+    # The same with the origin interpolated in front - the console's most common
+    # shape, and the one that broke this test the first time it was widened.
+    ('const API = `${API_BASE_URL}/api/federated`;\nfetch(`${API}/federations`)',
+     "/api/federated/federations"),
 ]
 
 
@@ -329,6 +346,26 @@ def test_the_extractor_sees_each_way_the_console_calls_the_api(snippet, expected
     assert expected_segments in normalised, (
         f"the extractor did not see {expected!r} in {snippet!r} - "
         f"it found {sorted(found)}"
+    )
+
+
+def test_a_base_const_is_not_itself_reported_as_an_endpoint():
+    """``const API = `${HOST}/api/federated``` declares a prefix, not a route.
+
+    The console calls `${API}/federations`. Reporting `/api/federated` as an
+    unmounted path fails the suite for a route nothing requests — which is
+    exactly what happened the first time this extractor was widened, on the very
+    change that widened it.
+    """
+    source = (
+        "const API = `${API_BASE_URL}/api/federated`;\n"
+        "fetch(`${API}/federations`);\n"
+    )
+    found = _extract_from_source(source)
+
+    assert "/api/federated/federations" in found
+    assert "/api/federated" not in found, (
+        "the base const was reported as an endpoint in its own right"
     )
 
 
