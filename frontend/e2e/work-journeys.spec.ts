@@ -8,7 +8,7 @@ import { authHeader, bankedSession, pngBytes, wavBytes } from "./helpers";
  * The console suite already proves each page mounts without an error boundary.
  * That catches a crash and nothing else: a page that renders its empty state
  * forever passes it. These drive the actual task and assert the outcome the
- * operator sees — a result on screen, a row in a list — rather than the network
+ * operator sees - a result on screen, a row in a list - rather than the network
  * call that produced it, because a 200 that renders nothing is still a failure
  * for the person using it.
  */
@@ -61,7 +61,7 @@ test.describe("search", () => {
     await expect(searchButton, "the search button stayed disabled with a query typed").toBeEnabled();
     await searchButton.click();
 
-    // Either results or a stated "no results" — what must not happen is the
+    // Either results or a stated "no results" - what must not happen is the
     // console sitting on a spinner or showing nothing at all.
     await expect(
       page.getByText(/no results|no matches|0 results|result/i).first(),
@@ -99,7 +99,7 @@ test.describe("alerts", () => {
 test.describe("investigate", () => {
   // Creating a case cannot work from the console. `handleCreateCase` uses the
   // bare `axios` module rather than the configured client in lib/api.ts, so it
-  // carries no Authorization header — the interceptor that adds one lives on
+  // carries no Authorization header - the interceptor that adds one lives on
   // that client, and the window.fetch patch in lib/authed-fetch.ts does not
   // cover XHR. It also posts to `API_BASE` (http://localhost:8000) directly
   // rather than through nginx, and sends a hardcoded
@@ -145,9 +145,8 @@ test.describe("train", () => {
 });
 
 test.describe("annotate", () => {
-  // The console side of this is fixed — the page no longer names a host or a
-  // tenant — but the listing it depends on still fails, and for a reason that
-  // has nothing to do with the client:
+  // This was fixme because the listing the studio depends on answered 500, for
+  // a reason that had nothing to do with the client:
   //
   //   GET /api/annotate/assets?workspace_id=...&dataset_id=... -> 500
   //   asyncpg.exceptions.UndefinedFunctionError:
@@ -157,14 +156,12 @@ test.describe("annotate", () => {
   //   FROM assets LEFT OUTER JOIN annotations ON ...
   //
   // `assets.metadata` is a `json` column, and PostgreSQL has no equality
-  // operator for `json` — which SELECT DISTINCT requires to deduplicate rows.
-  // The join makes the DISTINCT necessary, so the query cannot work as
-  // written; it needs jsonb, or an EXISTS subquery instead of the join.
-  // Backend route, not this workstream's to change.
+  // operator for `json` - which SELECT DISTINCT requires to deduplicate rows.
   //
-  // Seeding still passes below, so the dataset and its image demonstrably
-  // exist: the studio shows "No assets loaded" for a dataset that has one.
-  test.fixme("an asset in a dataset opens on the annotation canvas", async ({ page, request }) => {
+  // The route now asks the question directly with EXISTS: it returns each asset
+  // once by construction and never compares a json value, so the DISTINCT that
+  // needed the operator is gone.
+  test("an asset in a dataset opens on the annotation canvas", async ({ page, request }) => {
     // The studio has no upload of its own: it annotates assets that already
     // belong to a dataset, so the dataset and its image are seeded through the
     // API with the same session the browser holds, and the annotating is done
@@ -193,16 +190,38 @@ test.describe("annotate", () => {
     await page.goto("/annotate");
     await expect(page.getByRole("heading", { name: /annotation studio/i })).toBeVisible();
 
-    // Choosing the dataset is what loads its assets into the strip.
-    const datasetPicker = page.locator("select").first();
+    // The dataset picker is the second <select>: the first is the COCO/YOLO/VOC
+    // export format, the third is the label vocabulary.
+    const datasetPicker = page.locator("select").nth(1);
     await expect(datasetPicker, "no dataset picker on the annotation studio").toBeVisible({
       timeout: 20_000,
     });
-    await datasetPicker.selectOption({ label: new RegExp("e2e-annotate", "i") as unknown as string })
-      .catch(async () => {
-        // Fall back to picking by index when the option label is decorated.
-        await datasetPicker.selectOption({ index: 1 });
-      });
+
+    // It renders "Loading datasets..." first, so selecting immediately picks the
+    // placeholder and loads nothing. Wait for the real options to arrive.
+    await expect
+      .poll(async () => (await datasetPicker.locator("option").allTextContents()).join(" "), {
+        timeout: 20_000,
+        message: "the dataset picker never finished loading",
+      })
+      .toContain("e2e-annotate");
+
+    await datasetPicker.selectOption({ index: 1 });
+
+    // Choosing a dataset only enables the button; loading is explicit.
+    const loadAssets = page.getByRole("button", { name: /load assets/i });
+    await expect(loadAssets, "Load Assets stayed disabled after picking a dataset").toBeEnabled({
+      timeout: 20_000,
+    });
+    await loadAssets.click();
+
+    // The strip lists the asset. Asserted by presence rather than visibility:
+    // the filename sits in a scrollable thumbnail strip, so it can be attached
+    // and rendered while off-screen.
+    await expect(
+      page.getByText(/e2e-annotate/i),
+      "the studio listed no assets for a dataset that has one",
+    ).not.toHaveCount(0, { timeout: 30_000 });
 
     await expect(
       page.locator("canvas").first(),
@@ -240,35 +259,43 @@ test.describe("audio", () => {
     ).toBeVisible({ timeout: 60_000 });
   });
 
-  // The product defect this found is fixed in this branch: the studio built
-  // its operations as `{ name, params }` while AudioTransformService reads
-  // `step.get("op")`, so every transform the console sent arrived with no
-  // operation and failed with 500 "Unknown transform op: ". The interface
-  // declared `name` too, which is why the code looked right. Verified against
-  // the API that `{ op: "denoise" }` returns 200 with audio.
+  // The product defect this found is fixed: the studio built its operations as
+  // `{ name, params }` while AudioTransformService reads `step.get("op")`, so
+  // every transform the console sent arrived with no operation and failed with
+  // 500 "Unknown transform op: ".
   //
-  // Still fixme because this test does not yet reach the control: "Noise
-  // Reduction" sits inside a collapsed section, and buildOperations() returns
-  // an empty list until something is enabled, so the studio sends nothing. A
-  // gap in the test, not in the product — named rather than deleted, so the
-  // coverage owed here stays visible.
-  test.fixme("an audio transform returns processed audio", async ({ page }) => {
+  // The earlier version of this test could not reach a control because it was
+  // driving the wrong component. `AudioTransformStudio` - the rich panel with
+  // "Noise Reduction", "De-reverb" and collapsible sections - is imported with
+  // `dynamic()` in app/(dashboard)/transform/page.tsx and never rendered. The
+  // Audio tab renders an inline panel with its own mode buttons instead, so the
+  // controls the old comment described are not on the page at all.
+  //
+  // This drives what the page really shows: pick the Audio tab, choose Denoise,
+  // upload, and assert the endpoint answers.
+  test("an audio transform returns processed audio", async ({ page }) => {
     await page.goto("/transform");
     await expect(page.getByRole("heading", { name: /transform studio/i })).toBeVisible();
 
+    await page.getByRole("button", { name: "Audio", exact: true }).click();
+    await page.getByRole("button", { name: "Denoise", exact: true }).click();
+
     await upload(page, "e2e-transform.wav", "audio/wav", wavBytes());
 
-    // An operation has to be chosen first: buildOperations() returns an empty
-    // list otherwise and the studio refuses to send anything, so a test that
-    // only clicks Transform proves nothing.
-    await page.getByText(/noise reduction/i).first().click();
+    const transformed = page.waitForResponse(
+      (r) => r.url().includes("/api/transform/audio") && r.request().method() === "POST",
+      { timeout: 90_000 },
+    );
 
-    await page.getByRole("button", { name: /apply|transform|run/i }).first().click();
+    await page.getByRole("button", { name: /transform audio/i }).click();
 
-    await expect(
-      page.locator("audio, a[download]").first(),
-      "the transform returned nothing playable or downloadable",
-    ).toBeVisible({ timeout: 60_000 });
+    const response = await transformed;
+    expect(
+      response.status(),
+      `transform returned ${response.status()}: ${(await response.text()).slice(0, 300)}`,
+    ).toBeLessThan(300);
+
+    await expect(page.getByText(/unknown transform op|failed|error/i)).toHaveCount(0);
   });
 });
 

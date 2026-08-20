@@ -144,22 +144,43 @@ async def get_annotate_assets(
     showed the dataset the operator had opened. The TODO asking for the real
     query has been in the file since it was written.
     """
+    # An EXISTS rather than an outer join with DISTINCT.
+    #
+    # The join could match one asset several times - once per annotation - so it
+    # needed DISTINCT to deduplicate. DISTINCT compares whole rows, `assets`
+    # carries a `metadata` column of type `json`, and PostgreSQL defines no
+    # equality operator for `json` (only for `jsonb`). So the query raised
+    #
+    #   asyncpg.UndefinedFunctionError: could not identify an equality operator
+    #   for type json
+    #
+    # and the studio reported "No assets loaded" for a dataset that had assets.
+    #
+    # EXISTS asks the question the endpoint is actually asking - "is this asset
+    # in the dataset?" - returns each asset once by construction, and never
+    # compares a json value. It also stops early per row rather than building
+    # the join product.
+    in_dataset = or_(
+        select(Annotation.id)
+        .where(
+            Annotation.asset_id == Asset.id,
+            Annotation.dataset_id == dataset_id,
+        )
+        .exists(),
+        Asset.metadata_["dataset_id"].astext == str(dataset_id),
+    )
+
     rows = (
         await db.execute(
             select(Asset)
-            .join(Annotation, Annotation.asset_id == Asset.id, isouter=True)
             .where(
                 Asset.workspace_id == (workspace_id or session_workspace),
-                or_(
-                    Annotation.dataset_id == dataset_id,
-                    Asset.metadata_["dataset_id"].astext == str(dataset_id),
-                ),
+                in_dataset,
             )
             .order_by(Asset.created_at.desc())
             .limit(500)
-            .distinct()
         )
-    ).scalars().unique().all()
+    ).scalars().all()
 
     return {
         "items": [
