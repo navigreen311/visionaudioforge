@@ -8,39 +8,22 @@ import MemoryPanel from "@/components/agents/MemoryPanel";
 import SkillPackSwitcher from "@/components/agents/SkillPackSwitcher";
 import api, { wsBaseUrl } from "@/lib/api";
 
-// Dynamic imports for future agent panels (AG3+)
-const PatrolModePanel = dynamic(
-  () => import("@/components/agents/PatrolModePanel"),
-  { ssr: false, loading: () => null }
-);
-const ConversationHistory = dynamic(
-  () => import("@/components/agents/ConversationHistory"),
-  { ssr: false, loading: () => null }
-);
-const LiveContextPanel = dynamic(
-  () => import("@/components/agents/LiveContextPanel"),
-  { ssr: false, loading: () => null }
-);
-const VoiceInput = dynamic(
-  () => import("@/components/agents/VoiceInput"),
-  { ssr: false, loading: () => null }
-);
-const AgentSwitcher = dynamic(
-  () => import("@/components/agents/AgentSwitcher"),
-  { ssr: false, loading: () => null }
-);
-const MessageActions = dynamic(
-  () => import("@/components/agents/MessageActions"),
-  { ssr: false, loading: () => null }
-);
-
-// Suppress unused-variable warnings for dynamic imports that are wired but not yet rendered
-void PatrolModePanel;
-void ConversationHistory;
-void LiveContextPanel;
-void VoiceInput;
-void AgentSwitcher;
-void MessageActions;
+// AgentSwitcher is the only one of the "AG3+" panels that was both complete and
+// missing from the page: agentId was set once to "default-agent" and never
+// changed, so the copilot could not be pointed at any other agent even though
+// the page was already fetching the list.
+//
+// The block that used to live here imported five more panels and then wrote
+// `void PatrolModePanel;` and so on to silence the unused-variable lint, under a
+// comment calling them "wired but not yet rendered". They were not wired: two
+// duplicated inline UI this page already renders (patrol mode, conversation
+// history) and three needed changes to CopilotChat's API to receive input
+// (VoiceInput, LiveContextPanel, MessageActions). Silencing the lint is what let
+// the component tree look ~42% larger than the app it renders.
+const AgentSwitcher = dynamic(() => import("@/components/agents/AgentSwitcher"), {
+  loading: () => <div className="h-24 animate-pulse rounded-xl bg-gray-100" />,
+  ssr: false,
+});
 
 interface Memory {
   id: string;
@@ -73,7 +56,7 @@ interface HistoryMessage {
   tool_use?: Record<string, unknown> | null;
 }
 
-// Base URL only — CopilotChat appends the session token at connect time, since
+// Base URL only - CopilotChat appends the session token at connect time, since
 // this is module scope and there is no session to read here.
 //
 // The `||` fallback used to be dead code: `+` binds tighter than `||`, so with
@@ -219,6 +202,14 @@ export default function AgentsPage() {
 
       {/* Sidebar panels */}
       <div className="w-80 shrink-0 space-y-4 overflow-y-auto">
+        <AgentSwitcher
+          currentAgentId={agentId}
+          onSwitch={(agent) => {
+            setAgentId(agent.id);
+            if (agent.skill_pack) setSkillPack(agent.skill_pack);
+          }}
+        />
+
         {/* Agent Info */}
         <div className="bg-white rounded-xl border border-gray-200 p-4">
           <h3 className="font-semibold text-gray-900 text-sm mb-3">Agent Info</h3>
