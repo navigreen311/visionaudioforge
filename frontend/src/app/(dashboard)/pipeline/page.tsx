@@ -3,6 +3,8 @@
 import { useCallback, useState } from "react";
 import { Edge, Node, useEdgesState, useNodesState } from "reactflow";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import NodeConfig from "@/components/pipeline/NodeConfig";
 import NodePalette from "@/components/pipeline/NodePalette";
 import PipelineCanvas from "@/components/pipeline/PipelineCanvas";
@@ -27,6 +29,14 @@ interface DefinitionNode {
 interface DefinitionEdge {
   from: string;
   to: string;
+  // Nodes name their real ports — NormalizeNode takes `image` and returns
+  // `image`; the audio nodes need `sr`. The canvas used to drop these on load
+  // and re-invent them as "output"/"input" on save, so a template loaded and
+  // saved unchanged came back
+  //   422 Node 'normalize_1' (normalize) missing required param 'image'
+  // which reads as a broken template rather than a lossy round trip.
+  from_port?: string;
+  to_port?: string;
 }
 
 export default function PipelinePage() {
@@ -66,8 +76,13 @@ export default function PipelinePage() {
       edges: edges.map((e) => ({
         from: e.source,
         to: e.target,
-        from_port: "output",
-        to_port: "input",
+        // Carried through from the loaded definition via React Flow's handles.
+        // The "output"/"input" fallback applies only to edges drawn by hand in
+        // the canvas, which has no port picker yet — those still need the user
+        // to set params explicitly, but they no longer corrupt a template that
+        // arrived correctly wired.
+        from_port: e.sourceHandle || "output",
+        to_port: e.targetHandle || "input",
       })),
     };
   }, [nodes, edges]);
@@ -92,6 +107,11 @@ export default function PipelinePage() {
           id: `e-${i}-${e.from}-${e.to}`,
           source: e.from,
           target: e.to,
+          // Preserve the port names. React Flow round-trips these unchanged,
+          // so buildDefinition can hand back what it was given instead of
+          // guessing.
+          sourceHandle: e.from_port ?? null,
+          targetHandle: e.to_port ?? null,
         }),
       );
       setNodes(newNodes);
@@ -175,12 +195,24 @@ export default function PipelinePage() {
 
   const handleSave = async () => {
     try {
+      // Pipelines are workspace-scoped and the route rejects a body without
+      // one — the save was returning
+      //   422 workspace_id is required - pipelines are workspace-scoped
+      // The workspace comes from the authenticated session, never from
+      // anything the user can pick: see docs/auth.md.
+      const workspaceId = readWorkspaceId();
+      if (!workspaceId) {
+        setValidationMsg("Save failed: no workspace in this session — sign in again.");
+        return;
+      }
+
       const resp = await fetch("/api/pipeline/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: pipelineName,
           definition: buildDefinition(),
+          workspace_id: workspaceId,
         }),
       });
       if (resp.ok) {
