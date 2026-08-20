@@ -523,6 +523,11 @@ export default function InvestigatePage() {
 
   return (
     <div className="flex h-[calc(100vh-4rem)] overflow-hidden">
+        {/* Every route needs one h1 - it is what a screen reader announces on
+            navigation. This shell is full-height by design, so the heading is
+            visually hidden rather than laid out. */}
+      <h1 className="sr-only">Investigations</h1>
+
       {/* Left panel — Case list */}
       <div className="w-80 flex-shrink-0 border-r border-gray-200 bg-white">
         <CaseList

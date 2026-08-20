@@ -23,24 +23,24 @@ interface SystemOverview {
   redis_status: string;
   uptime_s: number;
   total_requests_24h: number;
-  error_rate_24h: number;
-  avg_latency_ms: number;
-  p99_latency_ms: number;
+  error_rate_24h: number | null;
+  avg_latency_ms: number | null;
+  p99_latency_ms: number | null;
 }
 
 interface PipelineHealth {
   active_pipelines: number;
   runs_24h: number;
-  success_rate: number;
-  avg_duration_ms: number;
+  success_rate: number | null;
+  avg_duration_ms: number | null;
   failed_runs: { id: string; error: string }[];
 }
 
 interface SLACompliance {
   compliant: boolean;
-  uptime_pct: number;
-  avg_latency_ms: number;
-  error_rate: number;
+  uptime_pct: number | null;
+  avg_latency_ms: number | null;
+  error_rate: number | null;
   violations: string[];
 }
 
@@ -53,10 +53,10 @@ interface ErrorTaxonomy {
 
 interface AlertFatigue {
   total_alerts: number;
-  acknowledged_pct: number;
-  avg_response_time_s: number;
-  noisy_rules: { rule: string; count: number; ack_rate: number }[];
-  fatigue_score: number;
+  acknowledged_pct: number | null;
+  avg_response_time_s: number | null;
+  noisy_rules: { rule: string; count: number; ack_rate: number | null }[];
+  fatigue_score: number | null;
   recommendations: string[];
 }
 
@@ -118,6 +118,27 @@ function rangeToQueryString(range: TimeRange): string {
 // ----------------------------------------------------------------
 // Page
 // ----------------------------------------------------------------
+
+
+/**
+ * A metric the platform could not measure, rendered as such.
+ *
+ * The server reports `null` for a metric it has no data for - `p99_latency_ms`
+ * always, because the duration histogram has no quantile buckets - which is the
+ * honest answer and replaced a fabricated number. This page then called
+ * `.toFixed(1)` on it, threw `Cannot read properties of null`, and took the
+ * whole route into the error boundary: /observability rendered "Something went
+ * wrong" and nothing else, every time, for everyone.
+ *
+ * An em dash is the answer to "what is the p99?" when nobody measured it. A zero
+ * would be a lie and a crash is worse than both.
+ */
+function metric(
+  value: number | null | undefined,
+  format: (n: number) => string,
+): string {
+  return value === null || value === undefined ? "\u2014" : format(value);
+}
 
 export default function ObservabilityPage() {
   const [overview, setOverview] = useState<SystemOverview | null>(null);
@@ -224,25 +245,25 @@ export default function ObservabilityPage() {
             </div>
             <Metric
               label="Uptime"
-              value={`${(overview.uptime_s / 3600).toFixed(1)}h`}
+              value={metric(overview.uptime_s, (n) => `${(n / 3600).toFixed(1)}h`)}
             />
           </div>
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
             <Metric
               label="Requests (24h)"
-              value={overview.total_requests_24h.toLocaleString()}
+              value={metric(overview.total_requests_24h, (n) => n.toLocaleString())}
             />
             <Metric
               label="Error Rate (24h)"
-              value={`${(overview.error_rate_24h * 100).toFixed(2)}%`}
+              value={metric(overview.error_rate_24h, (n) => `${(n * 100).toFixed(2)}%`)}
             />
             <Metric
               label="Avg Latency"
-              value={`${overview.avg_latency_ms.toFixed(1)}ms`}
+              value={metric(overview.avg_latency_ms, (n) => `${n.toFixed(1)}ms`)}
             />
             <Metric
               label="p99 Latency"
-              value={`${overview.p99_latency_ms.toFixed(1)}ms`}
+              value={metric(overview.p99_latency_ms, (n) => `${n.toFixed(1)}ms`)}
             />
           </div>
         </Card>
@@ -259,11 +280,11 @@ export default function ObservabilityPage() {
             <Metric label="Runs (24h)" value={pipeline.runs_24h} />
             <Metric
               label="Success Rate"
-              value={`${(pipeline.success_rate * 100).toFixed(1)}%`}
+              value={metric(pipeline.success_rate, (n) => `${(n * 100).toFixed(1)}%`)}
             />
             <Metric
               label="Avg Duration"
-              value={`${(pipeline.avg_duration_ms / 1000).toFixed(1)}s`}
+              value={metric(pipeline.avg_duration_ms, (n) => `${(n / 1000).toFixed(1)}s`)}
             />
           </div>
           {/* Success rate bar */}
@@ -271,7 +292,7 @@ export default function ObservabilityPage() {
             <div className="h-3 w-full rounded-full bg-gray-200">
               <div
                 className="h-3 rounded-full bg-green-500 transition-all"
-                style={{ width: `${pipeline.success_rate * 100}%` }}
+                style={{ width: `${(pipeline.success_rate ?? 0) * 100}%` }}
               />
             </div>
           </div>
@@ -307,15 +328,15 @@ export default function ObservabilityPage() {
           <div className="grid grid-cols-3 gap-4">
             <Metric
               label="Uptime"
-              value={`${sla.uptime_pct.toFixed(2)}%`}
+              value={metric(sla.uptime_pct, (n) => `${n.toFixed(2)}%`)}
             />
             <Metric
               label="Avg Latency"
-              value={`${sla.avg_latency_ms.toFixed(1)}ms`}
+              value={metric(sla.avg_latency_ms, (n) => `${n.toFixed(1)}ms`)}
             />
             <Metric
               label="Error Rate"
-              value={`${(sla.error_rate * 100).toFixed(2)}%`}
+              value={metric(sla.error_rate, (n) => `${(n * 100).toFixed(2)}%`)}
             />
           </div>
           {sla.violations.length > 0 && (
@@ -366,23 +387,25 @@ export default function ObservabilityPage() {
             <Metric label="Total Alerts (30d)" value={fatigue.total_alerts} />
             <Metric
               label="Acknowledged"
-              value={`${fatigue.acknowledged_pct.toFixed(1)}%`}
+              value={metric(fatigue.acknowledged_pct, (n) => `${n.toFixed(1)}%`)}
             />
             <Metric
               label="Avg Response"
-              value={`${fatigue.avg_response_time_s.toFixed(0)}s`}
+              value={metric(fatigue.avg_response_time_s, (n) => `${n.toFixed(0)}s`)}
             />
             <div>
               <p
                 className={`text-2xl font-bold ${
-                  fatigue.fatigue_score > 70
+                  fatigue.fatigue_score === null
+                    ? "text-gray-400"
+                    : fatigue.fatigue_score > 70
                     ? "text-red-600"
                     : fatigue.fatigue_score > 40
                     ? "text-yellow-600"
                     : "text-green-600"
                 }`}
               >
-                {fatigue.fatigue_score.toFixed(0)}
+                {metric(fatigue.fatigue_score, (n) => n.toFixed(0))}
               </p>
               <p className="text-xs text-gray-500">Fatigue Score (0-100)</p>
             </div>
@@ -397,7 +420,7 @@ export default function ObservabilityPage() {
                 {fatigue.noisy_rules.map((r) => (
                   <li key={r.rule}>
                     <span className="font-medium">{r.rule}</span> — {r.count}{" "}
-                    alerts, {(r.ack_rate * 100).toFixed(0)}% ack rate
+                    alerts, {metric(r.ack_rate, (n) => `${(n * 100).toFixed(0)}%`)} ack rate
                   </li>
                 ))}
               </ul>

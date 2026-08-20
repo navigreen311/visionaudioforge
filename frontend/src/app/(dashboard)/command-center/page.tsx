@@ -130,6 +130,11 @@ export default function CommandCenterPage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)] -m-4 lg:-m-8">
+        {/* Every route needs one h1 - it is what a screen reader announces on
+            navigation. This shell is full-height by design, so the heading is
+            visually hidden rather than laid out. */}
+      <h1 className="sr-only">Command Center</h1>
+
       {/* ===== TOP BAR ===== */}
       <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-2 flex-shrink-0">
         <div className="flex items-center gap-4">

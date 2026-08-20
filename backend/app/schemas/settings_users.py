@@ -31,6 +31,11 @@ class InviteUserResponse(BaseModel):
     role: str
     status: str
     invited_at: datetime
+    # Whether the invitation actually reached a mail provider. The invite used
+    # to report success unconditionally while sending nothing at all, so the
+    # console could not tell "invited" from "row created, no email".
+    email_sent: bool = False
+    email_note: str | None = None
 
 
 class UpdateRoleRequest(BaseModel):

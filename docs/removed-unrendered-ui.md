@@ -332,3 +332,23 @@ code is intact in history. What is gone is the impression that it was wired.
 | `DetectionOverlay` | 83 |
 | `DualFrameUpload` | 18 |
 | `SplitPaneLayout` | 17 |
+
+## Second pass: imported, but never placed in the tree
+
+The rule above - delete what nothing imports - is sound and it is not complete.
+It cannot see a file that *is* imported by a page that then never renders it.
+`AudioTransformStudio` was one; two more survived the first sweep for exactly
+that reason:
+
+| Component | Lines | Why it survived |
+| --- | ---: | --- |
+| `BatchTransformTab` | 560 | `transform/page.tsx` imported it with `dynamic()` |
+| `PresetsTab` | 497 | `transform/page.tsx` imported it with `dynamic()` |
+
+Both duplicated a tab the transform page already implements inline and renders -
+the inline versions are the ones that have been running. 1,057 lines.
+
+The guard test now covers this case too: an imported component binding that
+appears in neither JSX nor any value position (a lookup table, an array, an
+argument) cannot be rendered by any path, so it is reported the same way an
+unimported file is.

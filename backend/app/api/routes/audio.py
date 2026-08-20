@@ -257,7 +257,14 @@ async def augment(
             )
 
     # --- Apply augmentation -----------------------------------------------
-    augmented_audio, applied = _augmenter.apply_pipeline(audio, sr, pipeline)
+    # An unusable step is the caller's mistake, not the server's. Uncaught, the
+    # ValueError became a 500 with no body, which is how the console could send
+    # a vocabulary this service never accepted for as long as it did without
+    # anyone seeing a reason why.
+    try:
+        augmented_audio, applied = _augmenter.apply_pipeline(audio, sr, pipeline)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     augmented_duration_s = len(augmented_audio) / sr
 

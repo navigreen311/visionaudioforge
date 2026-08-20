@@ -68,7 +68,12 @@ export default function AgentsPage() {
   const searchParams = useSearchParams();
   const initialQuery = searchParams.get("q") ?? undefined;
 
-  const [agentId, setAgentId] = useState<string>("default-agent");
+  // Null until an agent is known. This was the literal "default-agent", which
+  // is not a UUID, so the first render fired /memory and /patrol/report at a id
+  // the database could not parse - two 500s on every visit before the operator
+  // touched anything. The server now answers 404 for an unparseable id; the
+  // page should not be asking in the first place.
+  const [agentId, setAgentId] = useState<string | null>(null);
   const [skillPack, setSkillPack] = useState("general");
   const [memories, setMemories] = useState<Memory[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -84,6 +89,7 @@ export default function AgentsPage() {
   const [showHistory, setShowHistory] = useState(false);
 
   const fetchMemories = useCallback(async () => {
+    if (!agentId) return;
     try {
       const res = await api.get(`/api/agents/${agentId}/memory`);
       setMemories(res.data);
@@ -95,13 +101,19 @@ export default function AgentsPage() {
   const fetchAgents = useCallback(async () => {
     try {
       const res = await api.get("/api/agents");
-      setAgents(res.data);
+      const list: AgentInfo[] = res.data ?? [];
+      setAgents(list);
+      // Adopt the first real agent so the panels have something to load. The
+      // switcher below can change it; until this resolves there is nothing to
+      // ask about.
+      setAgentId((current) => current ?? list[0]?.id ?? null);
     } catch {
       setAgents([]);
     }
   }, []);
 
   const fetchPatrolReport = useCallback(async () => {
+    if (!agentId) return;
     try {
       const res = await api.get(`/api/agents/${agentId}/patrol/report`);
       setPatrolActive(res.data.is_patrolling ?? false);
@@ -190,6 +202,11 @@ export default function AgentsPage() {
 
   return (
     <div className="flex gap-6 h-[calc(100vh-6rem)]">
+        {/* Every route needs one h1 - it is what a screen reader announces on
+            navigation. This shell is full-height by design, so the heading is
+            visually hidden rather than laid out. */}
+      <h1 className="sr-only">Agent Copilot</h1>
+
       {/* Main chat area */}
       <div className="flex-1 min-w-0">
         <CopilotChat

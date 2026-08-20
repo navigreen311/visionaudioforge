@@ -300,13 +300,16 @@ function AugmentationTab({
   };
 
   const handleStudioAugment = useCallback((augConfig: AugmentConfig) => {
-    // Convert AugmentConfig to AugmentationConfig steps and trigger augmentation.
-    // TODO(ws-c): these step names do not match the server's augmenter vocabulary.
-    // backend/app/services/audio/augmentation.py dispatches on
-    // "noise" | "stretch" | "pitch" | "shift" (with noise_type/rate/n_steps/shift_ms
-    // params), and has no "frequency_mask" handler at all. Correcting the mapping
-    // needs product decisions (amplitude->SNR, shift_pct->ms, dropping frequency
-    // mask), so it is deliberately left as-is here rather than guessed at.
+    // These names are the augmentation API's vocabulary, not a guess at it.
+    // They used to be a guess: the server dispatched on "noise" | "stretch" |
+    // "pitch" | "shift" and had no waveform masker at all, so every step this
+    // panel produced raised ValueError and came back as a 500 with no body.
+    //
+    // backend/app/services/audio/augmentation.py now accepts each of them and
+    // canonicalises the parameters (amplitude -> SNR, shift_pct -> ms), and
+    // backend/tests/test_console_api_contract.py reads this function to check
+    // that it still does. Adding a step here with a name the server does not
+    // know fails that test by name.
     const steps: AugmentationStep[] = [];
     if (augConfig.whiteNoise.enabled) {
       steps.push({ type: "white_noise", params: { snr_db: augConfig.whiteNoise.snrDb } });

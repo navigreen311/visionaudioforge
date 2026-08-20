@@ -3,7 +3,7 @@
 ![Version](https://img.shields.io/badge/version-1.0.0-blue)
 ![License](https://img.shields.io/badge/license-Proprietary-red)
 ![Modules](https://img.shields.io/badge/modules-40-green)
-![Endpoints](https://img.shields.io/badge/endpoints-587-orange)
+![Endpoints](https://img.shields.io/badge/endpoints-588-orange)
 
 VisionAudioForge is a 40-module enterprise multimodal AI platform for end-to-end capture, processing, training, deployment, and monitoring of computer vision and audio ML models. Built on FastAPI, Next.js 14, PyTorch, and modern AI/ML tooling, it delivers a complete production pipeline from data ingestion through edge deployment, with built-in SDKs, a visual pipeline builder, AI copilot, 7 industry vertical packs, and observability.
 
@@ -18,7 +18,7 @@ decorator on a router nobody mounted is correctly not counted.
 |--------|-------|--------------|
 | **Modules** | 40 | rows in the module table below (57 routers are mounted — some modules mount more than one) |
 | **Source Files** | 680 | `.py` / `.ts` / `.tsx` under `backend/app`, `frontend/src`, `sdk` |
-| **API Endpoints** | 587 | method + path operations on the mounted router, across 526 distinct `/api` paths |
+| **API Endpoints** | 588 | method + path operations on the mounted router, across 527 distinct `/api` paths |
 | **Vertical Packs** | 7 (Security, Industrial, Retail, Healthcare, Call Centre, Education, Media) | `backend/app/services/verticals/` |
 | **SDKs** | 2 (Python, JavaScript) | `sdk/` |
 | **Frontend Pages** | 28 dashboard views (30 routes including login and register) | `page.tsx` files under `frontend/src/app` |

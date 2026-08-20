@@ -23,6 +23,15 @@ const CATEGORY_COLORS: Record<string, string> = {
 interface SearchResultsDropdownProps {
   results: SearchResults;
   query: string;
+  /**
+   * Whether a request is still in flight.
+   *
+   * Without this the empty branch below rendered "No results for 'x'" the
+   * moment the operator stopped typing - an answer, and usually the wrong one,
+   * given before the search had returned. `GlobalSearch` tracked the state and
+   * then discarded it with `void loading;`.
+   */
+  loading?: boolean;
   highlightIndex: number;
   onSelect: (url: string) => void;
   onSeeAll: () => void;
@@ -31,6 +40,7 @@ interface SearchResultsDropdownProps {
 export default function SearchResultsDropdown({
   results,
   query,
+  loading = false,
   highlightIndex,
   onSelect,
   onSeeAll,
@@ -50,8 +60,12 @@ export default function SearchResultsDropdown({
   if (!hasResults) {
     return (
       <div className="absolute top-full right-0 mt-1 w-[400px] max-h-[400px] overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg z-50 p-4">
-        <p className="text-sm text-gray-500">
-          No results for &apos;{query}&apos;
+        <p className="text-sm text-gray-500" role="status" aria-live="polite">
+          {loading ? (
+            <>Searching for &apos;{query}&apos;&hellip;</>
+          ) : (
+            <>No results for &apos;{query}&apos;</>
+          )}
         </p>
       </div>
     );

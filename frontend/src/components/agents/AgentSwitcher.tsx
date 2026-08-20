@@ -21,7 +21,8 @@ interface AgentDetail extends AgentSummary {
 }
 
 interface AgentSwitcherProps {
-  currentAgentId: string;
+  /** Null before an agent has been resolved; no row is marked current. */
+  currentAgentId: string | null;
   onSwitch: (agent: AgentDetail) => void;
 }
 

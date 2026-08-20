@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import get_cache_service
 from app.core.deps import get_db
 from app.models.plugin import InstalledPlugin
 
@@ -210,9 +212,24 @@ async def uninstall_plugin(
 
 INSTALL_STEPS = ["downloading", "verifying", "installing", "configuring"]
 
-# plugin_id -> job state. Ephemeral by design: an install job that outlives a
-# restart has nothing to resume.
-_install_jobs: dict[str, dict[str, Any]] = {}
+# Job state lives in Redis, not in this process.
+#
+# It was a module-level dict, which is correct for exactly one worker and wrong
+# for the deployment: uvicorn runs several, the browser polls every 800ms, and
+# each poll lands wherever the load balancer sends it. A poll that reached a
+# different worker than the POST got 404 "No install in progress" mid-install,
+# and progress advanced once per poll *per worker*, so the step indicator moved
+# at a rate that depended on how the polls were spread. A restart lost every
+# in-flight install outright.
+#
+# Progress is also derived from elapsed time rather than a poll counter now.
+# Counting polls made the progress bar a function of how many browser tabs were
+# watching - two tabs advanced it twice as fast - and made it unresumable.
+_JOB_TTL_SECONDS = 900
+
+
+def _job_key(plugin_id: str) -> str:
+    return f"marketplace:install:{plugin_id}"
 
 
 class InstallStartedOut(BaseModel):
@@ -226,21 +243,30 @@ class InstallStatusOut(BaseModel):
     error: str | None = None
 
 
-def _start_job(plugin_id: str, kind: str) -> InstallStartedOut:
+# One step per second, so the four-step indicator takes about as long as the
+# install animation the console was already drawing.
+_SECONDS_PER_STEP = 1.0
+
+
+async def _start_job(plugin_id: str, kind: str) -> InstallStartedOut:
     install_id = str(uuid.uuid4())
-    _install_jobs[plugin_id] = {
-        "install_id": install_id,
-        "kind": kind,
-        "polls": 0,
-        "error": None,
-    }
+    await get_cache_service().set(
+        _job_key(plugin_id),
+        {
+            "install_id": install_id,
+            "kind": kind,
+            "started_at": time.time(),
+            "error": None,
+        },
+        ttl=_JOB_TTL_SECONDS,
+    )
     return InstallStartedOut(install_id=install_id)
 
 
 @router.post("/plugins/{plugin_id}/install", response_model=InstallStartedOut)
 async def install_plugin(plugin_id: str) -> InstallStartedOut:
     """Begin installing a plugin; returns the id to poll for progress."""
-    return _start_job(plugin_id, "install")
+    return await _start_job(plugin_id, "install")
 
 
 @router.post("/plugins/{plugin_id}/update", response_model=InstallStartedOut)
@@ -250,7 +276,7 @@ async def update_plugin(
 ) -> InstallStartedOut:
     """Begin updating an installed plugin to its latest version."""
     await _load(db, plugin_id)
-    return _start_job(plugin_id, "update")
+    return await _start_job(plugin_id, "update")
 
 
 @router.get("/plugins/{plugin_id}/install/status", response_model=InstallStatusOut)
@@ -258,13 +284,13 @@ async def install_status(
     plugin_id: str,
     db: AsyncSession = Depends(get_db),
 ) -> InstallStatusOut:
-    """Advance and report install progress. Each poll moves one step forward."""
-    job = _install_jobs.get(plugin_id)
+    """Report install progress, derived from how long the job has been running."""
+    job = await get_cache_service().get(_job_key(plugin_id))
     if job is None:
         raise HTTPException(status_code=404, detail="No install in progress")
 
-    job["polls"] += 1
-    idx = job["polls"] - 1
+    elapsed = time.time() - float(job["started_at"])
+    idx = int(elapsed // _SECONDS_PER_STEP)
 
     if idx >= len(INSTALL_STEPS):
         # Job finished: apply the effect to the stored plugin, then report done.

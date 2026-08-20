@@ -9,6 +9,13 @@ from typing import TypedDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# Imported here rather than inside each method. `get_patrol_report` used `Event`
+# without importing it at all - every call to GET /{agent_id}/patrol/report
+# raised `NameError: name 'Event' is not defined`, which is a 500 on a page
+# nothing in the suite opened. The other call site imports it locally at line
+# ~279, which is what hid the omission from every reader.
+from app.models.event import Event
+
 # A 2s budget is not enough on a dual-stack host: "localhost" resolves to ::1
 # first, and when the server listens on IPv4 only the whole budget is spent on
 # the IPv6 attempt before IPv4 is tried. The check then reports a Redis that is
@@ -276,7 +283,6 @@ class PatrolAgent:
                 # Store findings as Events
                 try:
                     async with db_factory() as session:
-                        from app.models.event import Event
 
                         for finding in findings:
                             event = Event(
