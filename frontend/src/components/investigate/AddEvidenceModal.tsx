@@ -1,13 +1,15 @@
 "use client";
 
-import { API_BASE_URL } from "@/lib/api";
 
 import React, { useState, useRef, useCallback } from "react";
-import axios from "axios";
+// The shared client from lib/api.ts, not the bare axios module: the request
+// interceptor that attaches the session token lives on that instance, so a
+// direct `axios.get` reached the API with no Authorization header and was
+// answered 401. Its baseURL is API_BASE_URL, so paths here are relative.
+import api from "@/lib/api";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 
-const API_BASE = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,8 +145,8 @@ export default function AddEvidenceModal({
         payload.content = noteText || description;
       }
 
-      await axios.post(
-        `${API_BASE}/api/investigate/cases/${caseId}/events`,
+      await api.post(
+        `/api/investigate/cases/${caseId}/events`,
         payload
       );
 

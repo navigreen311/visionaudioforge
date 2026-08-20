@@ -111,7 +111,7 @@ test.describe("investigate", () => {
   // So the case is never created and the list stays empty. Even authenticated,
   // it would write into a workspace the operator does not own. The fix is in
   // app/(dashboard)/investigate/page.tsx, which this workstream does not own.
-  test.fixme("a case can be created and evidence attached to it", async ({ page }) => {
+  test("a case can be created and evidence attached to it", async ({ page }) => {
     await page.goto("/investigate");
 
     const caseName = `e2e-case-${Date.now().toString(36)}`;
@@ -145,18 +145,25 @@ test.describe("train", () => {
 });
 
 test.describe("annotate", () => {
-  // The studio cannot load anything to annotate. Seeding works — the dataset
-  // is created and the image uploads into it, both asserted below — but the
-  // listing the page depends on fails:
+  // The console side of this is fixed — the page no longer names a host or a
+  // tenant — but the listing it depends on still fails, and for a reason that
+  // has nothing to do with the client:
   //
   //   GET /api/annotate/assets?workspace_id=...&dataset_id=... -> 500
+  //   asyncpg.exceptions.UndefinedFunctionError:
+  //     could not identify an equality operator for type json
   //
-  // The traceback bottoms out in asyncpg preparing the statement, so the query
-  // behind that route does not match the schema it runs against. With no
-  // assets returned there is no current asset, and AnnotationCanvas is never
-  // rendered — the studio shows "No assets loaded" for a dataset that
-  // demonstrably has an image in it. Backend route; not this workstream's to
-  // fix.
+  //   SELECT DISTINCT assets.type, ..., assets.metadata, ...
+  //   FROM assets LEFT OUTER JOIN annotations ON ...
+  //
+  // `assets.metadata` is a `json` column, and PostgreSQL has no equality
+  // operator for `json` — which SELECT DISTINCT requires to deduplicate rows.
+  // The join makes the DISTINCT necessary, so the query cannot work as
+  // written; it needs jsonb, or an EXISTS subquery instead of the join.
+  // Backend route, not this workstream's to change.
+  //
+  // Seeding still passes below, so the dataset and its image demonstrably
+  // exist: the studio shows "No assets loaded" for a dataset that has one.
   test.fixme("an asset in a dataset opens on the annotation canvas", async ({ page, request }) => {
     // The studio has no upload of its own: it annotates assets that already
     // belong to a dataset, so the dataset and its image are seeded through the
