@@ -161,6 +161,15 @@ jobs:
     # branch protection required checks alongside `backend` and `frontend`.
     timeout-minutes: 45
 
+    env:
+      # Compose derives image tags from the project name so that parallel
+      # checkouts do not overwrite each other's images. Pinning it here keeps
+      # the tags the steps below build (vaf-backend:local, vaf-frontend:local)
+      # equal to the ones the compose file then looks for. Without it the name
+      # would come from the checkout directory and the smoke step would find no
+      # image, silently rebuilding and discarding the layer cache.
+      COMPOSE_PROJECT_NAME: vaf
+
     steps:
       - uses: actions/checkout@v4
 
