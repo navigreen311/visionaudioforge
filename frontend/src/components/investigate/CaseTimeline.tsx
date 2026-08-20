@@ -1,11 +1,15 @@
 "use client";
 
+
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import axios from "axios";
+// The shared client from lib/api.ts, not the bare axios module: the request
+// interceptor that attaches the session token lives on that instance, so a
+// direct `axios.get` reached the API with no Authorization header and was
+// answered 401. Its baseURL is API_BASE_URL, so paths here are relative.
+import api from "@/lib/api";
 import Button from "@/components/ui/Button";
 import EventCard from "./EventCard";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,8 +104,8 @@ export default function CaseTimeline({
   const fetchEvents = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await axios.get<CaseEvent[]>(
-        `${API_BASE}/api/investigate/cases/${caseId}/events`,
+      const resp = await api.get<CaseEvent[]>(
+        `/api/investigate/cases/${caseId}/events`,
         {
           params: {
             start: new Date(dateRange.start).toISOString(),

@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState, useEffect, useCallback } from "react";
 
 // ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ const CATEGORIES = [
 ];
 
 const STORAGE_KEY = "vaf_decay_rules";
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Persistence helpers

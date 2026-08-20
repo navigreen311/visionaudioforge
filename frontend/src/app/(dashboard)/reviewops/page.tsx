@@ -1,5 +1,7 @@
 "use client";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import { useState, useEffect, useCallback } from "react";
 import ShiftsTabComponent from "@/components/reviewops/ShiftsTab";
 
@@ -43,7 +45,6 @@ const TABS = ["Review Queue", "Leaderboard", "Quality", "Shifts"] as const;
 type Tab = (typeof TABS)[number];
 
 const API = "/api/reviewops";
-const WS_ID = "00000000-0000-0000-0000-000000000001";
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: "bg-red-100 text-red-800",
@@ -151,7 +152,7 @@ function ReviewQueueTab() {
 
   const fetchTasks = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ workspace_id: WS_ID });
+      const params = new URLSearchParams({ workspace_id: readWorkspaceId() ?? "" });
       if (filter) params.set("status", filter);
       const res = await fetch(`${API}/tasks?${params}`);
       if (res.ok) setTasks(await res.json());
@@ -190,7 +191,7 @@ function ReviewQueueTab() {
         </button>
         <button
           onClick={async () => {
-            await fetch(`${API}/tasks/auto-assign?workspace_id=${WS_ID}`, { method: "POST" });
+            await fetch(`${API}/tasks/auto-assign?workspace_id=${readWorkspaceId()}`, { method: "POST" });
             fetchTasks();
           }}
           className="rounded-lg border border-brand-600 px-4 py-1.5 text-sm text-brand-600 hover:bg-brand-50"
@@ -262,7 +263,7 @@ function LeaderboardTab() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API}/leaderboard?workspace_id=${WS_ID}`);
+        const res = await fetch(`${API}/leaderboard?workspace_id=${readWorkspaceId()}`);
         if (res.ok) setScores(await res.json());
       } catch {
         /* empty */
@@ -334,8 +335,8 @@ function QualityTab() {
     (async () => {
       try {
         const [tRes, aRes] = await Promise.all([
-          fetch(`${API}/quality-trends?workspace_id=${WS_ID}`),
-          fetch(`${API}/agreement?workspace_id=${WS_ID}`),
+          fetch(`${API}/quality-trends?workspace_id=${readWorkspaceId()}`),
+          fetch(`${API}/agreement?workspace_id=${readWorkspaceId()}`),
         ]);
         if (tRes.ok) setTrends(await tRes.json());
         if (aRes.ok) setAgreement(await aRes.json());

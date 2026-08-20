@@ -1,5 +1,8 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useCallback, useEffect, useState } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -7,7 +10,7 @@ import BracketView, {
   MatchupRound,
 } from "@/components/evaluation/BracketView";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,7 +92,7 @@ export default function TournamentTab() {
   const fetchModels = useCallback(async () => {
     try {
       const res = await fetch(
-        `${API}/api/registry/models?workspace_id=00000000-0000-0000-0000-000000000001`,
+        `${API}/api/registry/models?workspace_id=${readWorkspaceId() ?? ""}`,
       );
       if (!res.ok) throw new Error("failed");
       const data = await res.json();
@@ -118,7 +121,7 @@ export default function TournamentTab() {
   const fetchDatasets = useCallback(async () => {
     try {
       const res = await fetch(
-        `${API}/api/datasets?workspace_id=00000000-0000-0000-0000-000000000001`,
+        `${API}/api/datasets?workspace_id=${readWorkspaceId() ?? ""}`,
       );
       if (!res.ok) throw new Error("failed");
       const data = await res.json();

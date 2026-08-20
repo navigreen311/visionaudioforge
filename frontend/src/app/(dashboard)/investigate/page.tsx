@@ -1,5 +1,7 @@
 "use client";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState, useCallback, useEffect } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
 import EventTimeline from "@/components/investigate/EventTimeline";
@@ -10,10 +12,12 @@ import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
 import { TimelineEventData } from "@/components/investigate/TimelineEvent";
-import axios from "axios";
+// The shared client from lib/api.ts, not the bare axios module: the request
+// interceptor that attaches the session token lives on that instance, so a
+// direct `axios.get` reached the API with no Authorization header and was
+// answered 401. Its baseURL is API_BASE_URL, so paths here are relative.
+import api from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
 
 function getDefaultDateRange() {
   const end = new Date();
@@ -90,7 +94,7 @@ function CommentsSection({ caseId }: { caseId: string }) {
 
   const loadComments = useCallback(async () => {
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/cases/${caseId}/comments`);
+      const resp = await api.get(`/api/investigate/cases/${caseId}/comments`);
       setComments(resp.data);
     } catch {
       setComments([]);
@@ -105,7 +109,7 @@ function CommentsSection({ caseId }: { caseId: string }) {
     if (!newComment.trim()) return;
     setLoading(true);
     try {
-      await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/comments`, {
+      await api.post(`/api/investigate/cases/${caseId}/comments`, {
         user_id: "current-user",
         content: newComment.trim(),
         parent_id: replyTo,
@@ -166,8 +170,8 @@ function ApprovalSection({ caseId }: { caseId: string }) {
 
   const loadApprovals = useCallback(async () => {
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+      const resp = await api.get(`/api/investigate/approvals`, {
+        params: { workspace_id: readWorkspaceId() },
       });
       setApprovals(resp.data.filter((a: ApprovalItem) => a.case_id === caseId));
     } catch {
@@ -182,7 +186,7 @@ function ApprovalSection({ caseId }: { caseId: string }) {
   const handleRequestApproval = async () => {
     if (!approverId.trim() || !reason.trim()) return;
     try {
-      await axios.post(`${API_BASE}/api/investigate/cases/${caseId}/approval`, {
+      await api.post(`/api/investigate/cases/${caseId}/approval`, {
         user_id: "current-user",
         approver_id: approverId.trim(),
         reason: reason.trim(),
@@ -198,7 +202,7 @@ function ApprovalSection({ caseId }: { caseId: string }) {
 
   const handleProcess = async (approvalId: string, decision: string) => {
     try {
-      await axios.post(`${API_BASE}/api/investigate/approvals/${approvalId}/process`, {
+      await api.post(`/api/investigate/approvals/${approvalId}/process`, {
         user_id: "current-user",
         decision,
       });
@@ -357,7 +361,7 @@ export default function InvestigatePage() {
   // Load comments for report
   const loadReportComments = useCallback(async (caseId: string) => {
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/cases/${caseId}/comments`);
+      const resp = await api.get(`/api/investigate/cases/${caseId}/comments`);
       setReportComments(resp.data);
     } catch {
       setReportComments([]);
@@ -367,8 +371,8 @@ export default function InvestigatePage() {
   // Load approvals for report
   const loadReportApprovals = useCallback(async (caseId: string) => {
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+      const resp = await api.get(`/api/investigate/approvals`, {
+        params: { workspace_id: readWorkspaceId() },
       });
       const filtered = (resp.data as ReportApproval[]).filter((a) => a.case_id === caseId);
       setReportApprovals(filtered);
@@ -381,8 +385,8 @@ export default function InvestigatePage() {
   const loadCases = useCallback(async () => {
     setCasesLoading(true);
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/cases`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+      const resp = await api.get(`/api/investigate/cases`, {
+        params: { workspace_id: readWorkspaceId() },
       });
       setCases(resp.data);
     } catch {
@@ -399,8 +403,8 @@ export default function InvestigatePage() {
       return;
     }
     try {
-      const resp = await axios.get(
-        `${API_BASE}/api/investigate/cases/${selectedCase.id}`
+      const resp = await api.get(
+        `/api/investigate/cases/${selectedCase.id}`
       );
       const data = resp.data;
       setEvents(data.events || []);
@@ -414,9 +418,9 @@ export default function InvestigatePage() {
   // Load workspace-wide timeline
   const loadWorkspaceTimeline = useCallback(async () => {
     try {
-      const resp = await axios.get(`${API_BASE}/api/investigate/timeline`, {
+      const resp = await api.get(`/api/investigate/timeline`, {
         params: {
-          workspace_id: DEFAULT_WORKSPACE_ID,
+          workspace_id: readWorkspaceId(),
           start: new Date(startDate).toISOString(),
           end: new Date(endDate).toISOString(),
         },
@@ -444,10 +448,10 @@ export default function InvestigatePage() {
     if (!newCaseName.trim()) return;
     setCreating(true);
     try {
-      await axios.post(`${API_BASE}/api/investigate/cases`, {
+      await api.post(`/api/investigate/cases`, {
         name: newCaseName.trim(),
         description: newCaseDesc.trim(),
-        workspace_id: DEFAULT_WORKSPACE_ID,
+        workspace_id: readWorkspaceId(),
       });
       setShowNewCase(false);
       setNewCaseName("");
@@ -464,8 +468,8 @@ export default function InvestigatePage() {
   const handleAddNote = async (content: string) => {
     if (!selectedCase) return;
     try {
-      await axios.post(
-        `${API_BASE}/api/investigate/cases/${selectedCase.id}/notes`,
+      await api.post(
+        `/api/investigate/cases/${selectedCase.id}/notes`,
         { user_id: "current-user", content }
       );
       await loadTimeline();
@@ -478,8 +482,8 @@ export default function InvestigatePage() {
   const handlePinToCase = async (eventId: string) => {
     if (!selectedCase) return;
     try {
-      await axios.post(
-        `${API_BASE}/api/investigate/cases/${selectedCase.id}/evidence`,
+      await api.post(
+        `/api/investigate/cases/${selectedCase.id}/evidence`,
         {
           asset_id: eventId,
           notes: "Pinned from timeline",

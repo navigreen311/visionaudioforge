@@ -48,7 +48,7 @@ test.describe("search", () => {
   // home directory in an image that does not give the runtime user one. The
   // fix is an env var (HF_HOME) and a writable path in the image, which this
   // workstream does not own.
-  test.fixme("a query returns results or an explicit empty state", async ({ page }) => {
+  test("a query returns results or an explicit empty state", async ({ page }) => {
     await page.goto("/search");
     await expect(page.getByRole("heading", { name: /cross-modal search/i })).toBeVisible();
 
@@ -111,7 +111,7 @@ test.describe("investigate", () => {
   // So the case is never created and the list stays empty. Even authenticated,
   // it would write into a workspace the operator does not own. The fix is in
   // app/(dashboard)/investigate/page.tsx, which this workstream does not own.
-  test.fixme("a case can be created and evidence attached to it", async ({ page }) => {
+  test("a case can be created and evidence attached to it", async ({ page }) => {
     await page.goto("/investigate");
 
     const caseName = `e2e-case-${Date.now().toString(36)}`;
@@ -145,18 +145,25 @@ test.describe("train", () => {
 });
 
 test.describe("annotate", () => {
-  // The studio cannot load anything to annotate. Seeding works — the dataset
-  // is created and the image uploads into it, both asserted below — but the
-  // listing the page depends on fails:
+  // The console side of this is fixed — the page no longer names a host or a
+  // tenant — but the listing it depends on still fails, and for a reason that
+  // has nothing to do with the client:
   //
   //   GET /api/annotate/assets?workspace_id=...&dataset_id=... -> 500
+  //   asyncpg.exceptions.UndefinedFunctionError:
+  //     could not identify an equality operator for type json
   //
-  // The traceback bottoms out in asyncpg preparing the statement, so the query
-  // behind that route does not match the schema it runs against. With no
-  // assets returned there is no current asset, and AnnotationCanvas is never
-  // rendered — the studio shows "No assets loaded" for a dataset that
-  // demonstrably has an image in it. Backend route; not this workstream's to
-  // fix.
+  //   SELECT DISTINCT assets.type, ..., assets.metadata, ...
+  //   FROM assets LEFT OUTER JOIN annotations ON ...
+  //
+  // `assets.metadata` is a `json` column, and PostgreSQL has no equality
+  // operator for `json` — which SELECT DISTINCT requires to deduplicate rows.
+  // The join makes the DISTINCT necessary, so the query cannot work as
+  // written; it needs jsonb, or an EXISTS subquery instead of the join.
+  // Backend route, not this workstream's to change.
+  //
+  // Seeding still passes below, so the dataset and its image demonstrably
+  // exist: the studio shows "No assets loaded" for a dataset that has one.
   test.fixme("an asset in a dataset opens on the annotation canvas", async ({ page, request }) => {
     // The studio has no upload of its own: it annotates assets that already
     // belong to a dataset, so the dataset and its image are seeded through the
@@ -220,7 +227,7 @@ test.describe("audio", () => {
   // NUMBA_CACHE_DIR pointed at a writable path, librosa decodes normally. The
   // fix is one env var in the image; this workstream owns no backend or Docker
   // file, so both journeys stay named rather than weakened.
-  test.fixme("an uploaded clip comes back analysed", async ({ page }) => {
+  test("an uploaded clip comes back analysed", async ({ page }) => {
     await page.goto("/audio");
     await expect(page.getByRole("heading", { name: /audio analysis/i })).toBeVisible();
 
@@ -233,11 +240,29 @@ test.describe("audio", () => {
     ).toBeVisible({ timeout: 60_000 });
   });
 
+  // The product defect this found is fixed in this branch: the studio built
+  // its operations as `{ name, params }` while AudioTransformService reads
+  // `step.get("op")`, so every transform the console sent arrived with no
+  // operation and failed with 500 "Unknown transform op: ". The interface
+  // declared `name` too, which is why the code looked right. Verified against
+  // the API that `{ op: "denoise" }` returns 200 with audio.
+  //
+  // Still fixme because this test does not yet reach the control: "Noise
+  // Reduction" sits inside a collapsed section, and buildOperations() returns
+  // an empty list until something is enabled, so the studio sends nothing. A
+  // gap in the test, not in the product — named rather than deleted, so the
+  // coverage owed here stays visible.
   test.fixme("an audio transform returns processed audio", async ({ page }) => {
     await page.goto("/transform");
     await expect(page.getByRole("heading", { name: /transform studio/i })).toBeVisible();
 
     await upload(page, "e2e-transform.wav", "audio/wav", wavBytes());
+
+    // An operation has to be chosen first: buildOperations() returns an empty
+    // list otherwise and the studio refuses to send anything, so a test that
+    // only clicks Transform proves nothing.
+    await page.getByText(/noise reduction/i).first().click();
+
     await page.getByRole("button", { name: /apply|transform|run/i }).first().click();
 
     await expect(

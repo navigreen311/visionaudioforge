@@ -1,5 +1,7 @@
 "use client";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import ModelRegistryTable from "@/components/train/ModelRegistryTable";
@@ -13,7 +15,6 @@ import ModelCompareModal from "@/components/train/ModelCompareModal";
 import type { ModelRecord } from "@/lib/api";
 
 // ASSUMPTION: workspace_id comes from context/auth in real app. Placeholder for now.
-const WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
 
 // ---------------------------------------------------------------------------
 // Adapter: ModelItem (from table) -> ModelRecord (used by detail/compare)
@@ -82,7 +83,7 @@ function ModelsTab() {
       </div>
 
       <ModelRegistryTable
-        workspaceId={WORKSPACE_ID}
+        workspaceId={readWorkspaceId() ?? ""}
         onRegisterClick={() => setShowRegister(true)}
         refreshKey={refreshKey}
         onViewDetail={handleViewDetail}
@@ -93,7 +94,7 @@ function ModelsTab() {
         isOpen={showRegister}
         onClose={() => setShowRegister(false)}
         onRegistered={() => setRefreshKey((k) => k + 1)}
-        workspaceId={WORKSPACE_ID}
+        workspaceId={readWorkspaceId() ?? ""}
       />
 
       <FineTuneWizard

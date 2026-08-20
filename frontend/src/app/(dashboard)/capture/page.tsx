@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL, wsBaseUrl } from "@/lib/api";
+
 import { useState, useRef, useCallback, useEffect } from "react";
 import SourceSwitcher, {
   type SourceType,
@@ -52,7 +54,7 @@ interface RTSPInfo {
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 export default function CapturePage() {
   const [activeSource, setActiveSource] = useState<SourceType>("camera");
@@ -123,7 +125,7 @@ export default function CapturePage() {
   const connectWebSocket = useCallback(() => {
     const sessionId = crypto.randomUUID();
     const wsUrl =
-      process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000";
+      wsBaseUrl();
     // The handshake is authenticated like every other request; a browser
     // WebSocket cannot send an Authorization header, so the token rides in the
     // query string. Read here rather than at module scope so it is the token

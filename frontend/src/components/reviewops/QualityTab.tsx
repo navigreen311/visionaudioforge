@@ -1,10 +1,12 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useEffect, useCallback } from "react";
 import Card from "@/components/ui/Card";
 import ConfusionMatrixHeatmap from "./ConfusionMatrixHeatmap";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

@@ -1611,3 +1611,31 @@ export async function revokeAPIKey(keyId: string): Promise<void> {
   });
 }
 
+
+/**
+ * Where the WebSocket endpoints live.
+ *
+ * Derived from the page's own origin rather than named, for the same reason
+ * `API_BASE_URL` defaults to same-origin in the container: nginx serves the
+ * console and proxies `/ws`, so the socket belongs on whatever origin the
+ * browser is already on. Pages used to write `ws://localhost:8000` themselves,
+ * which connects only on a developer machine with the API port published.
+ *
+ * `NEXT_PUBLIC_WS_URL` still overrides it, and an explicit `NEXT_PUBLIC_API_URL`
+ * is honoured next, so a split deployment can still point the socket elsewhere.
+ */
+export function wsBaseUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_WS_URL;
+  if (configured) return configured.replace(/^http/, "ws").replace(/\/+$/, "");
+
+  if (API_BASE_URL) {
+    return API_BASE_URL.replace(/^http/, "ws").replace(/\/+$/, "");
+  }
+
+  if (typeof window !== "undefined") {
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${scheme}//${window.location.host}`;
+  }
+
+  return "";
+}

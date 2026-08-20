@@ -1,5 +1,8 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import { useState, useEffect, useCallback, useMemo } from "react";
 import GraphCanvas, {
   GraphNode,
@@ -24,7 +27,7 @@ import GraphMinimap, {
 // API helpers
 // ---------------------------------------------------------------------------
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 async function fetchGraphContext(
   query: string,
@@ -162,7 +165,7 @@ export default function KnowledgeGraphPage() {
       setLoading(true);
       setError(null);
       try {
-        const workspaceId = "00000000-0000-0000-0000-000000000001";
+        const workspaceId = readWorkspaceId() ?? "";
         const contextData = await fetchGraphContext(term, workspaceId);
 
         if (contextData.nodes.length > 0) {

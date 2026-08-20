@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useMemo, useCallback } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -8,7 +10,7 @@ import ROCCurveChart from "./ROCCurveChart";
 import type { PRPoint } from "./PRCurveChart";
 import type { ROCPoint } from "./ROCCurveChart";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

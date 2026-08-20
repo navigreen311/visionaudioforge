@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 
 export interface EndpointDef {
   method: "GET" | "POST" | "PATCH" | "DELETE";
@@ -31,7 +31,7 @@ function statusColor(code: number) {
 }
 
 function generateCurl(endpoint: EndpointDef, body: string): string {
-  const base = "http://localhost:8000";
+  const base = API_BASE_URL;
   const url = `${base}${endpoint.path}`;
   if (endpoint.method === "GET") {
     return `curl -X GET "${url}" \\\n  -H "Authorization: Bearer <token>"`;
@@ -40,7 +40,7 @@ function generateCurl(endpoint: EndpointDef, body: string): string {
 }
 
 function generatePython(endpoint: EndpointDef, body: string): string {
-  const base = "http://localhost:8000";
+  const base = API_BASE_URL;
   const url = `${base}${endpoint.path}`;
   if (endpoint.method === "GET") {
     return `import requests\n\nresponse = requests.get(\n    "${url}",\n    headers={"Authorization": "Bearer <token>"}\n)\nprint(response.json())`;
@@ -49,7 +49,7 @@ function generatePython(endpoint: EndpointDef, body: string): string {
 }
 
 function generateJavaScript(endpoint: EndpointDef, body: string): string {
-  const base = "http://localhost:8000";
+  const base = API_BASE_URL;
   const url = `${base}${endpoint.path}`;
   if (endpoint.method === "GET") {
     return `const res = await fetch("${url}", {\n  headers: { "Authorization": "Bearer <token>" }\n});\nconst data = await res.json();\nconsole.log(data);`;

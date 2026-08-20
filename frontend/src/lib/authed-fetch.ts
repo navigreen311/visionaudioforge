@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "@/lib/api";
+
 /**
  * Attach the session token to bare `fetch` calls aimed at our own API.
  *
@@ -28,7 +30,6 @@
  * - a no-op on the server, where there is no `window` and no session.
  */
 
-import { API_BASE_URL } from "@/lib/api";
 import { readAccessToken } from "@/lib/session";
 
 const INSTALLED = Symbol.for("vaf.authedFetchInstalled");

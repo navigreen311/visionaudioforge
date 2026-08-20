@@ -1,10 +1,12 @@
+import { wsBaseUrl } from "@/lib/api";
+
 import { io, Socket } from "socket.io-client";
 
 let socket: Socket | null = null;
 
 export function getSocket(): Socket {
   if (!socket) {
-    socket = io(process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws", {
+    socket = io(`${wsBaseUrl()}/ws`, {
       autoConnect: false,
       transports: ["websocket"],
     });

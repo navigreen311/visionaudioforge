@@ -1,7 +1,12 @@
 "use client";
 
+
 import { useState, useCallback } from "react";
-import axios from "axios";
+// The shared client from lib/api.ts, not the bare axios module: the request
+// interceptor that attaches the session token lives on that instance, so a
+// direct `axios.get` reached the API with no Authorization header and was
+// answered 401. Its baseURL is API_BASE_URL, so paths here are relative.
+import api from "@/lib/api";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
 
@@ -27,7 +32,6 @@ interface FormState {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const BACKBONES = [
   "ResNet18",
@@ -152,7 +156,7 @@ export default function RegisterModelModal({
     setSubmitting(true);
     setError(null);
     try {
-      await axios.post(`${API_BASE}/api/registry/register`, {
+      await api.post(`/api/registry/register`, {
         name: form.name.trim(),
         version: form.version.trim(),
         backbone: form.backbone || null,

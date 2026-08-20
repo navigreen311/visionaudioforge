@@ -1,5 +1,7 @@
 'use client';
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import type { GraphNode, GraphEdge } from './GraphCanvas';
 
@@ -126,7 +128,7 @@ function NodeSelector({ label, nodes, value, onChange }: NodeSelectorProps) {
 // PathFinder Component
 // ---------------------------------------------------------------------------
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 export default function PathFinder({
   nodes,

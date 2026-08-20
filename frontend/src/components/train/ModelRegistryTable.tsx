@@ -1,7 +1,12 @@
 "use client";
 
+
 import { useState, useEffect, useCallback, useRef } from "react";
-import axios from "axios";
+// The shared client from lib/api.ts, not the bare axios module: the request
+// interceptor that attaches the session token lives on that instance, so a
+// direct `axios.get` reached the API with no Authorization header and was
+// answered 401. Its baseURL is API_BASE_URL, so paths here are relative.
+import api from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,7 +46,6 @@ export type { ModelItem };
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 const STATUS_STYLES: Record<string, string> = {
   registered: "bg-gray-100 text-gray-700",
@@ -182,8 +186,8 @@ export default function ModelRegistryTable({
     try {
       const params = new URLSearchParams({ workspace_id: workspaceId });
       if (statusFilter) params.set("status", statusFilter);
-      const resp = await axios.get<PaginatedModels>(
-        `${API_BASE}/api/registry/models?${params.toString()}`
+      const resp = await api.get<PaginatedModels>(
+        `/api/registry/models?${params.toString()}`
       );
       setModels(resp.data.items || []);
     } catch (err) {
@@ -203,7 +207,7 @@ export default function ModelRegistryTable({
     switch (action) {
       case "archive":
         try {
-          await axios.put(`${API_BASE}/api/registry/models/${model.id}/status`, {
+          await api.put(`/api/registry/models/${model.id}/status`, {
             status: "archived",
           });
           fetchModels();
@@ -213,7 +217,7 @@ export default function ModelRegistryTable({
         break;
       case "promote":
         try {
-          await axios.put(`${API_BASE}/api/registry/models/${model.id}/status`, {
+          await api.put(`/api/registry/models/${model.id}/status`, {
             status: "production",
           });
           fetchModels();

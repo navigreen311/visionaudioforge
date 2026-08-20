@@ -1,9 +1,11 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useCallback } from "react";
 import LatencyHistogram from "./LatencyHistogram";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 const FORMATS = ["onnx", "tensorrt", "tflite", "coreml", "openvino"] as const;
 type Format = (typeof FORMATS)[number];

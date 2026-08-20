@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState, useEffect, useCallback } from "react";
 
 // ---------------------------------------------------------------------------
@@ -35,7 +37,7 @@ interface ResolvePayload {
 // API helpers
 // ---------------------------------------------------------------------------
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 async function fetchConflicts(): Promise<MemoryConflict[]> {
   const res = await fetch(`${API_BASE}/api/memory/conflicts`);

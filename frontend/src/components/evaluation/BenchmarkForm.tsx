@@ -1,10 +1,13 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState, useEffect, useCallback } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,9 +139,7 @@ export default function BenchmarkForm({ onResults }: BenchmarkFormProps) {
   const loadDatasets = useCallback(async () => {
     setDatasetsLoading(true);
     try {
-      const workspaceId =
-        (typeof window !== "undefined" && localStorage.getItem("workspace_id")) ||
-        "00000000-0000-0000-0000-000000000001";
+      const workspaceId = readWorkspaceId() ?? "";
       const res = await fetch(
         `${API}/api/datasets?workspace_id=${workspaceId}&limit=100`
       );
@@ -167,9 +168,7 @@ export default function BenchmarkForm({ onResults }: BenchmarkFormProps) {
   const loadModels = useCallback(async () => {
     setModelsLoading(true);
     try {
-      const workspaceId =
-        (typeof window !== "undefined" && localStorage.getItem("workspace_id")) ||
-        "00000000-0000-0000-0000-000000000001";
+      const workspaceId = readWorkspaceId() ?? "";
       const res = await fetch(
         `${API}/api/registry/models?workspace_id=${workspaceId}&limit=100`
       );
@@ -251,9 +250,7 @@ export default function BenchmarkForm({ onResults }: BenchmarkFormProps) {
       return;
     }
 
-    const workspaceId =
-      (typeof window !== "undefined" && localStorage.getItem("workspace_id")) ||
-      "00000000-0000-0000-0000-000000000001";
+    const workspaceId = readWorkspaceId() ?? "";
 
     setSubmitting(true);
     setProgress(10);

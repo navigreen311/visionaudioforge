@@ -1,5 +1,7 @@
 'use client';
 
+import { readWorkspaceId } from "@/lib/session";
+
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ShiftScheduleGrid from './ShiftScheduleGrid';
 
@@ -59,7 +61,6 @@ interface CreateShiftForm {
 // ------------------------------------------------------------------
 
 const API = '/api/reviewops';
-const WS_ID = '00000000-0000-0000-0000-000000000001';
 
 const MOCK_REVIEWERS = [
   { id: 'r-001', name: 'Alice M.' },
@@ -391,7 +392,7 @@ export default function ShiftsTab() {
 
   const fetchShifts = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/shifts?workspace_id=${WS_ID}`);
+      const res = await fetch(`${API}/shifts?workspace_id=${readWorkspaceId()}`);
       if (res.ok) {
         const data: ShiftPayload[] = await res.json();
         // Map API response into active shift + history
@@ -453,7 +454,7 @@ export default function ShiftsTab() {
         : slotTimes[form.time_slot];
 
     try {
-      await fetch(`${API}/shifts?workspace_id=${WS_ID}`, {
+      await fetch(`${API}/shifts?workspace_id=${readWorkspaceId()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

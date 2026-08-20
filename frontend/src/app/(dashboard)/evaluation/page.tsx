@@ -1,12 +1,15 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import ThresholdTuningTab from "@/components/evaluation/ThresholdTuningTab";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -51,7 +54,7 @@ function BenchmarksTab() {
   const [datasetId, setDatasetId] = useState("dataset-001");
   const [modelIdsRaw, setModelIdsRaw] = useState("model-a, model-b, model-c");
   const [metricsRaw, setMetricsRaw] = useState("accuracy, precision, recall, f1");
-  const [workspaceId, setWorkspaceId] = useState("00000000-0000-0000-0000-000000000001");
+  const [workspaceId, setWorkspaceId] = useState(readWorkspaceId() ?? "");
   const [benchmarkId, setBenchmarkId] = useState<string | null>(null);
   const [benchmarkResults, setBenchmarkResults] = useState<BenchmarkResult | null>(null);
   const [scorecard, setScorecard] = useState<ScorecardData | null>(null);

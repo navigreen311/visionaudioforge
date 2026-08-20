@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useCallback, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ */
@@ -49,7 +51,7 @@ const STYLE_PRESETS = ["sketch", "edges", "cartoon", "oil_painting"] as const;
 const COLOR_PRESETS = ["cinematic", "vintage", "high_contrast", "bw_dramatic"] as const;
 const ASPECTS = ["16:9", "4:3", "1:1", "9:16"] as const;
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */

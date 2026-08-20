@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useCallback, useRef } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
@@ -10,7 +12,7 @@ import SimulationProgress from "@/components/simulation/SimulationProgress";
 import SimulationEventFeed, { type SimulationEvent } from "@/components/simulation/SimulationEventFeed";
 import SimulationResults, { type SimulationResultData } from "@/components/simulation/SimulationResults";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types (existing tabs)

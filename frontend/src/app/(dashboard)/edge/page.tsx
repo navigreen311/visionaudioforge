@@ -1,11 +1,13 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState } from "react";
 import ExportHistory from "@/components/edge/ExportHistory";
 import DeviceFleet from "@/components/edge/DeviceFleet";
 import RegisterDeviceModal from "@/components/edge/RegisterDeviceModal";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 const ALL_FORMATS = [
   { id: "onnx", label: "ONNX", available: true },

@@ -6,7 +6,7 @@ import dynamic from "next/dynamic";
 import CopilotChat from "@/components/agents/CopilotChat";
 import MemoryPanel from "@/components/agents/MemoryPanel";
 import SkillPackSwitcher from "@/components/agents/SkillPackSwitcher";
-import api from "@/lib/api";
+import api, { wsBaseUrl } from "@/lib/api";
 
 // Dynamic imports for future agent panels (AG3+)
 const PatrolModePanel = dynamic(
@@ -79,8 +79,7 @@ interface HistoryMessage {
 // The `||` fallback used to be dead code: `+` binds tighter than `||`, so with
 // NEXT_PUBLIC_WS_URL unset this evaluated to the string
 // "undefined/ws/agents/stream", which is truthy.
-const WS_HOST = process.env.NEXT_PUBLIC_WS_URL?.replace(/^http/, "ws") ?? "ws://localhost:8000";
-const WS_URL = `${WS_HOST}/ws/agents/stream`;
+const WS_URL = `${wsBaseUrl()}/ws/agents/stream`;
 
 export default function AgentsPage() {
   const searchParams = useSearchParams();

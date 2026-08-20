@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useCallback, useEffect } from "react";
 import Button from "@/components/ui/Button";
 import Badge from "@/components/ui/Badge";
@@ -40,7 +42,7 @@ interface ReportTabProps {
 
 type CaseEvent = TimelineEventData;
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 const STORAGE_KEY_PREFIX = "vaf_report_draft_";
 
 // ---------------------------------------------------------------------------
