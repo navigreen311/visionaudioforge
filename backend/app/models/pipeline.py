@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
 
@@ -18,6 +18,11 @@ class Pipeline(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "pipelines"
 
     name = Column(String(200), nullable=False)
+    # PipelineCreate accepts a description and PipelineRead promises one on
+    # every read, but the column did not exist — so both write routes raised
+    # TypeError and answered 500, and no pipeline could be saved by any client.
+    # Nullable: the console's save sends only name and definition.
+    description = Column(Text, nullable=True)
     version = Column(String(50), nullable=False, default="1.0")
     definition = Column(JSON, nullable=False, default=dict)
     status = Column(String(50), nullable=False, default="draft")
