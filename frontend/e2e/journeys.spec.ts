@@ -61,24 +61,24 @@ test.describe("pipeline", () => {
   //
   // Two defects behind this one now, neither in this suite's reach:
   //
-  // 1. The console throws the wiring away and makes up new wiring.
-  //    `loadDefinitionToCanvas` maps each edge to {id, source, target},
-  //    dropping from_port/to_port, and `buildDefinition` then re-emits every
-  //    edge as from_port "output" -> to_port "input". Those port names do not
-  //    exist on these nodes, so saving a freshly loaded template returns:
+  // Two defects stacked here, both now fixed. They had to be fixed together:
+  // curing either alone moved this test from one error to the other.
+  //
+  // 1. The console threw the wiring away and made up new wiring.
+  //    `loadDefinitionToCanvas` mapped each edge to {id, source, target},
+  //    dropping from_port/to_port, and `buildDefinition` re-emitted every edge
+  //    as "output" -> "input". Those ports do not exist on these nodes, so a
+  //    template loaded and saved unchanged returned
   //      422 Node 'normalize_1' (normalize) missing required param 'image'
-  //    which is the original error arriving from a new cause. The fix belongs
-  //    in app/(dashboard)/pipeline/page.tsx, which this workstream does not own.
+  //    The ports now round-trip through React Flow's sourceHandle/targetHandle.
   //
-  // 2. Saving is broken underneath that anyway. Both persistence routes build
-  //    the ORM object with a column the model does not have:
-  //      500 TypeError: 'description' is an invalid keyword argument for Pipeline
-  //    A one-node definition with a real workspace_id reproduces it on
-  //    /api/pipeline/create and /api/pipeline/save alike, so no pipeline can be
-  //    persisted by any client.
+  // 2. Saving was broken underneath that anyway: both persistence routes built
+  //    the ORM object with a `description` column the model did not have, so
+  //    each answered 500. Migration 026 adds it.
   //
-  // Fixing 1 alone would move this test from 422 to 500, not to green.
-  test.fixme("a template can be loaded, saved and run", async ({ page }) => {
+  // Note the templates themselves were never at fault — all ten validate as
+  // shipped, which backend/tests/test_pipeline_persistence.py now asserts.
+  test("a template can be loaded, saved and run", async ({ page }) => {
     await page.goto("/pipeline");
 
     // Building a graph by dragging React Flow nodes is brittle to automate and
@@ -113,7 +113,12 @@ test.describe("pipeline", () => {
     ).toBeLessThan(300);
 
     // A run that started must reach a terminal state the operator can see.
-    await page.getByRole("button", { name: /run history/i }).click();
+    //
+    // No click here: "Run History" is an always-rendered <h4> in the right-hand
+    // panel, not a button, so getByRole("button", { name: /run history/i })
+    // could never resolve and the test timed out waiting for it. The assertion
+    // that carries the weight is the one below — the panel showing a real run
+    // state — and that is unchanged.
     await expect(
       page.getByText(/completed|failed|running|pending|queued/i).first(),
     ).toBeVisible({ timeout: 30_000 });
