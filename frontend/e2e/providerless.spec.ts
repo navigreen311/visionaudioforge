@@ -79,23 +79,29 @@ test.describe("endpoints with no provider configured", () => {
     ).toBe(false);
   });
 
-  // Speech translation is the third providerless endpoint, and the one this
-  // suite cannot currently reach. It decodes the upload with librosa before it
-  // can report that no translation provider is configured, and that decode
-  // fails inside the shipped container:
+  // Speech translation is the third providerless endpoint. It decodes the
+  // upload with librosa before it can report that no translation provider is
+  // configured, and that decode used to fail inside the shipped container:
   //
   //   400 {"detail":"Could not decode audio file: cannot cache function
   //   '__o_fold': no locator available for file
   //   '/usr/local/lib/python3.11/site-packages/librosa/core/notation.py'"}
   //
-  // The container runs as non-root `appuser`, site-packages is not writable,
-  // and NUMBA_CACHE_DIR is unset, so numba tries to cache beside the library
-  // and raises. It is not specific to translation: /api/audio/analyze and
-  // /api/transform/audio fail identically, so every audio decode in the
-  // deployed stack is down. Setting NUMBA_CACHE_DIR to a writable path fixes
-  // it — verified inside the running container — but that is a Dockerfile
-  // change, not a test change, so this stays named rather than weakened.
-  test.fixme("speech translation reports that no provider is configured", async ({ request }) => {
+  // The image ran as non-root `appuser` with no writable home and no
+  // NUMBA_CACHE_DIR, so numba tried to cache beside a read-only site-packages
+  // and raised. Every audio decode in the deployed stack was down, not just
+  // this endpoint.
+  //
+  // It passes now, so it is a real test again rather than a fixme. Which
+  // change fixed it is not something this file should overclaim: on the
+  // pinned numba (0.67.0) the decode also succeeds with NUMBA_CACHE_DIR
+  // unset, so the original error appears to have been resolved by a numba
+  // upgrade rather than by the Dockerfile. backend/Dockerfile now gives
+  // appuser a writable home and an explicit NUMBA_CACHE_DIR regardless,
+  // which is what keeps a future numba from reaching for site-packages
+  // again. If this ever reverts to failing, the cache path is the first
+  // thing to check and scripts/smoke-stack.sh asserts it independently.
+  test("speech translation reports that no provider is configured", async ({ request }) => {
     const response = await request.post("/api/audio/translate", {
       headers: authHeader(),
       multipart: {
