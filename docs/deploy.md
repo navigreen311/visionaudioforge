@@ -241,8 +241,8 @@ exercises code that never enters the image — neither failure above was ever
 visible to it. The smoke job is what makes them visible:
 
 ```bash
-./scripts/smoke-stack.sh          # full stack, 30 assertions
-./scripts/smoke-stack.sh --core   # skip nginx and frontend, 24 assertions
+./scripts/smoke-stack.sh          # full stack
+./scripts/smoke-stack.sh --core   # skip nginx and frontend
 ```
 
 It decodes a WAV through `POST /api/audio/analyze` and embeds a query through

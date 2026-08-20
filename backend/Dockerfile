@@ -52,14 +52,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-COPY requirements.txt .
-COPY app/ ./app/
-# Migrations were never copied into the image, so `alembic upgrade head` could
-# not run in a container even though six migrations existed. The compose
-# `migrate` service runs exactly this.
-COPY alembic/ ./alembic/
-COPY alembic.ini .
-
 # The runtime user needs a home it can write to. `useradd --system` without
 # --create-home left /home/appuser non-existent, and two library families
 # assume a writable home and fail without one:
@@ -121,6 +113,22 @@ RUN python -c "from transformers import CLIPModel, CLIPProcessor; \
 n='openai/clip-vit-base-patch32'; \
 CLIPModel.from_pretrained(n, use_safetensors=True); \
 CLIPProcessor.from_pretrained(n); print('CLIP weights baked')"
+
+# The source COPYs come *after* the bake on purpose. Docker invalidates every
+# layer below a changed one, so with `COPY app/` above it any backend edit
+# re-ran the bake and re-downloaded 609 MB — on every CI push that touched a
+# route. Below it, the bake depends only on site-packages, so it survives
+# application changes and is paid again only when a dependency moves.
+#
+# --chown because this stage already switched to appuser: COPY would otherwise
+# write root-owned files that the running process cannot replace.
+COPY --chown=appuser:appuser requirements.txt .
+COPY --chown=appuser:appuser app/ ./app/
+# Migrations were never copied into the image, so `alembic upgrade head` could
+# not run in a container even though six migrations existed. The compose
+# `migrate` service runs exactly this.
+COPY --chown=appuser:appuser alembic/ ./alembic/
+COPY --chown=appuser:appuser alembic.ini .
 
 EXPOSE 8000
 
