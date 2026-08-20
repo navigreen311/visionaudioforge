@@ -153,6 +153,25 @@ async def _resolve_chat_agent(db: AsyncSession, agent_id: str | None) -> Agent |
     return agent
 
 
+
+def _agent_uuid(agent_id: str) -> uuid.UUID:
+    """Parse an agent id, or 404.
+
+    The console's agents page opens with `agentId = "default-agent"` and calls
+    /memory and /patrol/report with it before the operator has picked anything.
+    These routes take `agent_id: str` and pass it to a UUID column, so asyncpg
+    raised `invalid UUID 'default-agent'` and FastAPI returned 500 - a driver
+    error for what is simply a request for an agent that does not exist.
+
+    404 is the honest answer, and it lets the console show "no agent selected"
+    instead of an error boundary.
+    """
+    try:
+        return uuid.UUID(agent_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id!r} not found")
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def agent_chat(
     body: ChatRequest,
@@ -497,10 +516,7 @@ async def get_agent(
     plausible-looking record, so the console could show an agent that does not
     exist and let an operator act on it.
     """
-    try:
-        agent_uuid = uuid.UUID(agent_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Agent not found") from None
+    agent_uuid = _agent_uuid(agent_id)
 
     agent = (
         await db.execute(select(Agent).where(Agent.id == agent_uuid))
@@ -523,7 +539,7 @@ async def list_memories(
     db: AsyncSession = Depends(get_db),
 ):
     """List memories for a given agent."""
-    memories = await memory_service.recall(db, agent_id, k=50)
+    memories = await memory_service.recall(db, _agent_uuid(agent_id), k=50)
     return [
         {
             "id": str(m.id),
@@ -542,7 +558,7 @@ async def trigger_memory_decay(
     db: AsyncSession = Depends(get_db),
 ):
     """Trigger memory decay for an agent."""
-    count = await memory_service.decay_memories(db, agent_id)
+    count = await memory_service.decay_memories(db, _agent_uuid(agent_id))
     return {"agent_id": agent_id, "memories_decayed": count}
 
 

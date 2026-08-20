@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  controlKeyFor,
+  toFormFields,
+  unappliedLabels,
+} from "@/lib/transform-params";
 import { API_BASE_URL } from "@/lib/api";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -16,14 +21,6 @@ const OperationControls = dynamic(
 const ProcessingProgress = dynamic(
   () => import("@/components/transform/ProcessingProgress"),
   { loading: () => null, ssr: false },
-);
-const BatchTransformTab = dynamic(
-  () => import("@/components/transform/BatchTransformTab"),
-  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
-);
-const PresetsTab = dynamic(
-  () => import("@/components/transform/PresetsTab"),
-  { loading: () => <div className="animate-pulse h-40 bg-gray-100 rounded-lg" />, ssr: false },
 );
 const TransformExportPanel = dynamic(
   () => import("@/components/transform/TransformExportPanel"),
@@ -70,9 +67,12 @@ export default function TransformPage() {
   const [meta, setMeta] = useState<Record<string, unknown> | null>(null);
   const [processingTimeMs, setProcessingTimeMs] = useState<number | null>(null);
 
-  // Params emitted by OperationControls (see the TODO at its render site).
+  // Values emitted by the operation panel. These used to be collected and then
+  // dropped with `void operationParams;`, which meant every control in every
+  // panel was decorative. `toFormFields` below folds the ones the endpoint
+  // accepts into the request; `unappliedLabels` names the ones it does not, so
+  // the page says so instead of quietly ignoring them.
   const [operationParams, setOperationParams] = useState<Record<string, unknown>>({});
-  void operationParams;
 
   // Track which dynamic components are available
   const [hasOperationControls, setHasOperationControls] = useState(false);
@@ -188,6 +188,13 @@ export default function TransformPage() {
         form.append("aspect", aspect);
       }
 
+      // The panel's values win over the inline defaults above: it is the control
+      // the operator actually touched. Only fields the endpoint declares are
+      // sent - see lib/transform-params.ts for what each mode forwards.
+      for (const [field, value] of Object.entries(toFormFields(mode, operationParams))) {
+        form.set(field, value);
+      }
+
       const res = await fetch(`${API_BASE}${endpoint}`, { method: "POST", body: form });
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const json = await res.json();
@@ -211,7 +218,7 @@ export default function TransformPage() {
     } finally {
       setLoading(false);
     }
-  }, [srcFile, mode, bgMethod, srScale, stylePreset, aspect, colorGradePreset, subtitleText, subtitlePosition, maskFile, smartCropSize, smartCropMethod, fontScale]);
+  }, [srcFile, mode, operationParams, bgMethod, srScale, stylePreset, aspect, colorGradePreset, subtitleText, subtitlePosition, maskFile, smartCropSize, smartCropMethod, fontScale]);
 
   // ---- run audio transform ----
   const runAudio = useCallback(async () => {
@@ -610,14 +617,25 @@ export default function TransformPage() {
               )}
             </div>
 
-            {/* Placeholder for OperationControls (created by other agents) */}
+            {/* `mode` is kebab-case and CONTROL_MAP is keyed snake_case, so passing
+                it straight through matched nothing and every mode rendered the
+                panel's "No controls available for operation background-remove"
+                fallback. controlKeyFor does the translation, and
+                lib/__tests__/transform-params.test.ts fails if the two lists
+                stop agreeing. */}
             {hasOperationControls ? (
-              // TODO(ws-c): OperationControls emits a generic params bag, but this
-              // page drives requests off the per-mode state below (bgMethod,
-              // srScale, ...). The emitted params are captured but not yet folded
-              // into the request payload — wiring them up is a behavioural change
-              // left to the transform owner.
-              <OperationControls operation={mode} onParamsChange={setOperationParams} />
+              <div className="space-y-2">
+                <OperationControls
+                  operation={controlKeyFor(mode)}
+                  onParamsChange={setOperationParams}
+                />
+                {unappliedLabels(mode, operationParams).length > 0 && (
+                  <p className="text-xs text-gray-500">
+                    Not applied by the server yet:{" "}
+                    {unappliedLabels(mode, operationParams).join(", ")}.
+                  </p>
+                )}
+              </div>
             ) : (
               /* Inline mode-specific options (existing controls) */
               <div className="bg-gray-50 rounded-lg p-4 space-y-3">

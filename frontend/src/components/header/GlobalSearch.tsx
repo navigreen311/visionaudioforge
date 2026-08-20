@@ -97,8 +97,6 @@ export default function GlobalSearch() {
     navigate(`/search?q=${encodeURIComponent(query)}`);
   }, [navigate, query]);
 
-  // suppress unused-var lint for loading (used for future loading indicator)
-  void loading;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (!open) return;
@@ -158,6 +156,7 @@ export default function GlobalSearch() {
         <SearchResultsDropdown
           results={results}
           query={query}
+          loading={loading}
           highlightIndex={highlightIndex}
           onSelect={navigate}
           onSeeAll={handleSeeAll}

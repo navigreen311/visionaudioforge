@@ -19,7 +19,8 @@ interface Message {
 }
 
 interface CopilotChatProps {
-  agentId: string;
+  /** Null until the page has resolved a real agent from /api/agents. */
+  agentId: string | null;
   skillPack: string;
   /**
    * WebSocket base URL — used for WS-based streaming (legacy).
@@ -521,7 +522,7 @@ export default function CopilotChat({
             toolInput={msg.toolInput}
             toolResult={msg.toolResult}
             messageId={msg.id}
-            agentId={agentId}
+            agentId={agentId ?? undefined}
             onRegenerate={handleRegenerate}
           />
         ))}

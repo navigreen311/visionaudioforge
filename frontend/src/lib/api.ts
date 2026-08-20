@@ -360,9 +360,18 @@ export interface AudioAnalysisResult {
 
 /**
  * A single augmentation step, mirroring the backend `AugmentationStep` schema
- * (backend/app/schemas/audio.py). `type` selects the augmenter method — the
- * server dispatches on "noise" | "stretch" | "pitch" | "shift" — and `params`
- * is forwarded to that method as keyword arguments.
+ * (backend/app/schemas/audio.py).
+ *
+ * `type` names an augmentation. The accepted set is the `_ALIASES` table in
+ * backend/app/services/audio/augmentation.py: "noise", "white_noise",
+ * "pink_noise", "brown_noise", "stretch", "time_stretch", "pitch",
+ * "pitch_shift", "shift", "time_shift", "freq_mask", "frequency_mask" and
+ * "time_mask". `params` is normalised to the underlying method's keywords, so
+ * both `semitones` and `n_steps` work, as do `shift_pct` and `shift_ms`.
+ *
+ * An unknown name is a 400 listing the ones that work - it used to be a 500
+ * with an empty body, which is how two panels shipped speaking a vocabulary
+ * this server did not accept.
  */
 export interface AugmentationStep {
   type: string;
@@ -1047,6 +1056,92 @@ export async function getAlertStatsSummary(): Promise<AlertStatsSummary> {
   const { data } = await api.get("/api/alerts/stats/summary", {
     params: { workspace_id: getWorkspaceId() },
   });
+  return data;
+}
+
+/**
+ * An alerts incident: alerts grouped by rule and time window.
+ *
+ * Named apart from the command-centre `Incident` below, which is a different
+ * thing with the same word - a case record with a title and an assignee. They
+ * are not interchangeable and merging them silently widened that one's
+ * `severity` from a union to `string`.
+ */
+export interface AlertIncident {
+  incident_id: string;
+  rule_id: string;
+  alert_count: number;
+  severity: string;
+  first_alert_at: string | null;
+  last_alert_at: string | null;
+  alert_ids: string[];
+  status: string;
+}
+
+export interface AlertIncidentTimelineEntry {
+  type: string;
+  timestamp: string | null;
+  data: Record<string, unknown>;
+}
+
+/**
+ * Incidents are alerts grouped by rule and time window, computed server-side.
+ *
+ * `IncidentView` shipped with a `MOCK_INCIDENTS` array and comments reading
+ * "In production: fetch from ...". The endpoints it named all existed - the
+ * component was rendering three invented incidents on the alerts page's
+ * Incidents tab, in production, to whoever opened it.
+ */
+export async function listIncidents(windowMinutes = 30): Promise<{
+  incidents: AlertIncident[];
+  total: number;
+}> {
+  const { data } = await api.get("/api/alerts/incidents", {
+    params: { workspace_id: getWorkspaceId(), window_minutes: windowMinutes },
+  });
+  return data;
+}
+
+export async function getIncidentTimeline(
+  incidentId: string,
+): Promise<{ incident_id: string; timeline: AlertIncidentTimelineEntry[] }> {
+  const { data } = await api.get(`/api/alerts/incidents/${incidentId}/timeline`, {
+    params: { workspace_id: getWorkspaceId() },
+  });
+  return data;
+}
+
+/** Get or create the evidence bundle for an incident. */
+export async function createIncidentBundle(
+  incidentId: string,
+): Promise<Record<string, unknown>> {
+  const { data } = await api.get(`/api/alerts/incidents/${incidentId}/bundle`);
+  return data;
+}
+
+/**
+ * Download an evidence bundle.
+ *
+ * The endpoint answers with a Content-Disposition attachment, so this hands the
+ * blob to the browser rather than returning it - the caller has nothing useful
+ * to do with the bytes.
+ */
+export async function exportEvidenceBundle(bundleId: string): Promise<void> {
+  const response = await api.get(`/api/alerts/bundles/${bundleId}/export`, {
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(response.data as Blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `evidence-bundle-${bundleId}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export async function triggerAutoClip(alertId: string): Promise<Record<string, unknown>> {
+  const { data } = await api.post(`/api/alerts/${alertId}/auto-clip`);
   return data;
 }
 

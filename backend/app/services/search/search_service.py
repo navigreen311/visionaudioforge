@@ -170,9 +170,22 @@ class CrossModalSearchService:
             mel_norm = ((mel_db - mel_db.min()) / (mel_db.max() - mel_db.min() + 1e-8) * 255).astype(np.uint8)
             mel_rgb = np.stack([mel_norm] * 3, axis=-1)
             return mel_rgb
-        except ImportError:
-            logger.warning("librosa/soundfile not available — generating placeholder spectrogram")
-            return np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+        except ImportError as exc:
+            # This used to return `np.random.randint(0, 255, (224, 224, 3))` and
+            # log a warning. The caller embeds whatever comes back and stores it
+            # in the vector index, so a missing dependency quietly filled the
+            # index with embeddings of noise - permanently, and indistinguishably
+            # from real ones. Every later similarity search then ranked against
+            # them. Refusing costs one failed upload; the placeholder cost the
+            # index's trustworthiness with no signal that anything was wrong.
+            logger.error(
+                "cannot build a spectrogram: librosa/soundfile missing (%s)", exc
+            )
+            raise RuntimeError(
+                "Audio embedding requires librosa and soundfile, which are not "
+                "installed. Refusing to index audio rather than store a "
+                "placeholder embedding."
+            ) from exc
 
     async def _store_embedding_record(
         self, asset_id: str, modality: str, vector: np.ndarray

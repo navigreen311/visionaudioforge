@@ -113,22 +113,91 @@ describe("the component tree matches the app", () => {
     ).toEqual([]);
   });
 
-  it("has no `void Component;` lint suppressions", () => {
+  it("has no `void x;` lint suppressions", () => {
     const offenders: string[] = [];
 
     for (const { file, text } of sources) {
       if (isTestFile(file)) continue;
-      for (const match of text.matchAll(/^\s*void\s+([A-Z]\w*)\s*;/gm)) {
+      // Deliberately not restricted to capitalised names. The first version of
+      // this test matched /void [A-Z]/ and so reported the component imports it
+      // was written for while missing `void operationParams;` on the transform
+      // page - a whole panel's worth of controls collected into state and
+      // dropped - and `void loading;` in GlobalSearch.
+      //
+      // `void somePromise()` is the accepted floating-promise idiom and is not
+      // this defect: it discards a return value, not a binding.
+      for (const match of text.matchAll(/^\s*void\s+(\w+)\s*;/gm)) {
         offenders.push(`${match[1]}  (${posix(path.relative(SRC, file))})`);
       }
     }
 
     expect(
       offenders,
-      "`void Component;` silences the unused-variable warning for an import that " +
-        "is never rendered, which makes the tree look wired when it is not. " +
-        "Render it or remove the import:\n  " +
+      "`void x;` silences the unused-variable warning for a value that is never " +
+        "used, which makes the code look wired when it is not. Use it or remove " +
+        "it:\n  " +
         offenders.join("\n  "),
     ).toEqual([]);
   });
+
+  it("uses every component it imports", () => {
+    // The import rule above cannot see this case: `AudioTransformStudio`,
+    // `BatchTransformTab` and `PresetsTab` were all imported by a page that
+    // then never rendered them - 2,077 lines that passed the "someone imports
+    // it" bar and still never ran. An e2e journey was written against one of
+    // them, and sat `fixme` for a round describing controls on no page.
+    //
+    // A binding that appears in neither JSX nor any value position cannot be
+    // rendered by any path, so it is the same defect as an unimported file.
+    // Value position matters: `OperationControls` renders its children from a
+    // lookup table (`background_remove: BackgroundRemoveControls`), so requiring
+    // JSX would wrongly condemn ten working panels - which it did, once.
+    const unused: string[] = [];
+
+    for (const { file, text } of sources) {
+      if (isTestFile(file)) continue;
+
+      const bindings = new Map<string, string>();
+
+      for (const m of text.matchAll(
+        /import\s+(?:(\w+)|\{([^}]*)\})\s+from\s+["\']([^"\']*components[^"\']*)["\']/g,
+      )) {
+        if (m[1]) bindings.set(m[1], m[3]);
+        else
+          for (const raw of m[2].split(",")) {
+            const name = raw.trim().split(" as ").pop()!.trim();
+            if (name && /^[A-Z]/.test(name)) bindings.set(name, m[3]);
+          }
+      }
+
+      for (const m of text.matchAll(
+        /const\s+(\w+)\s*=\s*dynamic\(\s*\(\)\s*=>\s*import\(\s*["\']([^"\']*components[^"\']*)["\']/g,
+      )) {
+        bindings.set(m[1], m[2]);
+      }
+
+      for (const [name, module] of bindings) {
+        if (!/^[A-Z]/.test(name) || ALLOWED.has(name)) continue;
+
+        const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const inJsx = new RegExp(`<${esc}[\\s/>]`).test(text);
+        // `X,` in an array, `k: X` in a map, `f(X)` as an argument, `= X` as an
+        // alias - every way a component is passed rather than written.
+        const asValue = new RegExp(`[:=[,(]\\s*${esc}\\s*[,)\\]};\\n]`).test(text);
+
+        if (!inJsx && !asValue) {
+          unused.push(`${name} from "${module}"  (${posix(path.relative(SRC, file))})`);
+        }
+      }
+    }
+
+    expect(
+      unused,
+      "These components are imported and never placed in the tree, so nothing " +
+        "renders them. Render one, delete it, or add it to ALLOWED with a " +
+        "reason:\n  " +
+        unused.join("\n  "),
+    ).toEqual([]);
+  });
+
 });

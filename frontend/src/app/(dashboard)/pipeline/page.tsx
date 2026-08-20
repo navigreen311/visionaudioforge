@@ -276,6 +276,11 @@ export default function PipelinePage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
+        {/* Every route needs one h1 - it is what a screen reader announces on
+            navigation. This shell is full-height by design, so the heading is
+            visually hidden rather than laid out. */}
+      <h1 className="sr-only">Pipeline Builder</h1>
+
       {/* Toolbar */}
       <div className="flex items-center gap-3 px-4 py-2 bg-white border-b border-gray-200">
         <input

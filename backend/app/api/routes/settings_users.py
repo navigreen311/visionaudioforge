@@ -8,6 +8,7 @@ Endpoints:
   POST   /api/settings/users/{id}/resend  — resend pending invite
 """
 
+import logging
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -24,6 +25,58 @@ from app.schemas.settings_users import (
     UpdateRoleResponse,
     WorkspaceUserResponse,
 )
+from app.services.integrations.email import EmailIntegration
+
+
+# ---------------------------------------------------------------------------
+# Invite delivery
+# ---------------------------------------------------------------------------
+
+
+def _invite_email(email: str, workspace_name: str, inviter: str) -> dict[str, str]:
+    """Subject and bodies for an invitation."""
+    subject = f"You have been invited to {workspace_name}"
+    html = (
+        f"<p>{inviter} has invited you to join <strong>{workspace_name}</strong> "
+        f"on the Vision &amp; Audio Forge console.</p>"
+        f"<p>Sign in with <strong>{email}</strong> to set a password and get "
+        f"started.</p>"
+    )
+    text = (
+        f"{inviter} has invited you to join {workspace_name} on the Vision & "
+        f"Audio Forge console.\n\n"
+        f"Sign in with {email} to set a password and get started.\n"
+    )
+    return {"subject": subject, "html": html, "text": text}
+
+
+async def _deliver_invite(email: str, workspace_name: str, inviter: str) -> dict:
+    """Send the invitation and report what happened.
+
+    The two call sites used to carry `# TODO: send invite email` and return
+    success regardless, so an operator saw "Invite sent" for a message that was
+    never composed, let alone delivered. `EmailIntegration.send_email` already
+    handled SMTP, SendGrid and the no-provider case - nothing called it.
+
+    A failure here does not undo the invitation: the user row is real and an
+    administrator can resend. But the response says which happened, because
+    "sent" and "created but not delivered" need different next actions from
+    whoever is reading the screen.
+    """
+    content = _invite_email(email, workspace_name, inviter)
+    try:
+        return await EmailIntegration.send_email(
+            to=email,
+            subject=content["subject"],
+            body_html=content["html"],
+            body_text=content["text"],
+        )
+    except Exception as exc:  # noqa: BLE001 - the invite still stands
+        logger.warning("invite email to %s failed: %s", email, exc)
+        return {"sent": False, "method": "error", "note": str(exc)}
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/settings/users",
@@ -129,7 +182,11 @@ async def invite_user(
     await db.commit()
     await db.refresh(new_user)
 
-    # TODO: send invite email via background task
+    delivery = await _deliver_invite(
+        new_user.email,
+        getattr(current_user, "workspace_name", None) or "your workspace",
+        current_user.email,
+    )
 
     return InviteUserResponse(
         id=new_user.id,
@@ -137,6 +194,8 @@ async def invite_user(
         role=new_user.role.value if isinstance(new_user.role, UserRole) else new_user.role,
         status="pending",
         invited_at=now,
+        email_sent=bool(delivery.get("sent")),
+        email_note=delivery.get("note"),
     )
 
 
@@ -252,6 +311,19 @@ async def resend_invite(
             detail="User is not in pending state.",
         )
 
-    # TODO: trigger invite email resend via background task
+    delivery = await _deliver_invite(
+        target.email,
+        getattr(current_user, "workspace_name", None) or "your workspace",
+        current_user.email,
+    )
 
-    return {"message": "Invite resent successfully."}
+    if not delivery.get("sent"):
+        # Reporting success for a message no provider accepted is how an
+        # administrator ends up waiting for an email that was never sent.
+        return {
+            "message": "Invite could not be delivered.",
+            "email_sent": False,
+            "detail": delivery.get("note", "No email provider is configured."),
+        }
+
+    return {"message": "Invite resent successfully.", "email_sent": True}

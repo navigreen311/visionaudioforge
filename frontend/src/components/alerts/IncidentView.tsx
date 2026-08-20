@@ -1,25 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
-
-interface Incident {
-  incident_id: string;
-  rule_id: string;
-  alert_count: number;
-  severity: string;
-  first_alert_at: string | null;
-  last_alert_at: string | null;
-  alert_ids: string[];
-  status: string;
-}
-
-interface TimelineEntry {
-  type: string;
-  timestamp: string | null;
-  data: Record<string, unknown>;
-}
+import {
+  createIncidentBundle,
+  exportEvidenceBundle,
+  getIncidentTimeline,
+  listIncidents,
+  triggerAutoClip,
+  type AlertIncident as Incident,
+  type AlertIncidentTimelineEntry as TimelineEntry,
+} from "@/lib/api";
 
 const severityVariant: Record<string, "error" | "warning" | "info" | "neutral"> = {
   critical: "error",
@@ -35,69 +27,124 @@ const statusVariant: Record<string, "error" | "warning" | "success" | "neutral">
   dismissed: "neutral",
 };
 
-/** Placeholder data for demonstration — wired to API in production. */
-const MOCK_INCIDENTS: Incident[] = [
-  {
-    incident_id: "inc-001",
-    rule_id: "rule-001",
-    alert_count: 3,
-    severity: "high",
-    first_alert_at: new Date(Date.now() - 3600000).toISOString(),
-    last_alert_at: new Date().toISOString(),
-    alert_ids: ["a1", "a2", "a3"],
-    status: "new",
-  },
-  {
-    incident_id: "inc-002",
-    rule_id: "rule-002",
-    alert_count: 1,
-    severity: "medium",
-    first_alert_at: new Date(Date.now() - 7200000).toISOString(),
-    last_alert_at: new Date(Date.now() - 7200000).toISOString(),
-    alert_ids: ["a4"],
-    status: "acknowledged",
-  },
-];
-
 export default function IncidentView() {
-  const [incidents] = useState<Incident[]>(MOCK_INCIDENTS);
+  // Every one of these used to be a local constant or a setTimeout. The
+  // endpoints existed the whole time; nothing called them.
+  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [selectedIncident, setSelectedIncident] = useState<string | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [bundleCreating, setBundleCreating] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [clipTriggering, setClipTriggering] = useState<string | null>(null);
 
-  const handleViewTimeline = (incidentId: string) => {
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await listIncidents();
+      setIncidents(data.incidents ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load incidents.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleViewTimeline = async (incidentId: string) => {
     setSelectedIncident(incidentId);
-    // In production: fetch from GET /api/alerts/incidents/{id}/timeline
-    const incident = incidents.find((i) => i.incident_id === incidentId);
-    if (incident) {
-      setTimeline(
-        incident.alert_ids.map((aid, idx) => ({
-          type: "alert",
-          timestamp: new Date(Date.now() - (incident.alert_ids.length - idx) * 600000).toISOString(),
-          data: { alert_id: aid, severity: incident.severity },
-        }))
-      );
+    setTimeline([]);
+    try {
+      const data = await getIncidentTimeline(incidentId);
+      setTimeline(data.timeline ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load the timeline.");
     }
   };
 
   const handleCreateBundle = async (incidentId: string) => {
     setBundleCreating(true);
-    // In production: POST /api/alerts/{id}/bundle
-    await new Promise((r) => setTimeout(r, 500));
-    setBundleCreating(false);
-    alert(`Evidence bundle created for incident ${incidentId}`);
+    setNotice(null);
+    try {
+      const bundle = await createIncidentBundle(incidentId);
+      const bundleId = (bundle.bundle_id ?? bundle.id) as string | undefined;
+      if (bundleId) setBundleIds((prev) => ({ ...prev, [incidentId]: bundleId }));
+      setNotice(`Evidence bundle ready for incident ${incidentId}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the bundle.");
+    } finally {
+      setBundleCreating(false);
+    }
+  };
+
+  const [bundleIds, setBundleIds] = useState<Record<string, string>>({});
+
+  const handleExportBundle = async (incidentId: string) => {
+    // Export needs a bundle to export. The button used to be
+    // `onClick={() => alert("Export feature coming soon")}` while
+    // GET /api/alerts/bundles/{id}/export was already serving the file.
+    setNotice(null);
+    try {
+      const bundleId =
+        bundleIds[incidentId] ??
+        ((await createIncidentBundle(incidentId)).bundle_id as string | undefined);
+      if (!bundleId) {
+        setError("The server did not return a bundle id for this incident.");
+        return;
+      }
+      setBundleIds((prev) => ({ ...prev, [incidentId]: bundleId }));
+      await exportEvidenceBundle(bundleId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not export the bundle.");
+    }
   };
 
   const handleAutoClip = async (alertId: string) => {
     setClipTriggering(alertId);
-    // In production: POST /api/alerts/{id}/auto-clip
-    await new Promise((r) => setTimeout(r, 500));
-    setClipTriggering(null);
+    setNotice(null);
+    try {
+      await triggerAutoClip(alertId);
+      setNotice(`Clip requested for alert ${alertId}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not request the clip.");
+    } finally {
+      setClipTriggering(null);
+    }
   };
+
+  if (loading) {
+    return <p className="text-sm text-gray-500">Loading incidents&hellip;</p>;
+  }
+
+  if (error && incidents.length === 0) {
+    return (
+      <div className="space-y-2">
+        <p className="text-sm text-red-600">{error}</p>
+        <Button variant="ghost" size="sm" onClick={() => void load()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (incidents.length === 0) {
+    return (
+      <p className="text-sm text-gray-500">
+        No incidents in this workspace. Incidents group alerts raised by the same
+        rule within 30 minutes of each other.
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-4">
+      {notice && <p className="text-sm text-green-700">{notice}</p>}
+      {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold text-gray-900">Incidents</h2>
         <p className="text-sm text-gray-500">
@@ -142,7 +189,7 @@ export default function IncidentView() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => handleViewTimeline(incident.incident_id)}
+                  onClick={() => void handleViewTimeline(incident.incident_id)}
                   title="View Timeline"
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -153,7 +200,7 @@ export default function IncidentView() {
                   variant="ghost"
                   size="sm"
                   disabled={bundleCreating}
-                  onClick={() => handleCreateBundle(incident.incident_id)}
+                  onClick={() => void handleCreateBundle(incident.incident_id)}
                   title="Create Evidence Bundle"
                 >
                   <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -184,7 +231,7 @@ export default function IncidentView() {
                             variant="ghost"
                             size="sm"
                             disabled={clipTriggering === String(entry.data.alert_id)}
-                            onClick={() => handleAutoClip(String(entry.data.alert_id))}
+                            onClick={() => void handleAutoClip(String(entry.data.alert_id))}
                             title="Auto-clip"
                           >
                             {clipTriggering === String(entry.data.alert_id) ? (
@@ -205,14 +252,14 @@ export default function IncidentView() {
                     variant="primary"
                     size="sm"
                     disabled={bundleCreating}
-                    onClick={() => handleCreateBundle(incident.incident_id)}
+                    onClick={() => void handleCreateBundle(incident.incident_id)}
                   >
                     Create Bundle
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => alert("Export feature coming soon")}
+                    onClick={() => void handleExportBundle(incident.incident_id)}
                   >
                     Export Bundle
                   </Button>

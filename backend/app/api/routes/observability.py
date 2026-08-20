@@ -46,6 +46,44 @@ async def system_overview(
     return await SREDashboardService.get_system_overview(db)
 
 
+@router.get("/latency-history")
+async def latency_history(
+    range: str = Query("24h", description="Window label, e.g. 1h | 24h | 7d"),
+    start: Optional[str] = Query(None, description="ISO-8601 window start"),
+    end: Optional[str] = Query(None, description="ISO-8601 window end"),
+):
+    """Latency over time, for the observability page's chart.
+
+    The console has asked for this since the page shipped and the route did not
+    exist, so every load logged a 404. That was the smaller half of the problem:
+    the page also called `.toFixed()` on the `null` this service returns for an
+    unmeasured metric, threw, and rendered the error boundary - /observability
+    showed "Something went wrong" and nothing else. No test opened the page.
+
+    There is no time-series store behind this platform. The Prometheus counters
+    in-process are cumulative totals for this process's lifetime, and a total
+    cannot be differenced into a history after the fact. So this returns an empty
+    series and says why, rather than interpolating one out of a single number:
+    the chart has an empty state and shows "No latency data available", which is
+    the true answer until something is actually recording samples.
+
+    Wiring a real history means scraping /metrics into Prometheus or writing
+    samples to a time-series table; either changes this body and nothing else.
+    """
+    return {
+        "range": range,
+        "start": start,
+        "end": end,
+        "points": [],
+        "measured": False,
+        "note": (
+            "No time-series backend is configured. Latency is exported as "
+            "cumulative counters on /metrics; scrape them into Prometheus or "
+            "persist samples to enable this chart."
+        ),
+    }
+
+
 @router.get("/pipeline-health")
 async def pipeline_health(
     db: AsyncSession = Depends(get_async_session),
