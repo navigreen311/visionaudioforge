@@ -158,6 +158,23 @@ export function readAccessToken(): string | null {
  * edited in devtools), then the value stored from `/api/auth/me`. There is no
  * default — see `getWorkspaceId` in `lib/api.ts`.
  */
+/**
+ * The signed-in user's id, or null when there is no session.
+ *
+ * Read from the token's `sub` claim, which is signed and therefore cannot be
+ * edited in devtools. There is no default, for the same reason
+ * `readWorkspaceId` has none: the annotate page carried a hardcoded
+ * `00000000-…-0001` here and attributed every annotation it created to that
+ * id, so the work of whoever was actually signed in was credited to a user
+ * that does not exist.
+ */
+export function readUserId(): string | null {
+  const token = readAccessToken();
+  if (!token) return null;
+  const claim = decodeJwt(token)?.sub;
+  return typeof claim === "string" && claim ? claim : null;
+}
+
 export function readWorkspaceId(): string | null {
   if (typeof window === "undefined") return null;
 

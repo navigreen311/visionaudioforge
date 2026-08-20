@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useRef, useCallback } from "react";
 import Tabs from "@/components/ui/Tabs";
 import Card from "@/components/ui/Card";
@@ -12,7 +14,7 @@ import CalibrationResults from "@/components/validate/CalibrationResults";
 import ReliabilityDiagram from "@/components/validate/ReliabilityDiagram";
 import ConfidenceHistogram from "@/components/validate/ConfidenceHistogram";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

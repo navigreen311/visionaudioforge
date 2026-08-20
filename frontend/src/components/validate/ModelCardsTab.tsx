@@ -1,12 +1,15 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState, useEffect, useCallback } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
 import ModelCardPreview from "./ModelCardPreview";
 import type { ModelCardData, PerformanceMetric } from "./ModelCardPreview";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 const STORAGE_KEY = "vaf_model_card_draft";
 
 /* ------------------------------------------------------------------ */
@@ -345,7 +348,7 @@ export default function ModelCardsTab() {
     async function fetchModels() {
       try {
         const resp = await fetch(
-          `${API_BASE}/api/registry/models?workspace_id=00000000-0000-0000-0000-000000000001&limit=50`,
+          `${API_BASE}/api/registry/models?workspace_id=${readWorkspaceId() ?? ""}&limit=50`,
         );
         if (!resp.ok) return;
         const data = await resp.json();

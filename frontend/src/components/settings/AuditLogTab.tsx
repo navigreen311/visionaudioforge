@@ -1,5 +1,7 @@
 'use client';
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React from 'react';
 import Badge from '../ui/Badge';
 
@@ -123,7 +125,7 @@ export default function AuditLogTab() {
       if (dateFrom) params.set('date_from', dateFrom);
       if (dateTo) params.set('date_to', dateTo);
 
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+      const baseUrl = API_BASE_URL;
       const res = await fetch(`${baseUrl}/api/settings/audit-log?${params.toString()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: AuditLogResponse = await res.json();

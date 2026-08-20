@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 
@@ -41,7 +43,7 @@ export type { ModelItem };
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 const STATUS_STYLES: Record<string, string> = {
   registered: "bg-gray-100 text-gray-700",

@@ -1,5 +1,8 @@
 'use client';
 
+import { API_BASE_URL } from "@/lib/api";
+import { readUserId } from "@/lib/session";
+
 import { useState, useCallback, useEffect } from 'react';
 import AnnotationCanvas from '@/components/annotation/AnnotationCanvas';
 import ToolPalette, { type AnnotationTool } from '@/components/annotation/ToolPalette';
@@ -8,7 +11,7 @@ import LabelSelector from '@/components/annotation/LabelSelector';
 import AssetThumbnailStrip from '@/components/annotate/AssetThumbnailStrip';
 import AnnotationProgress from '@/components/annotate/AnnotationProgress';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_BASE = API_BASE_URL;
 
 const DEFAULT_LABELS = ['person', 'car', 'dog', 'cat', 'truck', 'bicycle', 'bird', 'unknown'];
 
@@ -35,7 +38,8 @@ export default function AnnotatePage() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [datasetId, setDatasetId] = useState('');
   const [workspaceId, setWorkspaceId] = useState('');
-  const [userId] = useState('00000000-0000-0000-0000-000000000001');
+  // Attributed to whoever is signed in, read from the token's signed claim.
+  const [userId] = useState(() => readUserId() ?? '');
   const [loading, setLoading] = useState(false);
   const [exportFormat, setExportFormat] = useState('coco');
   const [status, setStatus] = useState('');

@@ -1,5 +1,7 @@
 "use client";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import { useState, useEffect, useCallback } from "react";
 
 // ---------------------------------------------------------------------------
@@ -36,7 +38,6 @@ type SortDir = "asc" | "desc";
 // ---------------------------------------------------------------------------
 
 const API = "/api/reviewops";
-const WS_ID = "00000000-0000-0000-0000-000000000001";
 
 const PRIORITY_ORDER: Record<string, number> = {
   critical: 0,
@@ -197,7 +198,7 @@ export default function TaskQueue({ statusFilter }: TaskQueueProps) {
 
   const fetchTasks = useCallback(async () => {
     try {
-      const params = new URLSearchParams({ workspace_id: WS_ID });
+      const params = new URLSearchParams({ workspace_id: readWorkspaceId() ?? "" });
       if (filterStatus) params.set("status", filterStatus);
       if (filterPriority) params.set("priority", filterPriority);
       if (filterAssignee) params.set("assignee", filterAssignee);
@@ -215,7 +216,7 @@ export default function TaskQueue({ statusFilter }: TaskQueueProps) {
 
   const fetchReviewers = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/reviewers?workspace_id=${WS_ID}`);
+      const res = await fetch(`${API}/reviewers?workspace_id=${readWorkspaceId()}`);
       if (res.ok) {
         const data: Reviewer[] = await res.json();
         setReviewers(data);
@@ -261,7 +262,7 @@ export default function TaskQueue({ statusFilter }: TaskQueueProps) {
 
   const handleAutoAssign = async () => {
     try {
-      const res = await fetch(`${API}/auto-assign?workspace_id=${WS_ID}`, {
+      const res = await fetch(`${API}/auto-assign?workspace_id=${readWorkspaceId()}`, {
         method: "POST",
       });
       if (res.ok) {

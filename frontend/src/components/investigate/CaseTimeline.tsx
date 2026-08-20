@@ -1,11 +1,13 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import axios from "axios";
 import Button from "@/components/ui/Button";
 import EventCard from "./EventCard";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 // ---------------------------------------------------------------------------
 // Types

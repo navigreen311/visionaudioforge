@@ -1,5 +1,8 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Card from "@/components/ui/Card";
 import Button from "@/components/ui/Button";
@@ -7,7 +10,7 @@ import Badge from "@/components/ui/Badge";
 import HeatmapViewer from "./HeatmapViewer";
 import SHAPChart from "./SHAPChart";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -82,7 +85,7 @@ export default function ExplainabilityTab() {
       setModelsLoading(true);
       try {
         const resp = await fetch(
-          `${API_BASE}/api/registry/models?workspace_id=00000000-0000-0000-0000-000000000001&limit=50`,
+          `${API_BASE}/api/registry/models?workspace_id=${readWorkspaceId() ?? ""}&limit=50`,
         );
         if (!resp.ok) throw new Error("Failed to fetch models");
         const data: { items: RegistryModel[] } = await resp.json();

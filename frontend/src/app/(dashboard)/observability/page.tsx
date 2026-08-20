@@ -1,5 +1,8 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import { useCallback, useEffect, useState } from "react";
 import TimeRangeSelector, {
   type TimeRange,
@@ -8,7 +11,7 @@ import LatencyChart, {
   type LatencyDataPoint,
 } from "@/components/observability/LatencyChart";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = API_BASE_URL;
 
 // ----------------------------------------------------------------
 // Interfaces
@@ -127,7 +130,7 @@ export default function ObservabilityPage() {
 
   const [timeRange, setTimeRange] = useState<TimeRange>({ preset: "24h" });
 
-  const workspaceId = "00000000-0000-0000-0000-000000000001";
+  const workspaceId = readWorkspaceId();
 
   const loadData = useCallback(async () => {
     try {

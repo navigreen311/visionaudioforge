@@ -1,5 +1,8 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState, useCallback, useEffect } from "react";
 import CaseList, { CaseData } from "@/components/investigate/CaseList";
 import EventTimeline from "@/components/investigate/EventTimeline";
@@ -12,8 +15,7 @@ import Badge from "@/components/ui/Badge";
 import { TimelineEventData } from "@/components/investigate/TimelineEvent";
 import axios from "axios";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000001";
+const API_BASE = API_BASE_URL;
 
 function getDefaultDateRange() {
   const end = new Date();
@@ -167,7 +169,7 @@ function ApprovalSection({ caseId }: { caseId: string }) {
   const loadApprovals = useCallback(async () => {
     try {
       const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+        params: { workspace_id: readWorkspaceId() },
       });
       setApprovals(resp.data.filter((a: ApprovalItem) => a.case_id === caseId));
     } catch {
@@ -368,7 +370,7 @@ export default function InvestigatePage() {
   const loadReportApprovals = useCallback(async (caseId: string) => {
     try {
       const resp = await axios.get(`${API_BASE}/api/investigate/approvals`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+        params: { workspace_id: readWorkspaceId() },
       });
       const filtered = (resp.data as ReportApproval[]).filter((a) => a.case_id === caseId);
       setReportApprovals(filtered);
@@ -382,7 +384,7 @@ export default function InvestigatePage() {
     setCasesLoading(true);
     try {
       const resp = await axios.get(`${API_BASE}/api/investigate/cases`, {
-        params: { workspace_id: DEFAULT_WORKSPACE_ID },
+        params: { workspace_id: readWorkspaceId() },
       });
       setCases(resp.data);
     } catch {
@@ -416,7 +418,7 @@ export default function InvestigatePage() {
     try {
       const resp = await axios.get(`${API_BASE}/api/investigate/timeline`, {
         params: {
-          workspace_id: DEFAULT_WORKSPACE_ID,
+          workspace_id: readWorkspaceId(),
           start: new Date(startDate).toISOString(),
           end: new Date(endDate).toISOString(),
         },
@@ -447,7 +449,7 @@ export default function InvestigatePage() {
       await axios.post(`${API_BASE}/api/investigate/cases`, {
         name: newCaseName.trim(),
         description: newCaseDesc.trim(),
-        workspace_id: DEFAULT_WORKSPACE_ID,
+        workspace_id: readWorkspaceId(),
       });
       setShowNewCase(false);
       setNewCaseName("");

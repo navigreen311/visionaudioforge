@@ -1,7 +1,9 @@
 "use client";
 
+import { readWorkspaceId } from "@/lib/session";
+
 import React, { useState, useEffect, useCallback } from "react";
-import api from "@/lib/api";
+import api, { API_BASE_URL } from "@/lib/api";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
@@ -61,11 +63,12 @@ const MODALITY_BADGE_VARIANT: Record<string, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Was a local reimplementation that fell back to the nil workspace when
+// there was no session, so an unauthenticated render asked for somebody
+// else's tenant. `readWorkspaceId` reads the signed claim first and returns
+// null rather than inventing one.
 function getWorkspaceId(): string {
-  if (typeof window !== "undefined") {
-    return localStorage.getItem("workspace_id") || "00000000-0000-0000-0000-000000000001";
-  }
-  return "00000000-0000-0000-0000-000000000001";
+  return readWorkspaceId() ?? "";
 }
 
 function isHealthy(classCounts: Record<string, number>): boolean {
@@ -425,7 +428,7 @@ export default function DatasetsTab() {
   };
 
   const handleExport = (id: string) => {
-    const base = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+    const base = API_BASE_URL;
     window.open(`${base}/api/datasets/${id}/export?format=json`, "_blank");
   };
 

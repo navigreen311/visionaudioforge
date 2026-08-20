@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useState, useCallback } from "react";
 import axios from "axios";
 import Modal from "@/components/ui/Modal";
@@ -27,7 +29,7 @@ interface FormState {
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 const BACKBONES = [
   "ResNet18",

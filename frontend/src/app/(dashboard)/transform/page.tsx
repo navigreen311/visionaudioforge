@@ -1,5 +1,7 @@
 "use client";
 
+import { API_BASE_URL } from "@/lib/api";
+
 import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import BeforeAfterViewer from "@/components/transform/BeforeAfterViewer";
@@ -36,7 +38,7 @@ const TransformHistory = dynamic(
   { loading: () => null, ssr: false },
 );
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API_BASE = API_BASE_URL;
 
 type VideoMode = "background-remove" | "super-resolution" | "style" | "auto-crop" | "color-grade" | "subtitle" | "inpaint" | "smart-crop" | "interpolate" | "highlight";
 type AudioMode = "denoise" | "silence-remove" | "pitch-shift" | "time-stretch" | "eq" | "chain" | "voice-convert" | "chapters" | "noise-profile" | "tts";
