@@ -78,66 +78,26 @@ class ResolveConflictBody(BaseModel):
 _now = datetime.now(timezone.utc)
 
 
-def _ts(days_ago: int = 0) -> str:
-    return (_now - timedelta(days=days_ago)).isoformat()
+# Memories are rows in semantic_memories. This module kept its own dict beside
+# that table, so a memory created through /api/memory vanished on restart while
+# /search and /timeline — which already read the table — never saw it at all.
+#
+# Decay history lives in the row's metadata rather than a second table: it is a
+# short trail belonging to one memory, read only through that memory.
 
 
-def _mock_memory(
-    mid: str,
-    content: str,
-    category: str = "fact",
-    importance: float = 0.7,
-    scope: str = "workspace",
-    is_private: bool = False,
-    source: str | None = "conversation",
-    tags: list[str] | None = None,
-    freshness: float = 0.85,
-    days_ago: int = 2,
-) -> dict[str, Any]:
-    return {
-        "id": mid,
-        "content": content,
-        "category": category,
-        "importance_score": importance,
-        "freshness_score": freshness,
-        "scope": scope,
-        "is_private": is_private,
-        "source": source,
-        "source_type": "conversation",
-        "confidence": round(importance * 0.9 + 0.1, 2),
-        "access_count": 3,
-        "tags": tags or ["ai", "system"],
-        "freshness_pct": round(freshness * 100),
-        "created_at": _ts(days_ago),
-        "last_accessed_at": _ts(max(0, days_ago - 1)),
-    }
+def _decay_trail(memory: SemanticMemory) -> dict[str, Any]:
+    return (memory.metadata_ or {}).get("decay", {})
 
 
-SEED_MEMORIES: list[dict[str, Any]] = [
-    _mock_memory("mem-001", "CLIP uses contrastive learning for image-text alignment", "fact", 0.9, tags=["vision", "clip"]),
-    _mock_memory("mem-002", "User prefers dark-mode for all dashboards", "preference", 0.6, scope="user", tags=["ui", "preference"], days_ago=5),
-    _mock_memory("mem-003", "Audio pipeline switched from Wav2Vec2 to Whisper v3", "decision", 0.85, tags=["audio", "architecture"], freshness=0.7, days_ago=10),
-    _mock_memory("mem-004", "Deploy target is AWS us-east-1 with GPU spot instances", "fact", 0.75, is_private=True, tags=["infra", "aws"], days_ago=3),
-    _mock_memory("mem-005", "Gradient clipping threshold set to 1.0 after training instability", "observation", 0.65, tags=["training", "stability"], freshness=0.5, days_ago=14),
-    _mock_memory("mem-006", "Alert: FAISS index rebuild required when embedding dim changes", "alert", 0.95, tags=["search", "faiss"], freshness=0.92),
-    _mock_memory("mem-007", "Batch size 32 optimal for current GPU memory", "observation", 0.55, tags=["training", "perf"], freshness=0.4, days_ago=20),
-    _mock_memory("mem-008", "Decision to use PostgreSQL over MongoDB for metadata store", "decision", 0.8, tags=["database", "architecture"], days_ago=7),
-]
-
-_memories: dict[str, dict[str, Any]] = {m["id"]: m for m in SEED_MEMORIES}
-_conflict_counter = 0
-
-# Decay audit trail: memory_id -> list of decay events, plus the importance a
-# memory started life with. Powers GET /api/memory/{id}/decay-history.
-_decay_events: dict[str, list[dict[str, Any]]] = {}
-_initial_importance: dict[str, float] = {
-    m["id"]: m["importance_score"] for m in SEED_MEMORIES
-}
-
-
-def _record_decay(memory_id: str, before: float, after: float, trigger: str) -> None:
-    """Append a decay event so the detail panel can render a timeline."""
-    _decay_events.setdefault(memory_id, []).append(
+def _record_decay(
+    memory: SemanticMemory, before: float, after: float, trigger: str
+) -> None:
+    """Append a decay event to the memory's own metadata."""
+    meta = dict(memory.metadata_ or {})
+    decay = dict(meta.get("decay", {}))
+    events = list(decay.get("events", []))
+    events.append(
         {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "importance_before": before,
@@ -145,11 +105,45 @@ def _record_decay(memory_id: str, before: float, after: float, trigger: str) -> 
             "trigger": trigger,
         }
     )
+    decay["events"] = events[-50:]
+    decay.setdefault("initial_importance", before)
+    meta["decay"] = decay
+    # Reassigned rather than mutated: SQLAlchemy does not track in-place JSON
+    # edits, so mutating would leave the change unsaved.
+    memory.metadata_ = meta
 
 
-# ---------------------------------------------------------------------------
-# POST /api/memory  - create
-# ---------------------------------------------------------------------------
+async def _load_memory(
+    db: AsyncSession, workspace_id: UUID, memory_id: str
+) -> SemanticMemory:
+    """Fetch one memory in this workspace, or 404."""
+    try:
+        key = uuid.UUID(str(memory_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Memory not found")
+
+    result = await db.execute(
+        select(SemanticMemory).where(
+            SemanticMemory.id == key,
+            SemanticMemory.workspace_id == workspace_id,
+        )
+    )
+    memory = result.scalar_one_or_none()
+    if memory is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return memory
+
+
+async def _all_memories(
+    db: AsyncSession, workspace_id: UUID
+) -> list[SemanticMemory]:
+    result = await db.execute(
+        select(SemanticMemory)
+        .where(SemanticMemory.workspace_id == workspace_id)
+        .order_by(SemanticMemory.created_at.desc())
+    )
+    return list(result.scalars().all())
+
 
 _memory_service = SemanticMemoryService()
 _promotion_engine = MemoryPromotionEngine()
@@ -169,30 +163,45 @@ def _serialise_memory(memory: SemanticMemory) -> dict[str, Any]:
         "source": memory.source,
         "source_type": memory.source_type,
         "confidence": memory.confidence,
+        "is_private": memory.is_private,
+        "tags": list(memory.tags or []),
+        "freshness_pct": round((memory.freshness_score or 0.0) * 100),
         "created_at": memory.created_at.isoformat() if memory.created_at else "",
         "updated_at": memory.updated_at.isoformat() if memory.updated_at else "",
+        "last_accessed_at": (
+            memory.last_accessed.isoformat() if memory.last_accessed else None
+        ),
     }
 
 
 @router.post("")
-async def create_memory(body: MemoryCreate) -> dict[str, Any]:
+async def create_memory(
+    body: MemoryCreate,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Create a new memory and return it with an id."""
-    mid = f"mem-{uuid.uuid4().hex[:8]}"
-    mem = _mock_memory(
-        mid,
-        body.content,
+    memory = SemanticMemory(
+        id=uuid.uuid4(),
+        workspace_id=session_workspace,
+        content=body.content,
         category=body.category,
-        importance=body.importance,
         scope=body.scope,
-        is_private=body.is_private,
+        importance=body.importance,
+        importance_score=body.importance,
+        freshness_score=1.0,
+        access_count=0,
         source=body.source,
-        tags=body.tags,
-        freshness=1.0,
-        days_ago=0,
+        source_type="conversation",
+        confidence=round(body.importance * 0.9 + 0.1, 2),
+        is_private=body.is_private,
+        tags=list(body.tags or []),
+        metadata_={"decay": {"initial_importance": body.importance, "events": []}},
     )
-    _memories[mid] = mem
-    _initial_importance[mid] = mem["importance_score"]
-    return mem
+    db.add(memory)
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise_memory(memory)
 
 
 # ---------------------------------------------------------------------------
@@ -200,9 +209,13 @@ async def create_memory(body: MemoryCreate) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/store")
-async def store_memory(body: MemoryCreate) -> dict[str, Any]:
+async def store_memory(
+    body: MemoryCreate,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Alias for create_memory (frontend compat)."""
-    return await create_memory(body)
+    return await create_memory(body, session_workspace, db)
 
 
 # ---------------------------------------------------------------------------
@@ -210,23 +223,32 @@ async def store_memory(body: MemoryCreate) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/recall")
-async def recall_memories(body: MemoryRecall) -> list[dict[str, Any]]:
+async def recall_memories(
+    body: MemoryRecall,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
     """Return memories matching the recall query."""
-    results = []
-    for mem in _memories.values():
-        if body.scope and mem["scope"] != body.scope:
-            continue
-        if body.category and mem["category"] != body.category:
-            continue
-        if mem["importance_score"] < body.min_importance:
-            continue
-        if not body.include_private and mem["is_private"]:
-            continue
-        if body.query and body.query.lower() not in mem["content"].lower():
-            continue
-        results.append(mem)
-    results.sort(key=lambda m: m["importance_score"], reverse=True)
-    return results[: body.k]
+    conditions = [
+        SemanticMemory.workspace_id == session_workspace,
+        SemanticMemory.importance_score >= body.min_importance,
+    ]
+    if body.scope:
+        conditions.append(SemanticMemory.scope == body.scope)
+    if body.category:
+        conditions.append(SemanticMemory.category == body.category)
+    if not body.include_private:
+        conditions.append(SemanticMemory.is_private.is_(False))
+    if body.query:
+        conditions.append(SemanticMemory.content.ilike(f"%{body.query}%"))
+
+    result = await db.execute(
+        select(SemanticMemory)
+        .where(*conditions)
+        .order_by(SemanticMemory.importance_score.desc())
+        .limit(body.k)
+    )
+    return [_serialise_memory(m) for m in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
@@ -262,10 +284,13 @@ async def search_memories(
 
 
 @router.get("/summary")
-async def get_summary() -> dict[str, Any]:
-    """Aggregate summary of all memories."""
-    all_mems = list(_memories.values())
-    total = max(len(all_mems), 24)
+async def get_summary(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Aggregate summary of the workspace's memories."""
+    all_mems = [_serialise_memory(m) for m in await _all_memories(db, session_workspace)]
+    total = len(all_mems)
     importances = [m["importance_score"] for m in all_mems]
     avg_imp = round(sum(importances) / len(importances), 1) if importances else 0
     high_count = sum(1 for i in importances if i >= 0.8)
@@ -297,7 +322,7 @@ async def get_summary() -> dict[str, Any]:
         "by_category": by_cat,
         "by_scope": by_scope,
         "avg_freshness": round(sum(freshness_vals) / len(freshness_vals), 2) if freshness_vals else 0,
-        "importance_histogram": [0, 1, 2, 3, 5, 4, 4, 3, 1, 1],
+        "importance_histogram": _importance_histogram(importances),
         "freshness": {"high": fresh_high, "medium": fresh_med, "low": fresh_low},
         "top_memories": [
             {"id": m["id"], "content": m["content"], "importance": m["importance_score"]}
@@ -419,20 +444,19 @@ async def resolve_conflict(body: ResolveConflictBody) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/decay-all")
-async def decay_all() -> dict[str, Any]:
-    """Apply decay to all memories."""
-    affected = 0
-    total_reduced = 0.0
-    for mem in _memories.values():
-        old = mem["importance_score"]
-        mem["importance_score"] = round(old * 0.95, 3)
-        diff = old - mem["importance_score"]
-        if diff > 0:
-            affected += 1
-            total_reduced += diff
+async def decay_all(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Apply decay to every memory in the workspace.
+
+    The counts returned are what actually changed. They were floored at 5 and
+    12, so an empty workspace still reported work done.
+    """
+    affected, total_reduced = await _apply_decay(db, session_workspace, 0.95)
     return {
-        "memories_affected": max(affected, 5),
-        "total_importance_reduced": round(total_reduced, 1) or 12,
+        "memories_affected": affected,
+        "total_importance_reduced": round(total_reduced, 3),
     }
 
 
@@ -441,21 +465,17 @@ async def decay_all() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/decay")
-async def decay_memories(body: DecayBody | None = None) -> dict[str, Any]:
+async def decay_memories(
+    body: DecayBody | None = None,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Apply time-based decay to all memories (frontend compat)."""
     rate = body.decay_rate if body else 0.95
-    affected = 0
-    total_reduced = 0.0
-    for mem in _memories.values():
-        old = mem["importance_score"]
-        mem["importance_score"] = round(old * rate, 3)
-        diff = old - mem["importance_score"]
-        if diff > 0:
-            affected += 1
-            total_reduced += diff
+    affected, total_reduced = await _apply_decay(db, session_workspace, rate)
     return {
         "memories_affected": affected,
-        "total_importance_reduced": round(total_reduced, 1),
+        "total_importance_reduced": round(total_reduced, 3),
         "decay_rate": rate,
     }
 
@@ -481,12 +501,16 @@ async def apply_rules() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/export")
-async def export_memories() -> dict[str, Any]:
-    """Export all memories."""
+async def export_memories(
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Export the workspace's memories."""
+    memories = [_serialise_memory(m) for m in await _all_memories(db, session_workspace)]
     return {
-        "exported_at": _ts(0),
-        "count": len(_memories),
-        "memories": list(_memories.values()),
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "count": len(memories),
+        "memories": memories,
     }
 
 
@@ -495,12 +519,13 @@ async def export_memories() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.get("/{memory_id}")
-async def get_memory(memory_id: str) -> dict[str, Any]:
+async def get_memory(
+    memory_id: str,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Return a single memory by id."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    return mem
+    return _serialise_memory(await _load_memory(db, session_workspace, memory_id))
 
 
 # ---------------------------------------------------------------------------
@@ -508,16 +533,25 @@ async def get_memory(memory_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.patch("/{memory_id}")
-async def update_memory(memory_id: str, body: MemoryUpdate) -> dict[str, Any]:
+async def update_memory(
+    memory_id: str,
+    body: MemoryUpdate,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Update a memory and return it."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+    memory = await _load_memory(db, session_workspace, memory_id)
+
     updates = body.model_dump(exclude_unset=True)
     if "importance" in updates:
-        updates["importance_score"] = updates.pop("importance")
-    mem.update(updates)
-    return mem
+        updates["importance_score"] = updates["importance"]
+    for field, value in updates.items():
+        if hasattr(memory, field):
+            setattr(memory, field, value)
+
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise_memory(memory)
 
 
 # ---------------------------------------------------------------------------
@@ -525,11 +559,15 @@ async def update_memory(memory_id: str, body: MemoryUpdate) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.delete("/{memory_id}")
-async def delete_memory(memory_id: str) -> dict[str, Any]:
+async def delete_memory(
+    memory_id: str,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Delete a memory."""
-    if memory_id not in _memories:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    del _memories[memory_id]
+    memory = await _load_memory(db, session_workspace, memory_id)
+    await db.delete(memory)
+    await db.commit()
     return {"status": "deleted", "id": memory_id}
 
 
@@ -538,15 +576,21 @@ async def delete_memory(memory_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/{memory_id}/decay")
-async def decay_single(memory_id: str) -> dict[str, Any]:
+async def decay_single(
+    memory_id: str,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Reduce importance of a single memory by ~1 (0.1 on 0-1 scale)."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    before = mem["importance_score"]
-    mem["importance_score"] = round(max(0.0, before - 0.1), 2)
-    _record_decay(memory_id, before, mem["importance_score"], "manual")
-    return mem
+    memory = await _load_memory(db, session_workspace, memory_id)
+
+    before = memory.importance_score
+    memory.importance_score = round(max(0.0, before - 0.1), 2)
+    _record_decay(memory, before, memory.importance_score, "manual")
+
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise_memory(memory)
 
 
 # ---------------------------------------------------------------------------
@@ -554,14 +598,21 @@ async def decay_single(memory_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @router.post("/{memory_id}/promote")
-async def promote_single(memory_id: str, body: PromoteDemoteBody | None = None) -> dict[str, Any]:
+async def promote_single(
+    memory_id: str,
+    body: PromoteDemoteBody | None = None,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Increase importance of a single memory by ~1 (0.1 on 0-1 scale)."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+    memory = await _load_memory(db, session_workspace, memory_id)
+
     boost = body.boost if body else 0.1
-    mem["importance_score"] = round(min(1.0, mem["importance_score"] + boost), 2)
-    return mem
+    memory.importance_score = round(min(1.0, memory.importance_score + boost), 2)
+
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise_memory(memory)
 
 
 # ---------------------------------------------------------------------------
@@ -569,9 +620,14 @@ async def promote_single(memory_id: str, body: PromoteDemoteBody | None = None) 
 # ---------------------------------------------------------------------------
 
 @router.post("/promote/{memory_id}")
-async def promote_memory_compat(memory_id: str, body: PromoteDemoteBody | None = None) -> dict[str, Any]:
+async def promote_memory_compat(
+    memory_id: str,
+    body: PromoteDemoteBody | None = None,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Promote a memory (frontend compat path)."""
-    return await promote_single(memory_id, body)
+    return await promote_single(memory_id, body, session_workspace, db)
 
 
 # ---------------------------------------------------------------------------
@@ -579,14 +635,23 @@ async def promote_memory_compat(memory_id: str, body: PromoteDemoteBody | None =
 # ---------------------------------------------------------------------------
 
 @router.post("/demote/{memory_id}")
-async def demote_memory(memory_id: str, body: PromoteDemoteBody | None = None) -> dict[str, Any]:
+async def demote_memory(
+    memory_id: str,
+    body: PromoteDemoteBody | None = None,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Demote a memory by reducing importance."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+    memory = await _load_memory(db, session_workspace, memory_id)
+
     boost = body.boost if body else 0.1
-    mem["importance_score"] = round(max(0.0, mem["importance_score"] - boost), 2)
-    return mem
+    before = memory.importance_score
+    memory.importance_score = round(max(0.0, before - boost), 2)
+    _record_decay(memory, before, memory.importance_score, "demote")
+
+    await db.commit()
+    await db.refresh(memory)
+    return _serialise_memory(memory)
 
 
 # ---------------------------------------------------------------------------
@@ -594,15 +659,38 @@ async def demote_memory(memory_id: str, body: PromoteDemoteBody | None = None) -
 # ---------------------------------------------------------------------------
 
 @router.get("/{memory_id}/related")
-async def get_related(memory_id: str) -> list[dict[str, Any]]:
-    """Return 3 related memories."""
-    if memory_id not in _memories:
-        raise HTTPException(status_code=404, detail="Memory not found")
-    others = [m for mid, m in _memories.items() if mid != memory_id]
-    related = others[:3] if len(others) >= 3 else others
+async def get_related(
+    memory_id: str,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """Return up to three related memories from the same workspace.
+
+    Relatedness is by shared category then importance — the row does not carry
+    an embedding here. The descending relevance_score is a rank, not a
+    similarity measurement, and is labelled as such.
+    """
+    memory = await _load_memory(db, session_workspace, memory_id)
+
+    result = await db.execute(
+        select(SemanticMemory)
+        .where(
+            SemanticMemory.workspace_id == session_workspace,
+            SemanticMemory.id != memory.id,
+        )
+        .order_by(
+            (SemanticMemory.category == memory.category).desc(),
+            SemanticMemory.importance_score.desc(),
+        )
+        .limit(3)
+    )
     return [
-        {**m, "relevance_score": round(0.95 - i * 0.1, 2)}
-        for i, m in enumerate(related)
+        {
+            **_serialise_memory(m),
+            "relevance_rank": i + 1,
+            "relevance_basis": "category_and_importance",
+        }
+        for i, m in enumerate(result.scalars().all())
     ]
 
 
@@ -611,16 +699,57 @@ async def get_related(memory_id: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 @router.get("/{memory_id}/decay-history")
-async def get_decay_history(memory_id: str) -> dict[str, Any]:
+async def get_decay_history(
+    memory_id: str,
+    session_workspace: UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
     """Return the decay timeline for a memory (MemoryDetailPanel > DecayTimeline)."""
-    mem = _memories.get(memory_id)
-    if not mem:
-        raise HTTPException(status_code=404, detail="Memory not found")
+    memory = await _load_memory(db, session_workspace, memory_id)
+    trail = _decay_trail(memory)
+
     return {
-        "created_at": mem["created_at"],
-        "initial_importance": _initial_importance.get(
-            memory_id, mem["importance_score"]
+        "created_at": memory.created_at.isoformat() if memory.created_at else "",
+        "initial_importance": trail.get(
+            "initial_importance", memory.importance_score
         ),
-        "events": _decay_events.get(memory_id, []),
-        "current_importance": mem["importance_score"],
+        "events": trail.get("events", []),
+        "current_importance": memory.importance_score,
     }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _importance_histogram(importances: list[float]) -> list[int]:
+    """Ten buckets over 0..1. This was a hardcoded list of ten numbers."""
+    buckets = [0] * 10
+    for value in importances:
+        index = min(int(max(value, 0.0) * 10), 9)
+        buckets[index] += 1
+    return buckets
+
+
+async def _apply_decay(
+    db: AsyncSession, workspace_id: UUID, rate: float
+) -> tuple[int, float]:
+    """Multiply every importance by *rate*, recording each change."""
+    affected = 0
+    total_reduced = 0.0
+
+    for memory in await _all_memories(db, workspace_id):
+        before = memory.importance_score
+        after = round(before * rate, 3)
+        if after >= before:
+            continue
+
+        memory.importance_score = after
+        _record_decay(memory, before, after, "bulk")
+        affected += 1
+        total_reduced += before - after
+
+    if affected:
+        await db.commit()
+    return affected, total_reduced

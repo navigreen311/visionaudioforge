@@ -52,6 +52,9 @@ class ActivityItem(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+# A constant, not state: how many daily buckets each range selector means.
+# The dashboard's numbers come from real queries against alerts, assets,
+# streams and models; there is no cache here to persist.
 _RANGE_LENGTHS: dict[str, int] = {
     "7d": 7,
     "14d": 14,

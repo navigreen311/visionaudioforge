@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_async_session
+from app.models.settings import AppearancePreference
 
 router = APIRouter(prefix="/api/settings", tags=["settings-data"])
 
@@ -73,10 +78,30 @@ def _mock_largest_assets() -> list[LargestAsset]:
 
 
 # ---------------------------------------------------------------------------
-# In-memory state
+# Storage
+#
+# Appearance was a module-level dict seeded from the Pydantic defaults, so a
+# saved theme reverted on every restart. It reuses AppearancePreference, whose
+# nullable user_id is the shared row for callers the console has not
+# authenticated yet.
 # ---------------------------------------------------------------------------
 
-_appearance: dict[str, Any] = AppearanceSettings().model_dump()
+
+async def _appearance_row(db: AsyncSession) -> AppearancePreference | None:
+    """The shared row for callers the console has not authenticated.
+
+    user_id is nullable and Postgres does not treat NULLs as equal, so the
+    unique constraint on it does not prevent a second shared row appearing.
+    Take the oldest deterministically rather than letting scalar_one_or_none
+    raise if one ever does.
+    """
+    result = await db.execute(
+        select(AppearancePreference)
+        .where(AppearancePreference.user_id.is_(None))
+        .order_by(AppearancePreference.created_at)
+        .limit(1)
+    )
+    return result.scalars().first()
 
 
 # ---------------------------------------------------------------------------
@@ -97,13 +122,28 @@ async def get_storage_info():
 
 
 @router.get("/appearance", response_model=AppearanceSettings)
-async def get_appearance():
+async def get_appearance(db: AsyncSession = Depends(get_async_session)):
     """Return current appearance / UI preferences."""
-    return AppearanceSettings(**_appearance)
+    row = await _appearance_row(db)
+    if row is None:
+        return AppearanceSettings()
+    # Defaults fill in any field added since the row was written.
+    return AppearanceSettings(
+        **{**AppearanceSettings().model_dump(), **(row.preferences or {})}
+    )
 
 
 @router.put("/appearance", response_model=AppearanceSettings)
-async def update_appearance(body: AppearanceSettings):
+async def update_appearance(
+    body: AppearanceSettings,
+    db: AsyncSession = Depends(get_async_session),
+):
     """Save appearance / UI preferences and return the updated values."""
-    _appearance.update(body.model_dump())
-    return AppearanceSettings(**_appearance)
+    row = await _appearance_row(db)
+    if row is None:
+        db.add(AppearancePreference(user_id=None, preferences=body.model_dump()))
+    else:
+        row.preferences = {**(row.preferences or {}), **body.model_dump()}
+
+    await db.commit()
+    return body

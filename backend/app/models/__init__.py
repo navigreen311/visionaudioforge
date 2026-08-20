@@ -60,12 +60,22 @@ from app.models.security import (
 )
 from app.models.settings import (
     AppearancePreference,
+    WorkspaceSetting,
     WorkspaceIntegration,
 )
 from app.models.scheduling import PipelineSchedule
 from app.models.conversation import AgentConversation, AgentMessage
 from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
 from app.models.field_note import FieldNote
+from app.models.safety import LegalHold, SafetyScan, VoiceConsent
+from app.models.federated import (
+    Federation,
+    FederationParticipant,
+    FederationRound,
+    FederationStatus,
+    ParticipantStatus,
+    RoundStatus,
+)
 from app.models.simulation import SimulationRun, SimulationScenario
 from app.models.edge_export import EdgeBenchmark, ModelExport
 from app.models.runtime import (
@@ -168,4 +178,14 @@ __all__ = [
     "SyncConflict",
     "Webhook",
     "WebhookDelivery",
+    "Federation",
+    "FederationParticipant",
+    "FederationRound",
+    "FederationStatus",
+    "ParticipantStatus",
+    "RoundStatus",
+    "LegalHold",
+    "SafetyScan",
+    "VoiceConsent",
+    "WorkspaceSetting",
 ]

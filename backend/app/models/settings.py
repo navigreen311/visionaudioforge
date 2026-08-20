@@ -6,7 +6,16 @@ changing your theme changed everybody's, until a restart reset it for everybody
 at once.
 """
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSON, UUID
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
@@ -52,4 +61,34 @@ class WorkspaceIntegration(UUIDMixin, TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_workspace_integrations_workspace", "workspace_id"),
+    )
+
+
+class WorkspaceSetting(UUIDMixin, TimestampMixin, Base):
+    """A workspace-level settings document, one row per section.
+
+    General, security and notification settings were three module-level dicts
+    seeded from their Pydantic defaults, so every save was forgotten on
+    restart and the console showed the defaults again as though nothing had
+    been configured.
+
+    Stored as a document per section rather than a column per field, matching
+    AppearancePreference above: these are settings blobs the console owns, and
+    adding a control should not require a migration.
+    """
+
+    __tablename__ = "workspace_settings"
+
+    # Not nullable: unattributed rows use the nil system workspace created by
+    # migration 022, so a NULL cannot quietly defeat the uniqueness below.
+    workspace_id = Column(
+        UUID(as_uuid=True), ForeignKey("workspaces.id"), nullable=False
+    )
+    # "general" | "security" | "notifications"
+    section = Column(String(64), nullable=False)
+    value = Column(JSON, nullable=False, default=dict)
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "section", name="uq_workspace_setting_section"),
+        Index("ix_workspace_settings_workspace", "workspace_id"),
     )

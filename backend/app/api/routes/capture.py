@@ -23,7 +23,13 @@ from app.services.vision.motion import MotionAnalyzer
 router = APIRouter(prefix="/api/capture", tags=["capture"])
 
 # ---------------------------------------------------------------------------
-# Singletons / state
+# Process-local handles
+#
+# Deliberately not persisted. These are live objects, not data: an
+# RTSPStreamReader owns an open socket to a camera, and a row recording that
+# one existed would be worthless to another process, which could not read from
+# it. The session *metadata* that does need to be shared across workers lives
+# in Redis — see services/capture/manager.py.
 # ---------------------------------------------------------------------------
 _rtsp_readers: dict[str, RTSPStreamReader] = {}
 _recorder = ClipRecorder(

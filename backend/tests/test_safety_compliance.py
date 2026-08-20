@@ -19,6 +19,33 @@ from tests.db_utils import (
     seed_workspace,
 )
 
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture
+async def safety_db():
+    """A real session — holds, consent and scans are rows now."""
+    from tests.db_utils import (
+        db_session_factory,
+        fresh_engine,
+        requires_postgres,
+    )
+
+    await requires_postgres()
+
+    engine = await fresh_engine()
+    factory = db_session_factory(engine)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
+
+
 from app.services.safety.plate_blur import PlateBlurService
 from app.services.safety.voice_anon import VoiceAnonymizer
 from app.services.safety.policy_engine import PolicyEngine, BUILT_IN_POLICIES
@@ -162,13 +189,30 @@ class TestPolicyEngine:
         result2 = PolicyEngine.check_export_allowed(scan_dirty, "strict_pii")
         assert result2["allowed"] is False
 
-    def test_voice_clone_consent(self):
-        result = PolicyEngine.check_voice_clone_consent("user1", "owner1")
+    @pytest.mark.anyio
+    async def test_voice_clone_consent(self, safety_db):
+        """Consent is a row now: granting it has to outlive the process."""
+        owner = f"owner-{uuid4().hex[:8]}"
+
+        result = await PolicyEngine.check_voice_clone_consent(
+            safety_db, "user1", owner
+        )
         assert result["consent"] is False
 
-        PolicyEngine.record_voice_consent("user1", "owner1")
-        result2 = PolicyEngine.check_voice_clone_consent("user1", "owner1")
+        await PolicyEngine.record_voice_consent(safety_db, "user1", owner)
+        result2 = await PolicyEngine.check_voice_clone_consent(
+            safety_db, "user1", owner
+        )
         assert result2["consent"] is True
+
+        # Recording twice must not fail on the uniqueness constraint.
+        await PolicyEngine.record_voice_consent(safety_db, "user1", owner)
+
+        # Consent is per (owner, user) pair, not blanket.
+        other = await PolicyEngine.check_voice_clone_consent(
+            safety_db, "user2", owner
+        )
+        assert other["consent"] is False
 
     def test_create_policy(self):
         rules = [{"type": "restrict_export", "condition": "pii_detected", "action": "block"}]
@@ -347,13 +391,29 @@ class TestCompliance:
         assert "checks" in report
         assert "recommendations" in report
 
-    def test_legal_hold(self):
-        hold = ComplianceManager.legal_hold(None, ["a1", "a2"], "litigation", "admin")
+    @pytest.mark.anyio
+    async def test_legal_hold(self, safety_db):
+        """A hold stops deletion, so it cannot vanish on restart."""
+        hold = await ComplianceManager.legal_hold(
+            safety_db, ["a1", "a2"], "litigation", "admin"
+        )
         assert hold["assets_held"] == 2
         assert "hold_id" in hold
 
-        released = ComplianceManager.release_hold(None, hold["hold_id"])
+        active = await ComplianceManager.active_holds(safety_db)
+        assert hold["hold_id"] in {h["hold_id"] for h in active}
+
+        released = await ComplianceManager.release_hold(safety_db, hold["hold_id"])
         assert released["released"] == 2
+
+        # Released holds drop out of the "what is still in force" view.
+        still_active = await ComplianceManager.active_holds(safety_db)
+        assert hold["hold_id"] not in {h["hold_id"] for h in still_active}
+
+    @pytest.mark.anyio
+    async def test_release_unknown_hold_raises(self, safety_db):
+        with pytest.raises(ValueError, match="Hold not found"):
+            await ComplianceManager.release_hold(safety_db, str(uuid4()))
 
     def test_unknown_pack_raises(self):
         with pytest.raises(ValueError, match="Unknown compliance pack"):
