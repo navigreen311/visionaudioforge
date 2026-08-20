@@ -129,6 +129,128 @@ for it before declaring a deployment done:
 docker compose logs api | grep -i "JWT_SECRET_KEY"
 ```
 
+## Model Weights and Runtime Caches
+
+The API image ships the CLIP weights inside it. That is a deliberate trade with
+a real cost, so it is worth stating what was chosen and what it buys.
+
+### Where the weights live
+
+`backend/Dockerfile` bakes `openai/clip-vit-base-patch32` into the image at
+build time, after the switch to `USER appuser`, into
+`/home/appuser/.cache/huggingface/hub`. Nothing is fetched at request time.
+
+Verify against a running stack — `HF_HUB_OFFLINE=1` is the point of the check,
+because it proves the weights are present rather than merely reachable:
+
+```bash
+docker compose exec -T -e HF_HUB_OFFLINE=1 -e TRANSFORMERS_OFFLINE=1 api \
+  python -c "from app.services.search.embeddings import EmbeddingService; \
+print(EmbeddingService().embed_text('a photo of a cat').shape)"
+# -> (512,)
+```
+
+### What it costs
+
+| | Baked into the image (chosen) | Downloaded on first request | Named volume |
+|---|---|---|---|
+| Image size | **+609 MB** (11 GB -> 12 GB) | no change | no change |
+| First search after deploy | served immediately | pays a ~600 MB download | pays it once per volume |
+| Stack with no egress | works | **never works** | works after a seeded volume |
+| Changing the model | rebuild + redeploy the image | no rebuild | re-seed the volume |
+| Registry pull per node | +609 MB every deploy | — | — |
+
+Measured, not estimated:
+
+```bash
+docker history --no-trunc --format '{{.Size}}\t{{.CreatedBy}}' vaf-backend:local | grep CLIP
+# 609MB  RUN python -c "from transformers import CLIPModel, ...
+```
+
+The 609 MB is one copy of the weights, not two. `from_pretrained` caches both
+`pytorch_model.bin` and `model.safetensors` — 578 MB each — when left to
+choose, and only one is ever read, so the build passes `use_safetensors=True`.
+Dropping that flag silently doubles this layer.
+
+The deciding factor is the third row. An air-gapped or egress-filtered
+deployment that downloads at first request does not degrade, it fails: the
+first `POST /api/search/query` raises on a network call and every subsequent
+one does the same. Paying 609 MB of registry transfer per deploy is the
+cheaper failure mode than a search subsystem that cannot start.
+
+A named volume avoids the per-deploy transfer and is the better answer at
+double-digit node counts, where 609 MB per node per deploy stops being noise.
+It costs a seeding step that must run before the first request, which is one
+more thing that can be skipped — and skipping it fails exactly like the
+download path. If you switch, seed it in the deploy job, not in an entrypoint.
+
+**CLAP is not baked.** `laion/clap-htsat-unfused` is loaded lazily for audio
+embeddings and is a further ~2 GB. It is left to download on first use, and
+audio search therefore has the egress dependency described above. Bake it the
+same way if audio search must work without egress — budget the image at ~14 GB
+and re-check CI disk before you do.
+
+### Runtime cache paths
+
+The image runs as non-root `appuser`, so every library that wants to write a
+cache needs somewhere to put it. `useradd --system` alone does not create a
+home directory, and a library that falls back to a relative path lands in a
+read-only `site-packages`. The Dockerfile therefore creates the home, owns it
+by `appuser`, and sets each cache path explicitly rather than relying on
+`$HOME` being inferred — `uvicorn` and the Celery worker are separate
+entrypoints and must not disagree about where the cache is.
+
+| Variable | Value | Used by |
+|---|---|---|
+| `HOME` | `/home/appuser` | fallback for everything below |
+| `XDG_CACHE_HOME` | `/home/appuser/.cache` | generic cache root |
+| `HF_HOME` | `/home/appuser/.cache/huggingface` | `huggingface_hub`, `transformers` |
+| `HUGGINGFACE_HUB_CACHE` | `/home/appuser/.cache/huggingface/hub` | weight downloads |
+| `NUMBA_CACHE_DIR` | `/home/appuser/.cache/numba` | `numba`, and so `librosa` |
+| `MPLCONFIGDIR` | `/home/appuser/.cache/matplotlib` | `matplotlib` |
+
+Without `HF_HOME` on a writable path, `huggingface_hub` raises
+`PermissionError: [Errno 13] Permission denied: '/home/appuser'`, CLIP never
+loads, and `POST /api/search/query` answers 500 — the whole text search
+subsystem, while the container still reports healthy.
+
+`NUMBA_CACHE_DIR` is defensive rather than a proven repair. The failure it
+guards against —
+
+```
+cannot cache function '__o_fold': no locator available for file
+'/usr/local/lib/python3.11/site-packages/librosa/core/notation.py'
+```
+
+— does not reproduce on the pinned `numba==0.67.0`; decoding with `HOME`,
+`XDG_CACHE_HOME` and `NUMBA_CACHE_DIR` all unset was tested in this image and
+succeeds, because numba now warns and compiles in memory instead of raising.
+Setting it keeps numba off a read-only `site-packages` by construction, so a
+future version that hard-errors cannot take audio decode down again, and it
+recovers the cache hit that the in-memory fallback gives up on every start.
+
+If you change any of these paths, change them in the `ENV` block and in the
+`mkdir -p`/`chown` that follows it. A path that is set but not created and
+owned fails the same way as one that was never set.
+
+### What CI checks
+
+`scripts/smoke-stack.sh` runs both subsystems against the built containers,
+not against the runner. The `backend` job runs pytest on the runner and so
+exercises code that never enters the image — neither failure above was ever
+visible to it. The smoke job is what makes them visible:
+
+```bash
+./scripts/smoke-stack.sh          # full stack
+./scripts/smoke-stack.sh --core   # skip nginx and frontend
+```
+
+It decodes a WAV through `POST /api/audio/analyze` and embeds a query through
+`POST /api/search/query` from inside the `api` container, and separately
+asserts that the CLIP weights are present and that `NUMBA_CACHE_DIR` is
+writable. Breaking the cache configuration turns the run red rather than
+leaving a healthy stack with two dead subsystems.
+
 ## Scaling Guide
 
 ### Horizontal Scaling

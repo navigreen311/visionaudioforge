@@ -52,17 +52,83 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-COPY requirements.txt .
-COPY app/ ./app/
+# The runtime user needs a home it can write to. `useradd --system` without
+# --create-home left /home/appuser non-existent, and two library families
+# assume a writable home and fail without one:
+#
+#   huggingface_hub calls os.makedirs on its cache root and raised
+#     PermissionError: [Errno 13] Permission denied: '/home/appuser'
+#   CLIP therefore never downloaded, the embedding model never loaded, and
+#   POST /api/search/query answered 500. All text search was down.
+#
+#   numba caches compiled functions beside the source it compiles, and
+#   site-packages here is read-only. That produced
+#     cannot cache function '__o_fold': no locator available
+#   and took every librosa decode down with it.
+#
+#   Worth stating precisely, because the comment would otherwise claim more
+#   than was tested: on the pinned numba (0.67.0) that failure no longer
+#   reproduces. Decoding with HOME, XDG_CACHE_HOME and NUMBA_CACHE_DIR all
+#   unset was checked directly in this image and succeeds -- numba now warns
+#   and compiles in memory rather than raising. NUMBA_CACHE_DIR is therefore
+#   set defensively, not as a proven repair: it keeps numba off a read-only
+#   site-packages by construction, so a version that hard-errors again cannot
+#   silently take audio down a second time. It also buys the cache hit, which
+#   the fallback path gives up on every process start.
+#
+# The caches are pointed at that home *explicitly* rather than left to be
+# inferred from $HOME. uvicorn and the celery worker are separate entrypoints
+# and a library that falls back to a relative path lands back in the
+# read-only site-packages.
+ENV HOME=/home/appuser \
+    XDG_CACHE_HOME=/home/appuser/.cache \
+    HF_HOME=/home/appuser/.cache/huggingface \
+    HUGGINGFACE_HUB_CACHE=/home/appuser/.cache/huggingface/hub \
+    NUMBA_CACHE_DIR=/home/appuser/.cache/numba \
+    MPLCONFIGDIR=/home/appuser/.cache/matplotlib
+
+RUN groupadd --system appuser \
+    && useradd --system --gid appuser --home-dir /home/appuser --create-home appuser \
+    && mkdir -p /home/appuser/.cache/huggingface/hub \
+                /home/appuser/.cache/numba \
+                /home/appuser/.cache/matplotlib \
+    && chown -R appuser:appuser /app /home/appuser
+
+USER appuser
+
+# Bake the CLIP weights into the image.
+#
+# Downloaded at first request instead, the first search after every deploy pays
+# ~600 MB of latency, and a stack with no outbound egress never serves a search
+# at all — it fails on a network call rather than on configuration. Baking
+# costs image size and makes a model bump a rebuild; that trade is argued in
+# docs/deploy.md.
+#
+# Run as appuser so the files land owned by the user that reads them.
+#
+# use_safetensors=True matters for size, not safety: from_pretrained otherwise
+# caches *both* pytorch_model.bin and model.safetensors, 578 MB each, and only
+# one is ever read. Fetching one halves what this layer costs.
+RUN python -c "from transformers import CLIPModel, CLIPProcessor; \
+n='openai/clip-vit-base-patch32'; \
+CLIPModel.from_pretrained(n, use_safetensors=True); \
+CLIPProcessor.from_pretrained(n); print('CLIP weights baked')"
+
+# The source COPYs come *after* the bake on purpose. Docker invalidates every
+# layer below a changed one, so with `COPY app/` above it any backend edit
+# re-ran the bake and re-downloaded 609 MB — on every CI push that touched a
+# route. Below it, the bake depends only on site-packages, so it survives
+# application changes and is paid again only when a dependency moves.
+#
+# --chown because this stage already switched to appuser: COPY would otherwise
+# write root-owned files that the running process cannot replace.
+COPY --chown=appuser:appuser requirements.txt .
+COPY --chown=appuser:appuser app/ ./app/
 # Migrations were never copied into the image, so `alembic upgrade head` could
 # not run in a container even though six migrations existed. The compose
 # `migrate` service runs exactly this.
-COPY alembic/ ./alembic/
-COPY alembic.ini .
-
-RUN groupadd --system appuser && useradd --system --gid appuser appuser \
-    && chown -R appuser:appuser /app
-USER appuser
+COPY --chown=appuser:appuser alembic/ ./alembic/
+COPY --chown=appuser:appuser alembic.ini .
 
 EXPOSE 8000
 

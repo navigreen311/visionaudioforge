@@ -57,20 +57,12 @@ test.describe("shipped pipeline templates", () => {
     expect(invalid, `templates that do not validate:\n${invalid.join("\n")}`).toEqual([]);
   });
 
-  // Saving is broken beneath the templates entirely. Both persistence
-  // endpoints construct the ORM object with a column the model does not have:
-  //
-  //   POST /api/pipeline/create -> 500
-  //   POST /api/pipeline/save   -> 500
-  //   TypeError: 'description' is an invalid keyword argument for Pipeline
-  //
-  // `Pipeline` declares name/version/definition/status/workspace_id and no
-  // `description`, while both routes pass `description=body.description`. A
-  // minimal one-node definition with a real workspace_id reproduces it, so no
-  // pipeline can be persisted at all — by the console or by any API client.
-  // Left named rather than weakened; the fix is in the route, which this
-  // workstream does not own.
-  test.fixme("a template can be saved through the API exactly as shipped", async ({ request }) => {
+  // Both persistence endpoints used to construct the ORM object with a column
+  // the model did not have — `description` — so POST /api/pipeline/create and
+  // POST /api/pipeline/save each answered 500 and no pipeline could be saved
+  // by any client. Migration 026 adds the column; this drives the API path
+  // directly, with the template exactly as the server ships it.
+  test("a template can be saved through the API exactly as shipped", async ({ request }) => {
     const listed = await request.get("/api/pipeline/templates", {
       headers: authHeader(),
     });
