@@ -110,7 +110,8 @@ step "One-shot jobs completed successfully"
 # ---------------------------------------------------------------------------
 for job in migrate minio_init; do
     code="$(docker compose ps -a --format '{{.Service}} {{.ExitCode}}' \
-            | awk -v s="$job" '$1 == s {print $2; exit}')"
+ \
+    | awk -v s="$job" '$1 == s {print $2; exit}')"
     if [ "${code:-none}" = "0" ]; then ok "$job exited 0"; else bad "$job exited ${code:-<not run>}"; fi
 done
 
@@ -143,7 +144,8 @@ step "Object store: bucket exists"
 bucket="${MINIO_BUCKET:-vaf-assets}"
 if docker compose run --rm --no-deps --entrypoint sh minio_init -c \
       "mc alias set local http://minio:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null && mc ls local/$bucket" \
-      >/dev/null 2>&1; then
+ \
+    >/dev/null 2>&1; then
     ok "bucket '$bucket' exists"
 else
     bad "bucket '$bucket' missing"
@@ -250,6 +252,144 @@ if [ -n "$task_id" ]; then
     fi
 else
     bad "could not dispatch a task from the api container"
+fi
+
+# ---------------------------------------------------------------------------
+step "Two subsystems that were dead in the image (audio decode, text search)"
+# ---------------------------------------------------------------------------
+# "Seven services healthy" coexisted with two whole subsystems being down, and
+# nothing in CI could see it: the backend job runs pytest on the runner, so it
+# exercises code that never enters the image. These assertions run against the
+# built container, which is the only place the bugs existed.
+#
+#   huggingface_hub could not create its cache under a home the runtime user
+#   did not have, so CLIP never loaded and /api/search/query answered 500.
+#
+#   numba could not cache beside a read-only site-packages, so every librosa
+#   decode failed and /api/audio/analyze answered 400.
+#
+# Both were environment faults, so the requests are issued from *inside* the
+# api container: that is the runtime under test, and it needs nothing on the
+# host or the runner beyond docker.
+#
+# Every capture below tolerates failure explicitly. Under `set -e` a bare
+# assignment from a failing command substitution aborts the run, which would
+# turn "search is broken" into "the smoke script stopped saying why".
+
+api_exec() { docker compose exec -T api "$@"; }
+
+# Both endpoints sit behind the auth boundary asserted above, so this needs a
+# real session. register and login are on the public allowlist.
+# Unique per run in both dimensions. The email is the obvious one; the
+# workspace is not — registration derives a workspace slug from the name and
+# that slug is UNIQUE, so a constant name registers cleanly exactly once and
+# then 500s on ix_workspaces_slug for the life of the volume.
+#
+# example.com, not example.test: pydantic's email validator rejects the
+# reserved .test TLD outright, which fails registration with a 422 that has
+# nothing to do with what is being smoke-tested.
+SMOKE_RUN_ID="$(date +%s)-$$"
+SMOKE_EMAIL="smoke-$SMOKE_RUN_ID@example.com"
+SMOKE_PASSWORD="Smoke-Passw0rd!"
+SMOKE_CREDS="{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PASSWORD\"}"
+SMOKE_REGISTRATION="{\"email\":\"$SMOKE_EMAIL\",\"password\":\"$SMOKE_PASSWORD\",\"full_name\":\"Smoke Test\",\"workspace_name\":\"Smoke $SMOKE_RUN_ID\"}"
+
+api_exec curl -fsS -X POST http://127.0.0.1:8000/api/auth/register \
+    -H 'Content-Type: application/json' -d "$SMOKE_REGISTRATION" \
+    >/dev/null 2>&1 || true
+
+# Parsed with python, not a regex: pulling a JSON field out with sed is how a
+# smoke test starts reporting the wrong reason for a failure.
+TOKEN="$(api_exec sh -c "curl -fsS -X POST http://127.0.0.1:8000/api/auth/login \
+    -H 'Content-Type: application/json' -d '$SMOKE_CREDS' \
+    | python -c 'import json,sys; print(json.load(sys.stdin).get(\"access_token\",\"\"))'" \
+    2>/dev/null | tr -d '[:space:]')" || TOKEN=""
+
+if [ -n "$TOKEN" ]; then
+    ok "obtained a session for the functional checks"
+else
+    bad "could not obtain a session — the two checks below cannot run"
+fi
+
+# A one-second 440 Hz mono WAV, written inside the container. Small enough to
+# be cheap, real enough that librosa must actually decode it.
+if api_exec python -c "
+import math, struct, wave
+with wave.open('/tmp/smoke-tone.wav', 'wb') as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+    w.writeframes(b''.join(
+        struct.pack('<h', int(16000 * math.sin(2 * math.pi * 440 * n / 8000)))
+        for n in range(8000)))
+" >/dev/null 2>&1; then
+    ok "generated a test tone inside the container"
+else
+    bad "could not generate a test tone inside the container"
+fi
+
+# Body and status in one request: two calls could disagree, and the body is
+# what names the failure.
+post_in_api() {
+    # post_in_api <curl args...> -> "<body>\n<status>"
+    api_exec curl -sS -w '\n%{http_code}' "$@" 2>/dev/null || true
+}
+
+split_status() { printf '%s' "$1" | tail -n 1 | tr -d '[:space:]'; }
+split_body()   { printf '%s' "$1" | sed '$d'; }
+
+# --- audio decode: the numba cache -----------------------------------------
+audio_raw="$(post_in_api -X POST http://127.0.0.1:8000/api/audio/analyze \
+    -H "Authorization: Bearer $TOKEN" \
+    -F 'file=@/tmp/smoke-tone.wav;type=audio/wav' \
+    -F 'operations=["stft"]')" || audio_raw=""
+audio_code="$(split_status "$audio_raw")"
+audio_body="$(split_body "$audio_raw")"
+
+if [ "${audio_code:-000}" = "200" ]; then
+    ok "/api/audio/analyze decoded a WAV inside the container (200)"
+else
+    bad "/api/audio/analyze -> ${audio_code:-000} — audio decode is down in the image"
+    printf '        %s\n' "$(printf '%s' "$audio_body" | head -c 300)"
+fi
+
+# Name the specific regression so a re-break is recognisable, not just red.
+case "$audio_body" in
+    *"no locator available"*|*"cannot cache function"*)
+        bad "numba cannot write its cache — NUMBA_CACHE_DIR unset or unwritable" ;;
+esac
+
+# --- text search: the huggingface cache ------------------------------------
+search_raw="$(post_in_api -X POST http://127.0.0.1:8000/api/search/query \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"query":"a photo of a cat","modality":"text","k":3}')" || search_raw=""
+search_code="$(split_status "$search_raw")"
+search_body="$(split_body "$search_raw")"
+
+# An empty index is a legitimate answer; a 500 is not. What is proven here is
+# that the query embedded at all, which means CLIP loaded.
+if [ "${search_code:-000}" = "200" ]; then
+    ok "/api/search/query embedded a text query inside the container (200)"
+else
+    bad "/api/search/query -> ${search_code:-000} — text search is down in the image"
+    printf '        %s\n' "$(printf '%s' "$search_body" | head -c 300)"
+fi
+
+case "$search_body" in
+    *"Permission denied"*|*"/home/appuser"*)
+        bad "huggingface_hub cannot write its cache — runtime user has no writable home" ;;
+esac
+
+# The weights are baked in, so a search must not have needed the network. This
+# is what makes an egress-less deployment able to serve search at all.
+if api_exec sh -c 'test -d "$HUGGINGFACE_HUB_CACHE"/models--openai--clip-vit-base-patch32' >/dev/null 2>&1; then
+    ok "CLIP weights are present in the image (no first-request download)"
+else
+    bad "CLIP weights missing from the image — the first search will hit the network"
+fi
+
+if api_exec sh -c 'touch "$NUMBA_CACHE_DIR"/.probe && rm -f "$NUMBA_CACHE_DIR"/.probe' >/dev/null 2>&1; then
+    ok "NUMBA_CACHE_DIR is writable by the runtime user"
+else
+    bad "NUMBA_CACHE_DIR is not writable by the runtime user"
 fi
 
 # ---------------------------------------------------------------------------
