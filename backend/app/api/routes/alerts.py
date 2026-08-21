@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.deps import get_db
+from app.core.deps import get_current_user, get_db
 from app.database import get_async_session
 from app.schemas.alert import (
     AlertRead,
@@ -23,6 +23,7 @@ from app.schemas.alert import (
 )
 from app.core.deps import get_optional_workspace_id, get_workspace_id
 from app.models.alert import Alert, AlertSeverity, AlertStatus
+from app.models.user import User
 from app.services.integrations.email import EmailIntegration
 from app.services.alerts.actions import AlertActionExecutor
 from app.services.alerts.alert_service import AlertService, UnknownActorError
@@ -579,14 +580,8 @@ class AlertStatsStub(BaseModel):
     warning_delta: int
 
 
-class AlertItemStub(BaseModel):
-    id: str
-    severity: str
-    message: str
-    source: str
-    rule_name: str
-    status: str
-    created_at: str
+# `AlertItemStub` was the response model for the stubbed PATCH handler. That
+# handler returns the real `AlertRead` now and nothing else referenced it.
 
 
 class AlertPatchBody(BaseModel):
@@ -615,53 +610,10 @@ class ChannelTestResult(BaseModel):
 
 # -- Mock data ---
 
-_MOCK_ALERTS: list[dict[str, Any]] = [
-    {
-        "id": "alert-001",
-        "severity": "critical",
-        "message": "Model accuracy dropped below 80% threshold",
-        "source": "model-monitor",
-        "rule_name": "accuracy_degradation",
-        "status": "active",
-        "created_at": "2026-03-20T08:12:00Z",
-    },
-    {
-        "id": "alert-002",
-        "severity": "critical",
-        "message": "GPU memory utilization exceeded 95%",
-        "source": "infra-monitor",
-        "rule_name": "gpu_memory_high",
-        "status": "active",
-        "created_at": "2026-03-20T07:45:00Z",
-    },
-    {
-        "id": "alert-003",
-        "severity": "warning",
-        "message": "Data drift detected in input feature distribution",
-        "source": "data-pipeline",
-        "rule_name": "feature_drift",
-        "status": "acknowledged",
-        "created_at": "2026-03-20T06:30:00Z",
-    },
-    {
-        "id": "alert-004",
-        "severity": "warning",
-        "message": "Inference latency p99 above 500ms",
-        "source": "api-gateway",
-        "rule_name": "latency_threshold",
-        "status": "active",
-        "created_at": "2026-03-19T22:15:00Z",
-    },
-    {
-        "id": "alert-005",
-        "severity": "info",
-        "message": "Scheduled retraining job completed successfully",
-        "source": "training-pipeline",
-        "rule_name": "training_complete",
-        "status": "resolved",
-        "created_at": "2026-03-19T18:00:00Z",
-    },
-]
+# Five invented alerts used to sit here - "Person detected in restricted zone",
+# "GPU memory above threshold", each with a severity and a timestamp - as the
+# only backing for PATCH /{alert_id}. That handler now writes to the database
+# and nothing else read them.
 
 _MOCK_RULES: list[dict[str, Any]] = [
     {
@@ -762,27 +714,42 @@ async def alert_stats_summary(
     )
 
 
-@router.patch("/{alert_id}", response_model=AlertItemStub)
+@router.patch("/{alert_id}", response_model=AlertRead)
 async def patch_alert(
-    alert_id: str,
+    alert_id: UUID,
     body: AlertPatchBody = Body(...),
-) -> AlertItemStub:
-    """Update an alert's status. Returns the updated alert (mock)."""
-    # Find the matching mock alert or use the first as template
-    matched = next((a for a in _MOCK_ALERTS if a["id"] == alert_id), None)
-    if matched is None:
-        # Return a synthetic alert for any ID
-        return AlertItemStub(
-            id=alert_id,
-            severity="warning",
-            message="Alert updated",
-            source="system",
-            rule_name="unknown_rule",
-            status=body.status,
-            created_at=datetime.now(timezone.utc).isoformat(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+) -> Alert:
+    """Change an alert's status.
+
+    This was a stub. It looked up `alert_id` in a list of five invented alerts
+    defined in this file and, failing that, returned a synthetic alert for any
+    id at all - "Alert updated", severity warning, rule "unknown_rule" - with
+    the status the caller asked for echoed back. Nothing was written.
+
+    The console's `updateAlertStatus` calls this, so changing an alert's status
+    from the inbox reported success and changed nothing; a reload showed the old
+    status. The sibling /acknowledge, /resolve and /dismiss routes were real the
+    whole time, which is why this went unnoticed.
+    """
+    try:
+        new_status = AlertStatus(body.status)
+    except ValueError:
+        allowed = ", ".join(status.value for status in AlertStatus)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown alert status {body.status!r}. Expected one of: {allowed}",
+        ) from None
+
+    try:
+        return await AlertService._transition_alert(
+            db, alert_id, current_user.id, new_status
         )
-    updated = {**matched, "status": body.status}
-    return AlertItemStub(**updated)
+    except UnknownActorError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @router.post("/rules/create", response_model=AlertRuleStub, status_code=201)
