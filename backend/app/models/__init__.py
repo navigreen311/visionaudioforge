@@ -67,6 +67,7 @@ from app.models.scheduling import PipelineSchedule
 from app.models.conversation import AgentConversation, AgentMessage
 from app.models.vertical import InstalledVerticalPack, VerticalInstallJob
 from app.models.field_note import FieldNote
+from app.models.notification import Notification, NotificationType
 from app.models.safety import LegalHold, SafetyScan, VoiceConsent
 from app.models.federated import (
     Federation,

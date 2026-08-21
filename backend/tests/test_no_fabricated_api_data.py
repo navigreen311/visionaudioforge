@@ -57,14 +57,6 @@ ALLOWED: dict[str, str] = {
         "with three plugins nobody installed - but it is a seeding decision, "
         "not a handler answering from a literal."
     ),
-    "_notifications": (
-        "notifications.py: KNOWN GAP, not an accepted pattern. Five hardcoded "
-        "notifications are served to every user of every workspace, and "
-        "mark-as-read mutates a module-level list shared between tenants and "
-        "lost on restart. There is no Notification model to read from, so "
-        "fixing it means building one - a subsystem, not a fallback removal. "
-        "Recorded here so it is visible rather than forgotten."
-    ),
     "_CATALOGUE": (
         "marketplace_stubs.py: KNOWN GAP. A five-item plugin catalogue that "
         "list/get/install/uninstall all read, with install and uninstall "

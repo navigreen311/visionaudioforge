@@ -108,7 +108,56 @@ async def _run_pipeline(
             run.results = payload
             await db.commit()
 
+            await _notify_finished(db, run, succeeded, errors)
+
         return payload
+
+
+async def _notify_finished(
+    db: AsyncSession,
+    run: PipelineRun,
+    succeeded: bool,
+    errors: list[str],
+) -> None:
+    """Tell the workspace its pipeline finished.
+
+    The notification bell used to show a hardcoded "Pipeline completed / Camera
+    Detection ran successfully". This is where that becomes a real event.
+
+    The run carries no workspace of its own, so it comes from the pipeline the
+    run belongs to. If that lookup fails there is nobody to notify and nothing
+    to do - `emit` is a side effect of work that is already committed and must
+    not fail it.
+    """
+    from app.models.notification import NotificationType
+    from app.services.notifications.service import NotificationService
+
+    try:
+        pipeline = (
+            await db.execute(
+                select(Pipeline).where(Pipeline.id == run.pipeline_id)
+            )
+        ).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - the run is already recorded
+        logger.exception("could not load the pipeline to notify for run %s", run.id)
+        return
+
+    if pipeline is None or pipeline.workspace_id is None:
+        return
+
+    name = pipeline.name or "Pipeline"
+    await NotificationService.emit(
+        db,
+        pipeline.workspace_id,
+        NotificationType.pipeline,
+        title=f"{name} {'completed' if succeeded else 'failed'}",
+        description=(
+            f"{name} ran successfully."
+            if succeeded
+            else "; ".join(errors)[:500] or f"{name} failed."
+        ),
+        action_url="/pipeline",
+    )
 
 
 async def _load_run(db: AsyncSession, run_id: str) -> PipelineRun | None:
