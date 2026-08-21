@@ -157,6 +157,29 @@ async def get_dataset(
 # ------------------------------------------------------------------
 # POST /api/datasets/{id}/upload
 # ------------------------------------------------------------------
+@router.delete("/{dataset_id}", status_code=204)
+async def delete_dataset(
+    dataset_id: uuid.UUID,
+    session_workspace: uuid.UUID = Depends(get_workspace_id),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Delete a dataset.
+
+    `DatasetsTab` has a delete button behind a confirmation dialog. It sent this
+    to a path that only served GET, so FastAPI answered 405 and the row returned
+    on the next refresh.
+    """
+    dataset = await DatasetService.get_dataset(db, dataset_id)
+    if dataset is None or dataset.workspace_id != session_workspace:
+        # 404 rather than 403, for the same reason as the getter above: a 403
+        # would confirm this id exists in some other tenant.
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    await db.delete(dataset)
+    await db.commit()
+    return Response(status_code=204)
+
+
 @router.post("/{dataset_id}/upload")
 async def upload_samples(
     dataset_id: uuid.UUID,

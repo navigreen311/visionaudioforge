@@ -191,7 +191,10 @@ function ReviewQueueTab() {
         </button>
         <button
           onClick={async () => {
-            await fetch(`${API}/tasks/auto-assign?workspace_id=${readWorkspaceId()}`, { method: "POST" });
+            // The route is /api/reviewops/auto-assign, not /tasks/auto-assign. The
+            // wrong path resolved against GET|PATCH /reviewops/tasks/{task_id},
+            // so "Auto-Assign All" posted into a 405 and did nothing.
+            await fetch(`${API}/auto-assign?workspace_id=${readWorkspaceId()}`, { method: "POST" });
             fetchTasks();
           }}
           className="rounded-lg border border-brand-600 px-4 py-1.5 text-sm text-brand-600 hover:bg-brand-50"

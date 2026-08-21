@@ -45,7 +45,7 @@ export default function TransformExportPanel({
     setSaveSuccess(false);
 
     try {
-      const res = await fetch("/api/assets", {
+      const res = await fetch("/api/assets/upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

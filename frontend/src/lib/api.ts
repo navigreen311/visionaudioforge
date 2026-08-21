@@ -1221,14 +1221,17 @@ export async function patchAlertStatus(
   return data;
 }
 
-export async function getAlertHistory(
-  ruleId: string,
-): Promise<AlertHistoryEntry[]> {
-  const { data } = await api.get("/api/alerts/history", {
-    params: { rule_id: ruleId, limit: 5 },
-  });
-  return data;
-}
+// `getAlertHistory`, `listEscalations` and `escalateAlert` used to live here.
+// All three called routes the server has never mounted - /api/alerts/history,
+// /api/alerts/escalations and POST /api/alerts/{id}/escalate - and no component
+// called any of them. They were found by making the route-wiring guard compare
+// methods: each had resolved against an unrelated route at the same path shape
+// (PATCH /api/alerts/{alert_id} and GET /api/alerts/rules/{rule_id}) and so
+// looked mounted.
+//
+// Deleted rather than implemented. Writing three endpoints for a caller that
+// does not exist is how the console ended up with more surface than app.
+// git log --diff-filter=D has them if a screen ever needs them.
 
 export async function listRules(): Promise<AlertRule[]> {
   const { data } = await api.get("/api/alerts/rules", {
@@ -1311,23 +1314,6 @@ export async function saveNotificationChannel(
   config: NotificationChannelConfig,
 ): Promise<NotificationChannelConfig> {
   const { data } = await api.post("/api/alerts/channels", config);
-  return data;
-}
-
-export async function listEscalations(): Promise<unknown[]> {
-  const { data } = await api.get("/api/alerts/escalations", {
-    params: { workspace_id: getWorkspaceId() },
-  });
-  return data;
-}
-
-export async function escalateAlert(
-  alertId: string,
-  escalationConfig: EscalationConfig,
-): Promise<unknown> {
-  const { data } = await api.post(`/api/alerts/${alertId}/escalate`, {
-    escalation_config: escalationConfig,
-  });
   return data;
 }
 

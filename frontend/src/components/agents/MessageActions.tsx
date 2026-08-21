@@ -165,13 +165,13 @@ function SaveToMemoryPopover({
         category,
         importance,
       };
-      const res = await fetch("/api/agents/memory", {
+      // Was POST /api/agents/memory, which is not a route: it resolved
+      // against GET /api/agents/{agent_id} and answered 405, so every "Save to
+      // Memory" silently failed and the panel closed as if it had worked.
+      const res = await fetch(`/api/agents/${agentId}/memory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agent_id: agentId,
-          ...payload,
-        }),
+        body: JSON.stringify(payload),
       });
       if (res.ok) {
         setSaved(true);
