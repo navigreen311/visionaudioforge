@@ -683,6 +683,23 @@ class AlertService:
         await db.commit()
         await db.refresh(alert)
         logger.info("Triggered alert %s (severity=%s, rule=%s)", alert.id, severity.value, rule_id)
+
+        # The console's notification bell used to show five hardcoded entries,
+        # one of which read "Critical alert triggered". This is where that
+        # sentence becomes true. `emit` never raises: the alert is already
+        # committed and a failed notification must not undo it.
+        from app.models.notification import NotificationType
+        from app.services.notifications.service import NotificationService
+
+        await NotificationService.emit(
+            db,
+            workspace_id,
+            NotificationType.alert,
+            title=f"{severity.value.title()} alert triggered",
+            description=str(payload.get("message") or payload.get("summary") or "")[:500],
+            action_url="/alerts",
+        )
+
         return alert
 
     @staticmethod

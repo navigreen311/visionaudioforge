@@ -32,6 +32,22 @@ class ExperimentService:
         db.add(experiment)
         await db.commit()
         await db.refresh(experiment)
+
+        from app.models.notification import NotificationType
+        from app.services.notifications.service import NotificationService
+
+        await NotificationService.emit(
+            db,
+            experiment.workspace_id,
+            NotificationType.model,
+            title="Model training complete",
+            description=(
+                f"{experiment.name} finished"
+                + (f" — best epoch {experiment.best_epoch}" if experiment.best_epoch else "")
+            ),
+            action_url="/train",
+        )
+
         return experiment
 
     @staticmethod
