@@ -17,6 +17,7 @@ class AgentMemoryService:
         agent_id: str,
         content: str,
         importance_score: float = 0.5,
+        category: str | None = None,
     ) -> AgentMemory:
         """Store a new memory for an agent.
 
@@ -27,6 +28,8 @@ class AgentMemoryService:
         if importance_score < 0.8:
             expires_at = datetime.now(timezone.utc) + timedelta(days=30)
 
+        # The console's Save-to-Memory panel offers a category. Accepting it and
+        # dropping it would make the selector decorative, so it is stored.
         memory = AgentMemory(
             agent_id=agent_id,
             role="assistant",
@@ -34,7 +37,9 @@ class AgentMemoryService:
             importance_score=importance_score,
             freshness_score=1.0,
             expires_at=expires_at,
-            metadata_={},
+            # The console's Save-to-Memory panel offers a category. Accepting it
+            # and dropping it would make that selector decorative.
+            metadata_={"category": category} if category else {},
         )
         db.add(memory)
         await db.commit()

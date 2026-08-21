@@ -10,8 +10,9 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db, get_optional_workspace_id
@@ -230,6 +231,29 @@ async def get_experiment(
             "error_message": None,
             "epochs": _mock_epochs(20),
         }
+
+
+@router.delete("/{experiment_id}", status_code=204)
+async def delete_experiment(
+    experiment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Delete an experiment.
+
+    `ExperimentsTab`'s delete button, behind "Delete this experiment? This
+    cannot be undone.", sent this to a path serving only GET and POST. It
+    answered 405 and the experiment stayed.
+    """
+    # `get_experiment` ends in `scalar_one()`, which raises rather than
+    # returning None - checking for None let a missing id surface as a 500.
+    try:
+        experiment = await ExperimentService.get_experiment(db, experiment_id)
+    except NoResultFound:
+        raise HTTPException(status_code=404, detail="Experiment not found") from None
+
+    await db.delete(experiment)
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/{experiment_id}/cancel")

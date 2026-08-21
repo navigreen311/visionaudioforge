@@ -533,6 +533,51 @@ async def get_agent(
     }
 
 
+class StoreMemoryRequest(BaseModel):
+    content: str = Field(..., min_length=1)
+    category: str | None = None
+    importance: float | None = Field(None, ge=0.0, le=1.0)
+
+
+@router.post("/{agent_id}/memory", status_code=201)
+async def store_agent_memory(
+    agent_id: str,
+    body: StoreMemoryRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Write one memory for an agent.
+
+    `MessageActions`' "Save to Memory" panel has posted this since it shipped
+    and there was no handler: it addressed /api/agents/memory, which resolved
+    against GET /api/agents/{agent_id}, answered 405, and closed as though it
+    had saved. The service underneath has always existed.
+    """
+    key = _agent_uuid(agent_id)
+
+    # agent_memories.agent_id is a foreign key, so writing against an unknown
+    # agent raises an IntegrityError the caller sees as a 500. Checking first
+    # turns that into the 404 it always was.
+    exists = (
+        await db.execute(select(Agent.id).where(Agent.id == key))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id!r} not found")
+
+    memory = await memory_service.store_memory(
+        db,
+        key,
+        content=body.content,
+        importance_score=body.importance if body.importance is not None else 0.5,
+        category=body.category,
+    )
+    return {
+        "id": str(memory.id),
+        "agent_id": agent_id,
+        "content": memory.content,
+        "importance_score": memory.importance_score,
+    }
+
+
 @router.get("/{agent_id}/memory")
 async def list_memories(
     agent_id: str,

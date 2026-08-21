@@ -137,9 +137,64 @@ def _normalise(raw: str) -> tuple[str, ...] | None:
     return tuple(segments)
 
 
-def _extract_from_source(text: str) -> set[str]:
-    """Return every ``/api/...`` path literal in one source file."""
-    found: set[str] = set()
+# How the console names an HTTP method at a call site.
+_VERB_CALL = re.compile(
+    r"\b(?:api|apiClient|axios|http|client)\s*\.\s*(get|post|put|patch|delete)\s*\(\s*$",
+    re.I,
+)
+_FETCH_CALL = re.compile(r"\bfetch\s*\(\s*$")
+_OPEN_CALL = re.compile(r"\bwindow\.open\s*\(\s*$")
+_HREF = re.compile(r"\bhref\s*=\s*\{?\s*$")
+_METHOD_OPT = re.compile(r"""method\s*:\s*['"](\w+)['"]""")
+
+# The method could not be determined from the call site. Such a call is still
+# checked for path existence; it is skipped by the method check rather than
+# guessed at, because a wrong guess here fails the build for working code.
+UNKNOWN_METHOD = "ANY"
+
+
+def _call_span(text: str, open_paren: int) -> str:
+    """The text of the call whose bracket opens at *open_paren*."""
+    depth = 0
+    for i in range(open_paren, min(len(text), open_paren + 1500)):
+        char = text[i]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth == 0:
+                return text[open_paren : i + 1]
+    return text[open_paren : open_paren + 1500]
+
+
+def _method_at(text: str, index: int) -> str:
+    """The HTTP method of the call whose first argument starts at *index*.
+
+    `api.delete("/x")` says so in the callee. `fetch(url, {method: "DELETE"})`
+    says so in its options, and a `fetch` without options is a GET - which is
+    what the spec says and what every one of these call sites means.
+    """
+    prefix = text[max(0, index - 140) : index]
+
+    verb = _VERB_CALL.search(prefix)
+    if verb:
+        return verb.group(1).upper()
+
+    # A link or a new tab is a GET by construction.
+    if _OPEN_CALL.search(prefix) or _HREF.search(prefix):
+        return "GET"
+
+    if _FETCH_CALL.search(prefix):
+        open_paren = max(0, index - 140) + prefix.rfind("(")
+        found = _METHOD_OPT.search(_call_span(text, open_paren))
+        return found.group(1).upper() if found else "GET"
+
+    return UNKNOWN_METHOD
+
+
+def _extract_calls_from_source(text: str) -> set[tuple[str, str]]:
+    """Every ``(method, /api/...)`` call one source file makes."""
+    found: set[tuple[str, str]] = set()
 
     # Bases a file declares, so `${API_BASE}/validate` resolves to a real path.
     bases = dict(_BASE_CONST.findall(text))
@@ -150,58 +205,54 @@ def _extract_from_source(text: str) -> set[str]:
         value for name, value in bases.items() if "${" + name + "}/" in text
     }
 
-    # findall yields one group per quote style; take whichever matched.
-    for groups in _STRING_LITERAL.findall(text):
-        body = next((g for g in groups if g), "")
-        # `${BASE}/validate` contains no "/api/" of its own - the path lives in
-        # BASE. This early skip fired first and dropped it, so the substitution
-        # branch below could never run: the convention it was written for had
-        # never actually worked. A literal that opens with an interpolation gets
-        # through to be resolved.
-        if (
-            "/api/" not in body
-            and not body.startswith("/api")
-            and not body.startswith("${")
-        ):
+    for match in _STRING_LITERAL.finditer(text):
+        body = next((g for g in match.groups() if g), "")
+        if not body:
             continue
+        if "/api/" not in body and not body.startswith("/api") and not body.startswith("${"):
+            continue
+
+        path: str | None = None
 
         if body.startswith("/api"):
             if body not in prefix_only:
-                found.add(body)
-            continue
+                path = body
 
-        # `${API_BASE}/models` — substitute a known base and keep the remainder.
-        match = re.match(r"^\$\{([A-Za-z_$][\w$]*)\}(/.*)?$", body)
-        if match and match.group(1) in bases:
-            found.add(bases[match.group(1)] + (match.group(2) or ""))
-            continue
+        else:
+            # `${API_BASE}/models` — substitute a known base, keep the remainder.
+            sub = re.match(r"^\$\{([A-Za-z_$][\w$]*)\}(/.*)?$", body)
+            if sub and sub.group(1) in bases:
+                path = bases[sub.group(1)] + (sub.group(2) or "")
+            else:
+                # `${API}/api/observability/dashboard` — an absolute URL built
+                # from a host constant. This is the single largest way the
+                # console calls the API and this scanner could not see any of
+                # it: the literal does not start with "/api", and `API` holds an
+                # origin rather than a path so it is not in `bases` either.
+                #
+                # That is not hypothetical. /api/observability/latency-history
+                # was called on every load of the observability page and mounted
+                # nowhere, 404ing for as long as the page existed, while this
+                # test - written to catch exactly that - passed.
+                #
+                # Anything from the first "/api/" onwards is the path, whatever
+                # precedes it. `_normalise` rejects the prose this also picks up.
+                index = body.find("/api/")
+                if index > 0 and body[index:] not in prefix_only:
+                    path = body[index:]
 
-        # `${API}/api/observability/dashboard` — an absolute URL built from a
-        # host constant. This is the single largest way the console calls the
-        # API and this scanner could not see any of it: the literal does not
-        # start with "/api", and `API` holds an origin rather than a path so it
-        # is not in `bases` either. Both branches above miss, and the path was
-        # silently dropped.
-        #
-        # That is not hypothetical. /api/observability/latency-history was
-        # called on every load of the observability page and mounted nowhere,
-        # 404ing for as long as the page existed, while this test - written to
-        # catch exactly that - passed. It saw 114 of the console's ~152 paths.
-        #
-        # Anything from the first "/api/" onwards is the path, whatever precedes
-        # it. A prose mention of a path in a comment or message would also be
-        # picked up; that is the right side to err on for a guard, and
-        # IGNORED_PATHS exists for the exceptions.
-        index = body.find("/api/")
-        if index > 0:
-            candidate = body[index:]
-            # A base const declares its own path; the endpoints are the literals
-            # other call sites append to it. Reporting the base itself fails this
-            # test for a route nothing ever requests.
-            if candidate not in prefix_only:
-                found.add(candidate)
+        if path:
+            found.add((_method_at(text, match.start()), path))
 
     return found
+
+
+def _extract_from_source(text: str) -> set[str]:
+    """Every ``/api/...`` path literal in one source file, method discarded.
+
+    Built on the same parser as the method-aware one, so the two cannot drift.
+    """
+    return {path for _method, path in _extract_calls_from_source(text)}
 
 
 def collect_frontend_paths() -> dict[tuple[str, ...], set[str]]:
@@ -220,6 +271,22 @@ def collect_frontend_paths() -> dict[tuple[str, ...], set[str]]:
     return paths
 
 
+def collect_frontend_calls() -> dict[tuple[str, tuple[str, ...]], set[str]]:
+    """Map each ``(method, normalised path)`` the console calls to its callers."""
+    calls: dict[tuple[str, tuple[str, ...]], set[str]] = {}
+    for source in _iter_source_files():
+        text = source.read_text(encoding="utf-8", errors="ignore")
+        for method, raw in _extract_calls_from_source(text):
+            if raw.split("?", 1)[0] in IGNORED_PATHS:
+                continue
+            segments = _normalise(raw)
+            if segments is None:
+                continue
+            rel = source.relative_to(REPO_ROOT).as_posix()
+            calls.setdefault((method, segments), set()).add(rel)
+    return calls
+
+
 # --------------------------------------------------------------------------
 # The mounted route table
 # --------------------------------------------------------------------------
@@ -227,9 +294,9 @@ def collect_frontend_paths() -> dict[tuple[str, ...], set[str]]:
 _PATH_PARAM = re.compile(r"^\{.*\}$")
 
 
-def collect_route_segments() -> list[tuple[str, ...]]:
-    """Return every mounted API route as comparable segments."""
-    routes: list[tuple[str, ...]] = []
+def collect_route_methods() -> dict[tuple[str, ...], set[str]]:
+    """Every mounted API route as segments, with the methods it serves."""
+    routes: dict[tuple[str, ...], set[str]] = {}
     for route in app.routes:
         path = getattr(route, "path", None)
         if not path or not path.startswith("/api"):
@@ -239,8 +306,14 @@ def collect_route_segments() -> list[tuple[str, ...]]:
             for part in path.strip("/").split("/")
             if part
         )
-        routes.append(segments)
+        methods = set(getattr(route, "methods", set()) or set())
+        routes.setdefault(segments, set()).update(methods)
     return routes
+
+
+def collect_route_segments() -> list[tuple[str, ...]]:
+    """Return every mounted API route as comparable segments."""
+    return list(collect_route_methods())
 
 
 def _matches(called: tuple[str, ...], route: tuple[str, ...]) -> bool:
@@ -396,6 +469,97 @@ def test_the_extractor_still_sees_most_of_the_console():
         "Something about how the console writes paths has changed and the "
         "scanner no longer recognises it - add the new convention to "
         "CALLING_CONVENTIONS above."
+    )
+
+
+METHOD_CONVENTIONS = [
+    # (source snippet, expected method for the path it contains)
+    ('api.get("/api/alerts")', "GET"),
+    ('api.delete(`/api/assets/${id}`)', "DELETE"),
+    ('api.patch("/api/alerts/x", body)', "PATCH"),
+    # A bare fetch is a GET, which is what the spec says and what these mean.
+    ('fetch(`${API}/api/edge/devices`)', "GET"),
+    # ...and an options object overrides it.
+    ('fetch(`${API}/api/edge/devices/${id}`, { method: "DELETE" })', "DELETE"),
+    ("fetch('/api/reviewops/auto-assign', {\n  method: 'POST',\n})", "POST"),
+    # A link and a new tab are GETs by construction.
+    ('window.open(`${API}/api/edge/devices/${id}/logs`, "_blank")', "GET"),
+    ('<a href={`${API}/api/edge/exports/${id}/download`}>', "GET"),
+]
+
+
+@pytest.mark.parametrize("snippet,expected", METHOD_CONVENTIONS,
+                         ids=[f"{m}-{i}" for i, (_, m) in enumerate(METHOD_CONVENTIONS)])
+def test_the_extractor_reads_the_method_from_the_call_site(snippet, expected):
+    """Each way the console names a method, pinned.
+
+    Detection that silently degrades to ANY would make the method check below
+    pass by examining nothing, which is the failure mode this whole file keeps
+    running into.
+    """
+    calls = _extract_calls_from_source(snippet)
+    assert calls, f"no API call found in {snippet!r}"
+    methods = {method for method, _ in calls}
+    assert expected in methods, f"expected {expected}, read {sorted(methods)}"
+
+
+def test_most_call_sites_yield_a_method():
+    """A floor on detection, so a rewrite that blinds it shows up here.
+
+    Some calls genuinely cannot be read - a URL built into a variable several
+    lines earlier, then passed to fetch. Those fall back to ANY and are covered
+    by the path check rather than the method check. At the time of writing 255
+    of 299 calls resolve to a real method.
+    """
+    calls = collect_frontend_calls()
+    known = [c for c in calls if c[0] != UNKNOWN_METHOD]
+
+    assert len(calls) >= 200, f"only {len(calls)} calls found at all"
+    assert len(known) / len(calls) >= 0.75, (
+        f"only {len(known)} of {len(calls)} calls yielded a method. Detection "
+        "has regressed - see METHOD_CONVENTIONS above."
+    )
+
+
+def test_every_console_call_uses_a_method_the_route_serves():
+    """A path that exists is not the same as a call that works.
+
+    `ExportHistory`'s delete button sent DELETE /api/edge/exports/{id} to a path
+    that only served GET. FastAPI answered 405, the component reported "Delete
+    failed", the row stayed - and this file passed, because it compared paths
+    and ignored methods, so the DELETE resolved against the GET sitting at the
+    same path. Six such calls were mounted-by-coincidence when this check was
+    added.
+
+    Calls whose method could not be read from the source are skipped here; they
+    are still checked for path existence by the test above.
+    """
+    routes = collect_route_methods()
+
+    mismatched: list[str] = []
+    for (method, segments), sources in sorted(collect_frontend_calls().items()):
+        if method == UNKNOWN_METHOD:
+            continue
+
+        served: set[str] = set()
+        for route_segments, route_methods in routes.items():
+            if _matches(segments, route_segments):
+                served |= route_methods
+        if not served:
+            continue  # no such path at all - the other test says so, better
+
+        if method not in served:
+            callers = ", ".join(sorted(sources)[:2])
+            offered = ", ".join(sorted(served - {"HEAD", "OPTIONS"})) or "nothing"
+            mismatched.append(
+                f"{method} {_render(segments)} — path serves {offered}  "
+                f"(called from {callers})"
+            )
+
+    assert not mismatched, (
+        f"{len(mismatched)} console call(s) use a method their path does not "
+        "serve. Each is a 405 at runtime, and each looks mounted to a check "
+        "that only compares paths:\n  " + "\n  ".join(mismatched)
     )
 
 

@@ -72,11 +72,16 @@ export default function AudioExportPanel({
     try {
       const formData = new FormData();
       formData.append("file", audioFile);
-      formData.append("tag", "audio-analysis");
+      // The endpoint takes a JSON-encoded list under `tags`, and requires
+      // `asset_type`. This sent a singular `tag` and no type to POST /api/assets,
+      // which is not a route - only /upload is - so "Save to library" answered
+      // 405 and reported the status code.
+      formData.append("asset_type", "audio");
+      formData.append("tags", JSON.stringify(["audio-analysis"]));
       if (analysisResults) {
         formData.append("metadata", JSON.stringify(analysisResults));
       }
-      const res = await fetch("/api/assets", {
+      const res = await fetch("/api/assets/upload", {
         method: "POST",
         body: formData,
       });
