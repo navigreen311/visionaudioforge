@@ -5,7 +5,6 @@ detail endpoints fall back to realistic mock data so the frontend always has
 something to render.
 """
 
-import math
 import uuid
 from typing import Any
 
@@ -24,65 +23,26 @@ from app.services.models.experiments import ExperimentService
 router = APIRouter(prefix="/api/experiments", tags=["experiments"])
 
 
-# ---------- Mock-data helpers ----------
-
-def _mock_epochs(n: int = 20) -> list[dict]:
-    """Generate *n* epochs of training data with decreasing loss."""
-    epochs = []
-    for i in range(1, n + 1):
-        progress = i / n
-        train_loss = 2.5 * math.exp(-3.0 * progress) + 0.05
-        val_loss = 2.5 * math.exp(-2.8 * progress) + 0.08
-        accuracy = 1.0 - math.exp(-3.0 * progress)
-        val_accuracy = 1.0 - math.exp(-2.6 * progress)
-        epochs.append({
-            "epoch_number": i,
-            "train_loss": round(train_loss, 4),
-            "val_loss": round(val_loss, 4),
-            "accuracy": round(accuracy, 4),
-            "val_accuracy": round(val_accuracy, 4),
-            "metrics": {
-                "lr": round(0.001 * (0.95 ** i), 6),
-            },
-        })
-    return epochs
-
-
-_MOCK_EXPERIMENTS = [
-    {
-        "id": "00000000-0000-0000-0000-000000000001",
-        "name": "ResNet50 Baseline",
-        "status": "completed",
-        "config": {"architecture": "resnet50", "batch_size": 32, "lr": 0.001},
-        "workspace_id": "00000000-0000-0000-0000-000000000000",
-        "model_id": None,
-        "best_epoch": 18,
-        "error_message": None,
-        "epochs": _mock_epochs(20),
-    },
-    {
-        "id": "00000000-0000-0000-0000-000000000002",
-        "name": "CLIP Fine-tune v1",
-        "status": "running",
-        "config": {"architecture": "clip-vit-b32", "batch_size": 16, "lr": 0.0005},
-        "workspace_id": "00000000-0000-0000-0000-000000000000",
-        "model_id": None,
-        "best_epoch": 12,
-        "error_message": None,
-        "epochs": _mock_epochs(12),
-    },
-    {
-        "id": "00000000-0000-0000-0000-000000000003",
-        "name": "Audio MFCC Classifier",
-        "status": "completed",
-        "config": {"architecture": "cnn-1d", "batch_size": 64, "lr": 0.002},
-        "workspace_id": "00000000-0000-0000-0000-000000000000",
-        "model_id": None,
-        "best_epoch": 15,
-        "error_message": None,
-        "epochs": _mock_epochs(20),
-    },
-]
+# Three fixture experiments and a `_mock_epochs` generator used to live here.
+#
+# `_mock_epochs` produced a training curve from `2.5 * exp(-3 * progress)` - a
+# loss that falls smoothly to 0.05 and an accuracy that rises to 1.0, per epoch,
+# with a decaying learning rate. It looked exactly like a successful training
+# run because it was shaped like one, and the Train page drew it as a chart.
+#
+# Both endpoints below wrapped their database call in `except Exception` and fell
+# back to it. That had three consequences, each worse than the last:
+#
+#   - `GET /api/experiments/{id}` never 404'd. Any UUID at all returned a
+#     "completed" experiment named after the first eight characters of whatever
+#     you asked for, with twenty epochs of invented metrics.
+#   - the fixtures carried `workspace_id: 00000000-...-0000`, so what a tenant
+#     saw was attributed to a workspace that is not theirs.
+#   - a genuine database failure was indistinguishable from an empty list. The
+#     catch-all swallowed it and answered 200.
+#
+# Deleted rather than made conditional. A fallback that fabricates is not a
+# degraded mode, it is a wrong answer delivered confidently.
 
 
 # ---------- Schemas ----------
@@ -154,15 +114,12 @@ async def list_experiments(
             items=[], total=0, page=1, size=limit, page_size=limit, total_pages=1
         )
 
-    try:
-        experiments, total = await ExperimentService.list_experiments(
-            db, workspace_id, model_id=model_id, skip=skip, limit=limit
-        )
-        items = [ExperimentRead.model_validate(e).model_dump(mode="json") for e in experiments]
-    except Exception:
-        # Fallback to mock data when DB is unavailable
-        items = _MOCK_EXPERIMENTS[skip : skip + limit]
-        total = len(_MOCK_EXPERIMENTS)
+    experiments, total = await ExperimentService.list_experiments(
+        db, workspace_id, model_id=model_id, skip=skip, limit=limit
+    )
+    items = [
+        ExperimentRead.model_validate(e).model_dump(mode="json") for e in experiments
+    ]
     total_pages = max(1, -(-total // limit))  # ceil division
     return PaginatedResponse(
         items=items,
@@ -210,27 +167,15 @@ async def get_experiment(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Get experiment details with all epochs."""
+    # `get_experiment` ends in `scalar_one()`, so an unknown id raises rather
+    # than returning None. Only that is caught: anything else is a real failure
+    # and belongs in the 500, not hidden behind a fabricated 200.
     try:
         experiment = await ExperimentService.get_experiment(db, experiment_id)
-        return ExperimentRead.model_validate(experiment).model_dump(mode="json")
-    except Exception:
-        # Fallback: search mock data or generate a placeholder
-        eid = str(experiment_id)
-        for mock in _MOCK_EXPERIMENTS:
-            if mock["id"] == eid:
-                return mock
-        # Return a generated placeholder with full epochs
-        return {
-            "id": eid,
-            "name": f"Experiment {eid[:8]}",
-            "status": "completed",
-            "config": {"architecture": "resnet50", "batch_size": 32},
-            "workspace_id": "00000000-0000-0000-0000-000000000000",
-            "model_id": None,
-            "best_epoch": 18,
-            "error_message": None,
-            "epochs": _mock_epochs(20),
-        }
+    except NoResultFound:
+        raise HTTPException(status_code=404, detail="Experiment not found") from None
+
+    return ExperimentRead.model_validate(experiment).model_dump(mode="json")
 
 
 @router.delete("/{experiment_id}", status_code=204)
